@@ -1,0 +1,315 @@
+{
+  "logic" : {
+    "components" : [
+      {
+        "id" : "00000000-0000-0000-0000-000000000001",
+        "kind" : "transistor",
+        "label" : "Q1"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000002",
+        "kind" : "resistor",
+        "label" : "R1",
+        "resistorSize" : "M"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000003",
+        "kind" : "vacuumSource",
+        "label" : "VAC"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000004",
+        "kind" : "atmVent",
+        "label" : "VENT"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000005",
+        "kind" : "port",
+        "label" : "IN",
+        "portDirection" : "input"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000006",
+        "kind" : "port",
+        "label" : "OUT",
+        "portDirection" : "output"
+      }
+    ],
+    "nets" : [
+      {
+        "id" : "00000000-0000-0000-0001-000000000001",
+        "label" : "VAC",
+        "pins" : [
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000003",
+            "pinKey" : "p"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000002",
+            "pinKey" : "2"
+          }
+        ]
+      },
+      {
+        "id" : "00000000-0000-0000-0001-000000000002",
+        "label" : "VENT",
+        "pins" : [
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000004",
+            "pinKey" : "p"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000001",
+            "pinKey" : "a"
+          }
+        ]
+      },
+      {
+        "id" : "00000000-0000-0000-0001-000000000003",
+        "label" : "OUT",
+        "pins" : [
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000001",
+            "pinKey" : "b"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000002",
+            "pinKey" : "1"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000006",
+            "pinKey" : "p"
+          }
+        ]
+      },
+      {
+        "id" : "00000000-0000-0000-0001-000000000004",
+        "label" : "IN",
+        "pins" : [
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000005",
+            "pinKey" : "p"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000001",
+            "pinKey" : "gate"
+          }
+        ]
+      }
+    ]
+  },
+  "manufacturing" : {
+    "bendFilletRadius" : 0.75,
+    "channelHeight" : 1.5,
+    "channelWidth" : 1.5,
+    "dimpleDepth" : 1,
+    "dimpleDiameter" : 5,
+    "gridPitch" : 1,
+    "minChannelSpacing" : 1.5,
+    "plateThickness" : 4,
+    "portBoreDiameter" : 1.6,
+    "siliconeThickness" : 0.5,
+    "sourceDrainHoleDiameter" : 1.5,
+    "sourceDrainHolePitch" : 3
+  },
+  "physical" : {
+    "boardOutline" : {
+      "origin" : {
+        "x" : 0,
+        "y" : 0
+      },
+      "size" : {
+        "height" : 30,
+        "width" : 50
+      }
+    },
+    "placements" : [
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000001",
+        "layer" : "bottom",
+        "position" : {
+          "x" : 20,
+          "y" : 15
+        },
+        "rotation" : "r0"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000002",
+        "layer" : "top",
+        "position" : {
+          "x" : 35,
+          "y" : 15
+        },
+        "rotation" : "r0"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000003",
+        "layer" : "top",
+        "position" : {
+          "x" : 47,
+          "y" : 15
+        },
+        "rotation" : "r0"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000004",
+        "layer" : "top",
+        "position" : {
+          "x" : 3,
+          "y" : 15
+        },
+        "rotation" : "r180"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000005",
+        "layer" : "bottom",
+        "position" : {
+          "x" : 3,
+          "y" : 8
+        },
+        "rotation" : "r180"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000006",
+        "layer" : "top",
+        "position" : {
+          "x" : 47,
+          "y" : 22
+        },
+        "rotation" : "r0"
+      }
+    ],
+    "routes" : [
+      {
+        "netId" : "00000000-0000-0000-0001-000000000001",
+        "segments" : [
+          {
+            "layer" : "top",
+            "waypoints" : [
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 47,
+                  "y" : 15
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 40,
+                  "y" : 15
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "netId" : "00000000-0000-0000-0001-000000000002",
+        "segments" : [
+          {
+            "layer" : "top",
+            "waypoints" : [
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 3,
+                  "y" : 15
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 18.5,
+                  "y" : 15
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "netId" : "00000000-0000-0000-0001-000000000003",
+        "segments" : [
+          {
+            "layer" : "top",
+            "waypoints" : [
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 21.5,
+                  "y" : 15
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 30,
+                  "y" : 15
+                }
+              }
+            ]
+          },
+          {
+            "layer" : "top",
+            "waypoints" : [
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 30,
+                  "y" : 15
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 30,
+                  "y" : 22
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 47,
+                  "y" : 22
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "netId" : "00000000-0000-0000-0001-000000000004",
+        "segments" : [
+          {
+            "layer" : "bottom",
+            "waypoints" : [
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 3,
+                  "y" : 8
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 20,
+                  "y" : 8
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 20,
+                  "y" : 15
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "schemaVersion" : 1
+}

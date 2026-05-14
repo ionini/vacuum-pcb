@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		F9B05BF52FB674440071BB7F /* Euclid in Frameworks */ = {isa = PBXBuildFile; productRef = F9B05BF42FB674440071BB7F /* Euclid */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		F9B05BDC2FB671F10071BB7F /* Vacuum PCB.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Vacuum PCB.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -23,6 +27,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F9B05BF52FB674440071BB7F /* Euclid in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -65,6 +70,7 @@
 			);
 			name = "Vacuum PCB";
 			packageProductDependencies = (
+				F9B05BF42FB674440071BB7F /* Euclid */,
 			);
 			productName = "Vacuum PCB";
 			productReference = F9B05BDC2FB671F10071BB7F /* Vacuum PCB.app */;
@@ -94,6 +100,9 @@
 			);
 			mainGroup = F9B05BD32FB671F10071BB7F;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				F9B05BF32FB674440071BB7F /* XCRemoteSwiftPackageReference "Euclid" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = F9B05BDD2FB671F10071BB7F /* Products */;
 			projectDirPath = "";
@@ -331,6 +340,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		F9B05BF32FB674440071BB7F /* XCRemoteSwiftPackageReference "Euclid" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/nicklockwood/Euclid";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.8.14;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		F9B05BF42FB674440071BB7F /* Euclid */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F9B05BF32FB674440071BB7F /* XCRemoteSwiftPackageReference "Euclid" */;
+			productName = Euclid;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = F9B05BD42FB671F10071BB7F /* Project object */;
 }
