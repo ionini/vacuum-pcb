@@ -4,8 +4,12 @@ import Euclid
 /// Produces the top and bottom plate solids for a CircuitDocument.
 /// Coordinate system: model XY → world XY (mm). Z is the plate-normal axis.
 /// Silicone occupies z ∈ [-siliconeThickness/2, +siliconeThickness/2].
-/// Top plate sits above the silicone; bottom plate sits below.
-/// Channels are grooves cut into each plate's silicone-facing inner face.
+/// Top plate sits above the silicone, bottom plate below.
+///
+/// Channels run as round bores through the *midline* of each plate (not as open
+/// grooves on the silicone face). Transistor pins (gate / source / drain) connect
+/// the channel network to the silicone face via vertical drop bores. Edge ports
+/// enter horizontally at the midline.
 enum PlateBuilder {
 
     struct Output {
@@ -17,54 +21,75 @@ enum PlateBuilder {
         let m = doc.manufacturing
         let outline = doc.physical.boardOutline
 
-        let topInnerZ = m.siliconeThickness / 2
-        let bottomInnerZ = -m.siliconeThickness / 2
+        let topInnerZ = m.siliconeThickness / 2                  // top plate's silicone-facing face
+        let bottomInnerZ = -m.siliconeThickness / 2              // bottom plate's silicone-facing face
+        let topMidZ = topInnerZ + m.plateThickness / 2           // channel midline, top
+        let bottomMidZ = bottomInnerZ - m.plateThickness / 2     // channel midline, bottom
 
         var top = plateBase(outline: outline, thickness: m.plateThickness,
                             innerZ: topInnerZ, side: .top)
         var bottom = plateBase(outline: outline, thickness: m.plateThickness,
                                innerZ: bottomInnerZ, side: .bottom)
 
-        // Collect cutters per plate, union, then subtract once. Far cheaper than N
-        // sequential subtractions, each of which rebuilds the plate's BSP tree.
         var topCutters: [Mesh] = []
         var bottomCutters: [Mesh] = []
 
-        // User-drawn channels.
+        // 1. Channels — round bores swept along Manhattan polylines at the plate midline.
         for route in doc.physical.routes {
             for segment in route.segments {
-                let channel = channelMeshForSegment(
+                let midZ: Double
+                switch segment.layer {
+                case .top:    midZ = topMidZ
+                case .bottom: midZ = bottomMidZ
+                }
+                let channel = channelMesh(
                     waypoints: segment.waypoints.map(\.position),
-                    layer: segment.layer, m: m,
-                    topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ
+                    radius: m.channelDiameter / 2,
+                    midZ: midZ
                 )
                 appendCutter(channel, layer: segment.layer, top: &topCutters, bottom: &bottomCutters)
             }
         }
 
+        // 2. Component features.
         let componentsById = Dictionary(uniqueKeysWithValues: doc.logic.components.map { ($0.id, $0) })
 
         for placement in doc.physical.placements {
             guard let component = componentsById[placement.componentId] else { continue }
             switch component.kind {
             case .transistor:
+                // Dimple on the placement's plate.
                 let dimple = dimpleMesh(
                     at: placement.position, layer: placement.layer, m: m,
                     topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ
                 )
                 appendCutter(dimple, layer: placement.layer, top: &topCutters, bottom: &bottomCutters)
 
+                // Drop bore at each transistor pin, connecting channel midline to the
+                // silicone face on whichever plate the pin sits on.
+                let footprint = component.footprint
+                for pin in footprint.pins {
+                    let pinLayer = placement.resolvedLayer(of: pin)
+                    let pinWorld = placement.worldPosition(of: pin)
+                    let drop = dropBoreMesh(
+                        at: pinWorld, onLayer: pinLayer, radius: m.channelDiameter / 2,
+                        topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ,
+                        topMidZ: topMidZ, bottomMidZ: bottomMidZ
+                    )
+                    appendCutter(drop, layer: pinLayer, top: &topCutters, bottom: &bottomCutters)
+                }
+
             case .resistor:
                 let serpentine = resistorSerpentineMesh(
                     placement: placement, component: component, m: m,
-                    topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ
+                    topMidZ: topMidZ, bottomMidZ: bottomMidZ
                 )
                 appendCutter(serpentine, layer: placement.layer, top: &topCutters, bottom: &bottomCutters)
 
             case .port, .vacuumSource, .atmVent:
                 let bore = portBoreMesh(
                     placement: placement, outline: outline, m: m,
-                    topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ
+                    topMidZ: topMidZ, bottomMidZ: bottomMidZ
                 )
                 appendCutter(bore, layer: placement.layer, top: &topCutters, bottom: &bottomCutters)
             }
@@ -77,10 +102,9 @@ enum PlateBuilder {
             bottom = bottom.subtracting(Mesh.union(bottomCutters))
         }
 
-        // Euclid's BSP CSG can leave hairline cracks where a curved surface meets a flat
-        // one (cylinder bore through a plate face, etc.). makeWatertight inserts missing
-        // edge vertices without altering shape, and slicers refuse to print non-manifold
-        // STLs. Skip the fix-up if already watertight to save work.
+        // Euclid's BSP CSG can leave hairline cracks where curved surfaces meet flat ones.
+        // makeWatertight inserts missing edge vertices without altering shape, and slicers
+        // refuse to print non-manifold STLs.
         if !top.isWatertight { top = top.makeWatertight() }
         if !bottom.isWatertight { bottom = bottom.makeWatertight() }
 
@@ -103,53 +127,77 @@ enum PlateBuilder {
 
     // MARK: - Channels
 
-    /// Carves a Manhattan polyline into a plate as a groove open on the silicone face.
-    /// Each pair of waypoints contributes an axis-aligned cuboid; small "joiner" squares
-    /// at each waypoint ensure corner meets are watertight without manual fillets.
-    private static func channelMeshForSegment(
-        waypoints: [Point], layer: Layer, m: ManufacturingConstants,
-        topInnerZ: Double, bottomInnerZ: Double
+    /// Builds a round-bore channel running through `midZ` along a Manhattan polyline.
+    /// Each waypoint contributes a sphere joint; each segment contributes a cylinder
+    /// laid along its axis. Spheres + cylinders fully overlap so the union is closed.
+    private static func channelMesh(
+        waypoints: [Point], radius: Double, midZ: Double
     ) -> Mesh {
         guard waypoints.count >= 2 else { return Mesh.empty }
-
-        let w = m.channelWidth
-        let h = m.channelHeight
-        let eps = 0.05
-
-        let zLo: Double, zHi: Double
-        switch layer {
-        case .top:    zLo = topInnerZ - eps;    zHi = topInnerZ + h
-        case .bottom: zLo = bottomInnerZ - h;   zHi = bottomInnerZ + eps
-        }
-        let cz = (zLo + zHi) / 2
-        let sz = zHi - zLo
 
         var parts: [Mesh] = []
         parts.reserveCapacity(2 * waypoints.count)
 
+        // Spheres at each waypoint so junctions are watertight at any branching angle.
+        for p in waypoints {
+            parts.append(Mesh.sphere(radius: radius, slices: 16)
+                .translated(by: Vector(p.x, p.y, midZ)))
+        }
+
+        // Cylinders between adjacent waypoints. Euclid's cylinder is Y-oriented;
+        // roll(90°) lays it along X, identity leaves it along Y. Length is the
+        // Euclidean span so this also handles diagonal segments cleanly.
         for i in 0..<(waypoints.count - 1) {
             let a = waypoints[i]
             let b = waypoints[i + 1]
             let dx = b.x - a.x
             let dy = b.y - a.y
-            let cx: Double, cy: Double, sx: Double, sy: Double
+            let len = (dx * dx + dy * dy).squareRoot()
+            guard len > 0 else { continue }
+
+            let cx = (a.x + b.x) / 2
+            let cy = (a.y + b.y) / 2
+            let cyl = Mesh.cylinder(radius: radius, height: len, slices: 16)
+            let oriented: Mesh
             if abs(dx) >= abs(dy) {
-                cx = (a.x + b.x) / 2
-                cy = a.y
-                sx = max(abs(dx), w)
-                sy = w
+                // Horizontal: lay cylinder along X.
+                oriented = cyl.rotated(by: Euclid.Rotation.roll(.halfPi))
             } else {
-                cx = a.x
-                cy = (a.y + b.y) / 2
-                sx = w
-                sy = max(abs(dy), w)
+                // Vertical (in XY): keep along Y.
+                oriented = cyl
             }
-            parts.append(Mesh.cube(center: Vector(cx, cy, cz), size: Vector(sx, sy, sz)))
-        }
-        for p in waypoints {
-            parts.append(Mesh.cube(center: Vector(p.x, p.y, cz), size: Vector(w, w, sz)))
+            parts.append(oriented.translated(by: Vector(cx, cy, midZ)))
         }
         return Mesh.union(parts)
+    }
+
+    // MARK: - Drop bores
+
+    /// Vertical cylinder connecting a pin location at channel-midline depth to the
+    /// silicone-facing surface of `layer`. Overshoots both ends by a small epsilon
+    /// so CSG cuts are clean rather than tangent.
+    private static func dropBoreMesh(
+        at p: Point, onLayer layer: Layer, radius: Double,
+        topInnerZ: Double, bottomInnerZ: Double,
+        topMidZ: Double, bottomMidZ: Double
+    ) -> Mesh {
+        let eps = 0.05
+        let zLo: Double, zHi: Double
+        switch layer {
+        case .top:
+            // Drop from midline DOWN to silicone face.
+            zLo = topInnerZ - eps
+            zHi = topMidZ + eps
+        case .bottom:
+            // Drop from midline UP to silicone face.
+            zLo = bottomMidZ - eps
+            zHi = bottomInnerZ + eps
+        }
+        let len = zHi - zLo
+        let cz = (zLo + zHi) / 2
+        return Mesh.cylinder(radius: radius, height: len, slices: 16)
+            .rotated(by: Euclid.Rotation.pitch(.halfPi))
+            .translated(by: Vector(p.x, p.y, cz))
     }
 
     // MARK: - Dimples
@@ -159,15 +207,13 @@ enum PlateBuilder {
         topInnerZ: Double, bottomInnerZ: Double
     ) -> Mesh {
         let radius = m.dimpleDiameter / 2
-        let depth = m.dimpleDepth
         let eps = 0.05
-        let h = depth + eps
+        let h = m.dimpleDepth + eps
         let cz: Double
         switch layer {
-        case .top:    cz = topInnerZ - eps + h / 2     // spans innerZ - eps … innerZ + depth
-        case .bottom: cz = bottomInnerZ + eps - h / 2  // spans innerZ - depth … innerZ + eps
+        case .top:    cz = topInnerZ - eps + h / 2     // spans innerZ-eps … innerZ+depth
+        case .bottom: cz = bottomInnerZ + eps - h / 2  // spans innerZ-depth … innerZ+eps
         }
-        // Euclid cylinder is oriented along Y. Rotate to Z-axis.
         return Mesh.cylinder(radius: radius, height: h, slices: 32)
             .rotated(by: Euclid.Rotation.pitch(.halfPi))
             .translated(by: Vector(center.x, center.y, cz))
@@ -177,19 +223,18 @@ enum PlateBuilder {
 
     private static func resistorSerpentineMesh(
         placement: Placement, component: Component, m: ManufacturingConstants,
-        topInnerZ: Double, bottomInnerZ: Double
+        topMidZ: Double, bottomMidZ: Double
     ) -> Mesh {
         let footprint = component.footprint
         let halfLen: Double
-        let halfWid: Double
         switch component.resistorSize ?? .medium {
         case .small:  halfLen = 3.0
         case .medium: halfLen = 5.0
         case .large:  halfLen = 8.0
         }
-        halfWid = footprint.boundingRect.size.height / 2
+        let halfWid = footprint.boundingRect.size.height / 2
 
-        // Single Z-bend zigzag in component-local frame, traveling pin "1" → pin "2".
+        // Single Z-bend zigzag in component-local frame, pin "1" → pin "2".
         let y = halfWid * 0.6
         let local: [Point] = [
             Point(x: -halfLen, y: 0),
@@ -200,24 +245,18 @@ enum PlateBuilder {
             Point(x:  halfLen, y: 0),
         ]
         let world = local.map { transformLocalToWorld($0, placement: placement) }
-        return channelMeshForSegment(
-            waypoints: world, layer: placement.layer, m: m,
-            topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ
-        )
+        let midZ = placement.layer == .top ? topMidZ : bottomMidZ
+        return channelMesh(waypoints: world, radius: m.channelDiameter / 2, midZ: midZ)
     }
 
     // MARK: - Edge ports
 
     private static func portBoreMesh(
         placement: Placement, outline: Rect, m: ManufacturingConstants,
-        topInnerZ: Double, bottomInnerZ: Double
+        topMidZ: Double, bottomMidZ: Double
     ) -> Mesh {
         let radius = m.portBoreDiameter / 2
-        let bz: Double
-        switch placement.layer {
-        case .top:    bz = topInnerZ + m.channelHeight / 2
-        case .bottom: bz = bottomInnerZ - m.channelHeight / 2
-        }
+        let bz = placement.layer == .top ? topMidZ : bottomMidZ
         let p = placement.position
         let eps = 0.5  // overshoot past board edge so the bore breaks the surface cleanly
 

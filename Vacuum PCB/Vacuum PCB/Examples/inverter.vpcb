@@ -99,18 +99,14 @@
     ]
   },
   "manufacturing" : {
-    "bendFilletRadius" : 0.75,
-    "channelHeight" : 1.5,
-    "channelWidth" : 1.5,
+    "channelDiameter" : 1.5,
     "dimpleDepth" : 1,
     "dimpleDiameter" : 5,
     "gridPitch" : 1,
     "minChannelSpacing" : 1.5,
-    "plateThickness" : 4,
+    "plateThickness" : 5,
     "portBoreDiameter" : 1.6,
-    "siliconeThickness" : 0.5,
-    "sourceDrainHoleDiameter" : 1.5,
-    "sourceDrainHolePitch" : 3
+    "siliconeThickness" : 0.5
   },
   "physical" : {
     "boardOutline" : {
