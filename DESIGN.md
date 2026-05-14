@@ -184,34 +184,51 @@ relative to the placement layer.
 
 ---
 
-## Where we are: iter 1 done
+## Where we are: iters 1 + 2 done
 
-Iter 1 = "hardcoded inverter → watertight STL, end-to-end."
+### Iter 1 — hardcoded inverter → watertight STL ✓
 
-✅ Codable model layer with JSON round-trip
-✅ Five-primitive footprint catalog (pin offsets, exclusion zones, bounding rects)
-✅ `Examples.inverter()` factory + bundled `inverter.vpcb`
-✅ DEBUG self-test at launch: JSON round-trip + CAD smoke test + watertight assertion
-✅ Euclid as SwiftPM dependency
-✅ `PlateBuilder` produces top + bottom plate meshes:
-   - plate cube
-   - subtract round midline channels (cylinder + sphere waypoints)
-   - subtract dimples (cylindrical cup in silicone face)
-   - subtract drop bores at each transistor pin
-   - subtract resistor serpentines (Z-bend zigzag swept as round channel)
-   - subtract edge port bores (horizontal cylinders exiting board edges)
-   - heal with `makeWatertight()`
-✅ STL export via SwiftUI `.fileExporter` writing merged top+bottom binary STL
-✅ SceneKit 3D preview (translucent plates, orbit camera)
-✅ DocumentGroup app shell with `.vpcb` UTI, File menu, Export STL toolbar item
-✅ Sandbox entitlement for user-selected file read-write
+The smallest possible vertical slice: hardcoded inverter document → CAD
+pipeline → watertight binary STL. Validated as printable on the user's bench
+(inverter physically works).
 
-**Verified at launch:** JSON round-trip byte-identical; CAD produces 2594-triangle
-watertight STL in ~0.7 s; every edge shared by exactly 2 polygons.
+### Iter 2 — schematic editor ✓
 
-**Not verified yet (requires the physical step):** that the printed STL actually
-prints clean on the user's printer, that the silicone seals reliably against
-the printed surface, and that the inverter inverts on the bench.
+Interactive circuit construction. Click palette buttons to spawn components,
+drag to position, click pin → pin to create / extend nets. The schematic is
+view-only metadata — `SchematicLayout.positions` — independent of physical
+placement.
+
+✅ `SchematicLayout` added to the document (component → schematic XY positions)
+✅ `LogicGraph.nextLabel(for:portDirection:)` auto-labels (`Q1`, `R1`, `VAC`,
+   `VENT`, `IN1`, `OUT1`, …)
+✅ Tabbed UI: **Schematic** / **Physical** (iter-3 placeholder) / **3D Preview**
+✅ Component palette (6 buttons: Q, R, VAC, ATM, IN, OUT)
+✅ Stylized per-kind symbols with labels (rounded shapes, color-coded)
+✅ Drag-to-move components on the canvas
+✅ Pin handles with expanded hit zones
+✅ Click-pin → click-pin net interaction with rubber-band line
+   - both pins free: create net
+   - one on net: extend
+   - on different nets: merge
+   - on same net: remove the second pin from the net (auto-deletes net <2 pins)
+   - same pin twice: cancel
+✅ Rat's nest net rendering (line from each pin to net's first pin)
+✅ Selection + delete (component cascades to placements + net memberships;
+   net cascades to routes)
+✅ Double-click label inline rename
+✅ Inspector strip with per-selection controls (resistor S/M/L picker, port
+   input/output toggle, net label field)
+✅ "Physical layout out of date" hint when netlist diverges from placements
+
+**Known iter-2 gaps (not blockers, deferred):**
+- **No net selection from the canvas.** Net lines are non-hit-testable, so
+  nets can be edited only by removing all their pins. Net renaming via the
+  inspector requires reaching a selected state we can't get into yet. Fix in
+  iter 3 or by adding a sidebar net list.
+- **No multi-select, no marquee, no copy/paste.**
+- **The 3D Preview lags the schematic.** Any schematic-only addition (no
+  placement yet) doesn't appear in CAD. The sidebar surfaces this.
 
 ---
 
@@ -221,24 +238,6 @@ The MVP α target ("design one inverter, click button, export STL, print, verify
 is technically reachable today: open the app, File → New (auto-seeded with the
 inverter), Export STL. But you can't *edit* anything — the document is read-only
 in practice. Everything below this point is about turning it into a real tool.
-
-### Iter 2 — Schematic editor
-
-The first real interactive layer. Without this, every new circuit means a code edit.
-
-- Component palette panel (drag the 5 primitives onto the schematic canvas).
-- Drop placement → adds a `Component` to `logic.components` and an entry in
-  the physical view's parking lot.
-- Net drawing: click pin → drag → click pin (or empty space, then another pin)
-  → creates or extends a `Net`.
-- Selection: click components / nets / pins; multi-select; delete.
-- Inline rename for components and nets.
-- Auto-label on creation (`Q1`, `Q2`, `R1`, `R2`, `n1`, `n2`, …).
-- Schematic rendering: simple stylized symbols for each primitive (NMOS-shape
-  for transistor, zigzag for resistor, edge stub for ports/rails).
-- Schematic-side layout is **logical only** — positions are for readability
-  and don't affect the physical view. We can save schematic positions in the
-  document or recompute them with a graph layout pass.
 
 ### Iter 3 — Physical editor
 
