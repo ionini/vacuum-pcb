@@ -17,35 +17,10 @@ struct Vacuum_PCBApp: App {
     }
 
     var body: some Scene {
-        DocumentGroup(newDocument: VPCBDocument()) { config in
+        // Until iter 2 adds a schematic editor, a blank document is useless — File → New
+        // seeds the inverter sample so the preview has something to render immediately.
+        DocumentGroup(newDocument: VPCBDocument(circuit: Examples.inverter())) { config in
             DocumentView(document: config.$document)
         }
-        .commands {
-            CommandGroup(after: .newItem) {
-                Button("New Inverter Sample") {
-                    openInverterSample()
-                }
-                .keyboardShortcut("i", modifiers: [.command, .shift])
-            }
-        }
-    }
-
-    /// Convenience: drop the bundled inverter into a temp file and open it via the
-    /// document controller, since DocumentGroup doesn't let us seed a new document
-    /// directly. The user can then Save As to wherever they want.
-    private func openInverterSample() {
-        let doc = Examples.inverter()
-        guard let data = try? doc.encoded() else { return }
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("Inverter Sample.vpcb")
-        do {
-            try data.write(to: url, options: [.atomic])
-        } catch {
-            NSLog("Could not write inverter sample: \(error)")
-            return
-        }
-        NSDocumentController.shared.openDocument(
-            withContentsOf: url, display: true
-        ) { _, _, _ in }
     }
 }
