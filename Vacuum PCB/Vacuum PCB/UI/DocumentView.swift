@@ -69,11 +69,7 @@ struct DocumentView: View {
                 netDrawState: $netDrawState
             )
         case .physical:
-            ContentUnavailableView {
-                Label("Physical editor coming in iter 3", systemImage: "wrench.and.screwdriver")
-            } description: {
-                Text("Component placement and tube routing will live here.")
-            }
+            PhysicalView(document: $document)
         case .preview:
             previewView
         }

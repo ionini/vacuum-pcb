@@ -184,7 +184,7 @@ relative to the placement layer.
 
 ---
 
-## Where we are: iters 1 + 2 done
+## Where we are: iters 1 + 2 + 3 done
 
 ### Iter 1 — hardcoded inverter → watertight STL ✓
 
@@ -230,6 +230,43 @@ placement.
 - **The 3D Preview lags the schematic.** Any schematic-only addition (no
   placement yet) doesn't appear in CAD. The sidebar surfaces this.
 
+### Iter 3 — physical editor ✓
+
+Closing the loop: components and nets created in the schematic become real
+mm-coordinate placements + Manhattan-routed channel polylines that drive the
+CAD pipeline.
+
+✅ `CanvasTransform` (mm↔points, pan offset, zoom, grid snap, fit-to-view)
+✅ `PhysicalCanvasView` — grid, board outline, layer-colored fits-to-view
+✅ Per-kind footprint glyphs (transistor dimple + s/d holes, resistor serpentine
+   outline, port arrow pointing toward exit edge)
+✅ Parking lot sidebar listing unplaced components; drag-onto-canvas creates
+   a `Placement` at grid-snapped drop point (default layer: bottom for transistors,
+   top for everything else)
+✅ Drag-to-move placements with grid snap
+✅ Layer visibility toggle (Both / Top / Bottom)
+✅ Routing tool: click pin → click waypoints / pin → commit segment with
+   auto-elbow Manhattan path
+✅ Routing-layer picker; routing layer auto-set to pin's resolved layer on
+   route start (so the channel actually connects)
+✅ Live routing preview overlay (dashed line)
+✅ Route rendering as Manhattan polylines, layer-colored, channel-width strokes
+✅ R cycles rotation, F flips placement layer, ⌫ deletes selected
+   placement / route segment, ESC cancels routing
+✅ Status text in bottom strip explains current state + applicable keys
+
+**Known iter-3 gaps (not blockers, deferred):**
+- **Route segments aren't hit-testable from the canvas.** `RoutesOverlay` is
+  `.allowsHitTesting(false)` because per-segment Path views would be heavy.
+  Selecting/deleting individual segments requires either making the Canvas
+  hit-aware (compute distance from click) or adding a sidebar route list.
+  ⌫-on-placement still works; segments can be removed by deleting their
+  endpoints.
+- **No pan/zoom.** Fit-to-view at window size; resize the window for more room.
+- **No DRC.** Drawing a route between pins on different nets is currently
+  silently allowed; iter 4 will catch this and other rule violations.
+- **No through-vias** — iter-3 routing is single-layer per segment. v2 feature.
+
 ---
 
 ## What's still missing for the user to actually use this tool
@@ -238,19 +275,6 @@ The MVP α target ("design one inverter, click button, export STL, print, verify
 is technically reachable today: open the app, File → New (auto-seeded with the
 inverter), Export STL. But you can't *edit* anything — the document is read-only
 in practice. Everything below this point is about turning it into a real tool.
-
-### Iter 3 — Physical editor
-
-Where the interesting routing/placement work happens.
-
-- Parking lot for unplaced components on the side of the canvas.
-- Drag from parking lot onto the board → creates a `Placement`.
-- Rotate (R), flip layer (F), delete (⌫).
-- Manhattan polyline tool: click pin → click waypoints → click pin to commit.
-  Snap to grid. 90° bends only.
-- Per-segment layer assignment; layer toggle button to draw on top vs bottom.
-- Selection, drag-to-modify, segment delete with rejoin.
-- Live visual feedback: highlight the net you're routing, show endpoints.
 
 ### Iter 4 — DRC
 

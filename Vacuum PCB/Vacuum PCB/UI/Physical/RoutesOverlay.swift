@@ -1,0 +1,110 @@
+import SwiftUI
+
+/// Renders all routes on the physical canvas as Manhattan polylines colored by
+/// layer. Selected segments draw wider in the accent color. Layer visibility is
+/// applied: segments on a hidden layer are omitted.
+struct RoutesOverlay: View {
+    let document: CircuitDocument
+    let transform: CanvasTransform
+    let visible: LayerVisibility
+    let selection: PhysicalSelection
+    let manufacturing: ManufacturingConstants
+
+    var body: some View {
+        Canvas { ctx, _ in
+            let channelStroke = max(1.5, manufacturing.channelDiameter * transform.ptsPerMm * 0.85)
+            for route in document.physical.routes {
+                for (segIdx, segment) in route.segments.enumerated() {
+                    guard visible.contains(segment.layer) else { continue }
+                    let isSelected = selectionMatches(netId: route.netId, segmentIndex: segIdx)
+                    let pts = segment.waypoints.map { transform.toScreen($0.position) }
+                    guard pts.count >= 2 else { continue }
+                    var path = Path()
+                    path.move(to: pts[0])
+                    for p in pts.dropFirst() { path.addLine(to: p) }
+
+                    let color: Color = isSelected ? .accentColor : layerColor(segment.layer)
+                    ctx.stroke(
+                        path,
+                        with: .color(color.opacity(isSelected ? 0.9 : 0.55)),
+                        style: StrokeStyle(
+                            lineWidth: isSelected ? channelStroke + 2 : channelStroke,
+                            lineCap: .round,
+                            lineJoin: .round
+                        )
+                    )
+                }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func selectionMatches(netId: UUID, segmentIndex: Int) -> Bool {
+        if case let .routeSegment(n, i) = selection { return n == netId && i == segmentIndex }
+        return false
+    }
+
+    private func layerColor(_ layer: Layer) -> Color {
+        switch layer {
+        case .top: return .blue
+        case .bottom: return .teal
+        }
+    }
+}
+
+/// Overlay showing the in-progress polyline while the user is routing.
+/// Drawn as a dashed line; previews the auto-elbow that will be inserted on next click.
+struct RoutingPreviewOverlay: View {
+    let routingState: RoutingState
+    let mouseLocation: CGPoint
+    let transform: CanvasTransform
+    let gridMm: Double
+
+    var body: some View {
+        Canvas { ctx, _ in
+            guard case let .routing(_, waypoints, layer) = routingState,
+                  let lastWorld = waypoints.last else { return }
+            let mouseWorld = transform.snap(transform.toWorld(mouseLocation), grid: gridMm)
+            let elbow = elbowPoint(from: lastWorld, to: mouseWorld)
+
+            let a = transform.toScreen(lastWorld)
+            let b = transform.toScreen(elbow)
+            let c = transform.toScreen(mouseWorld)
+            var path = Path()
+            path.move(to: a)
+            path.addLine(to: b)
+            path.addLine(to: c)
+            ctx.stroke(
+                path,
+                with: .color(routeColor(layer)),
+                style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round, dash: [5, 3])
+            )
+
+            // Already-committed in-progress waypoints
+            let committed = waypoints.map(transform.toScreen)
+            guard committed.count >= 2 else { return }
+            var committedPath = Path()
+            committedPath.move(to: committed[0])
+            for p in committed.dropFirst() { committedPath.addLine(to: p) }
+            ctx.stroke(committedPath,
+                       with: .color(routeColor(layer).opacity(0.9)),
+                       style: StrokeStyle(lineWidth: 2.0, lineCap: .round, lineJoin: .round))
+        }
+        .allowsHitTesting(false)
+    }
+
+    /// Manhattan elbow from `a` to `b`: pick whichever axis to travel first by
+    /// preferring the longer one (keeps the elbow visually away from the cursor).
+    private func elbowPoint(from a: Point, to b: Point) -> Point {
+        let dx = abs(b.x - a.x)
+        let dy = abs(b.y - a.y)
+        return dx >= dy ? Point(x: b.x, y: a.y) : Point(x: a.x, y: b.y)
+    }
+
+    private func routeColor(_ layer: Layer) -> Color {
+        switch layer {
+        case .top: return .blue
+        case .bottom: return .teal
+        }
+    }
+}
