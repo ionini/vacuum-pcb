@@ -6,17 +6,20 @@ struct CircuitDocument: Codable, Hashable {
     var schemaVersion: Int
     var manufacturing: ManufacturingConstants
     var logic: LogicGraph
+    var schematic: SchematicLayout
     var physical: PhysicalLayout
 
     init(
         schemaVersion: Int = Self.currentSchemaVersion,
         manufacturing: ManufacturingConstants = .defaults,
         logic: LogicGraph,
+        schematic: SchematicLayout = .empty,
         physical: PhysicalLayout
     ) {
         self.schemaVersion = schemaVersion
         self.manufacturing = manufacturing
         self.logic = logic
+        self.schematic = schematic
         self.physical = physical
     }
 }

@@ -112,9 +112,21 @@ enum Examples {
             )
         )
 
+        // Schematic positions: standard inverter layout — VAC top-rail, VENT bottom-rail,
+        // input on the left, output on the right, transistor + pull-up in the middle.
+        let schematic = SchematicLayout(positions: [
+            SchematicPosition(componentId: vacId,  position: Point(x: 260, y:  60)),
+            SchematicPosition(componentId: rId,    position: Point(x: 260, y: 140)),
+            SchematicPosition(componentId: qId,    position: Point(x: 260, y: 240)),
+            SchematicPosition(componentId: ventId, position: Point(x: 180, y: 320)),
+            SchematicPosition(componentId: inId,   position: Point(x: 120, y: 240)),
+            SchematicPosition(componentId: outId,  position: Point(x: 400, y: 240)),
+        ])
+
         return CircuitDocument(
             manufacturing: .defaults,
             logic: logic,
+            schematic: schematic,
             physical: physical
         )
     }
