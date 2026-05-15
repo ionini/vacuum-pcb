@@ -9,6 +9,7 @@ struct PhysicalCanvasView: View {
     @Binding var routingState: RoutingState
     @Binding var visible: LayerVisibility
     @Binding var routingLayer: Layer
+    @Binding var routingError: String?
 
     @State private var transform: CanvasTransform = .default
     @State private var mouseLocation: CGPoint = .zero
@@ -526,10 +527,23 @@ struct PhysicalCanvasView: View {
             routingLayer = pinLayer
             routingState = .routing(netId: net.id, waypoints: [world], layer: pinLayer)
             selection = .none
+            routingError = nil
 
         case let .routing(netId, wps, layer):
             // Same pin clicked again with only one waypoint → cancel
             if let first = wps.first, approximatelyEqual(first, world), wps.count == 1 {
+                routingState = .idle
+                return
+            }
+            // Reject if the second pin isn't on the same net as the first.
+            // The physical layer is a projection of the schematic netlist —
+            // it must never silently merge two electrically distinct nets.
+            let pin2Ref = PinRef(componentId: componentId, pinKey: pinKey)
+            let pin2Net = document.circuit.logic.nets.first(where: { $0.pins.contains(pin2Ref) })
+            guard let pin2Net, pin2Net.id == netId else {
+                routingError = pin2Net == nil
+                    ? "That pin is not on any net — can't connect."
+                    : "Pin is on a different net — connections must stay within a single net."
                 routingState = .idle
                 return
             }

@@ -10,6 +10,7 @@ struct PhysicalView: View {
     @State private var routingState: RoutingState = .idle
     @State private var visible: LayerVisibility = .both
     @State private var routingLayer: Layer = .top
+    @State private var routingError: String?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -26,7 +27,8 @@ struct PhysicalView: View {
                     selection: $selection,
                     routingState: $routingState,
                     visible: $visible,
-                    routingLayer: $routingLayer
+                    routingLayer: $routingLayer,
+                    routingError: $routingError
                 )
                 Divider()
                 bottomStrip
@@ -64,9 +66,16 @@ struct PhysicalView: View {
 
             Spacer()
 
-            statusText
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if let routingError {
+                Text(routingError)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+            } else {
+                statusText
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

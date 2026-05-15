@@ -129,16 +129,46 @@ struct DocumentView: View {
             if isBuilding {
                 ProgressView("Rebuilding…").controlSize(.small)
             }
-            if needsPhysicalUpdate {
-                Text("Physical layout out of date — open Physical tab (iter 3) to update placements / routes.")
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-                    .padding(.top, 4)
-            }
+            drcSection
             Spacer()
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// DRC summary: how many nets are clean, how many have routing issues,
+    /// and the first few issues in human-readable form. Updates live as the
+    /// document changes — this whole view rebuilds on every circuit change.
+    @ViewBuilder private var drcSection: some View {
+        let issues = DRC.check(document.circuit)
+        let netsWithIssues = Set(issues.map(\.netId)).count
+        let totalNets = document.circuit.logic.nets.count
+        Divider()
+        if totalNets == 0 {
+            Text("No nets defined")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else if issues.isEmpty {
+            Label("All \(totalNets) nets routed", systemImage: "checkmark.circle.fill")
+                .font(.caption)
+                .foregroundStyle(.green)
+        } else {
+            Label("\(netsWithIssues) of \(totalNets) nets have issues",
+                  systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.orange)
+            ForEach(issues.prefix(6)) { issue in
+                Text("• \(issue.summary)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            if issues.count > 6 {
+                Text("… and \(issues.count - 6) more")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
     }
 
     private func stat(_ name: String, _ value: Int) -> some View {
@@ -146,18 +176,6 @@ struct DocumentView: View {
     }
 
     private func format(_ d: Double) -> String { String(format: "%.1f", d) }
-
-    /// The 3D preview is driven by the physical layout, but the schematic editor
-    /// can add components/nets that aren't yet placed/routed. Surface a hint.
-    private var needsPhysicalUpdate: Bool {
-        let placedIds = Set(document.circuit.physical.placements.map(\.componentId))
-        let allIds = Set(document.circuit.logic.components.map(\.id))
-        if !allIds.isSubset(of: placedIds) { return true }
-        let netIds = Set(document.circuit.logic.nets.map(\.id))
-        let routedIds = Set(document.circuit.physical.routes.map(\.netId))
-        if !netIds.isSubset(of: routedIds) { return true }
-        return false
-    }
 
     // MARK: - Export
 
