@@ -28,6 +28,7 @@ struct DocumentView: View {
     enum ExportAction {
         case saveSTL
         case openInBambuStudio
+        case openInFlowSimulator
     }
 
     enum Tab: Hashable { case schematic, physical, preview }
@@ -50,6 +51,8 @@ struct DocumentView: View {
                     Button("Save STL file…") { triggerExport(.saveSTL) }
                     Button("Open in Bambu Studio") { triggerExport(.openInBambuStudio) }
                         .disabled(!bambuStudioInstalled)
+                    Button("Open in Flow Simulator") { triggerExport(.openInFlowSimulator) }
+                        .disabled(!flowSimulatorInstalled)
                 } label: {
                     Label(previewDirty ? "Build & Export…" : "Export…",
                           systemImage: "square.and.arrow.up")
@@ -268,19 +271,76 @@ struct DocumentView: View {
             showExporter = true
         case .openInBambuStudio:
             openInBambuStudio()
+        case .openInFlowSimulator:
+            openInFlowSimulator()
         }
     }
 
     private static let bambuStudioBundleID = "com.bambulab.bambu-studio"
+    private static let flowSimulatorBundleID = "com.ionini.Flow-Simulator"
 
     private var bambuStudioInstalled: Bool {
         NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.bambuStudioBundleID) != nil
+    }
+
+    private var flowSimulatorInstalled: Bool { flowSimulatorAppURL != nil }
+
+    /// Locates a *macOS* Flow Simulator build. NSWorkspace.urlForApplication
+    /// can return an iOS simulator / device variant when the Xcode project
+    /// is multi-platform (Launch Services indexes every bundle ID match),
+    /// and trying to launch one of those with a `.usdz` fails with
+    /// "cannot be opened with file …". `urlsForApplications` returns the
+    /// full list so we can filter to the macOS bundle.
+    ///
+    /// Useful for dev workflow too — works even when the only Flow
+    /// Simulator on disk is the DerivedData Debug build.
+    private var flowSimulatorAppURL: URL? {
+        let candidates = NSWorkspace.shared.urlsForApplications(
+            withBundleIdentifier: Self.flowSimulatorBundleID
+        )
+        let macURLs = candidates.filter { url in
+            // iOS variants live under Build/Products/{Debug,Release}-iphone*.
+            // The macOS variant has no platform suffix.
+            !url.path.contains("-iphonesimulator")
+            && !url.path.contains("-iphoneos")
+            && !url.path.contains("-appletvos")
+        }
+        guard !macURLs.isEmpty else { return nil }
+        // Prefer the most recently modified — the user's current dev build.
+        let fm = FileManager.default
+        return macURLs.max { a, b in
+            let aDate = (try? fm.attributesOfItem(atPath: a.path)[.modificationDate] as? Date) ?? .distantPast
+            let bDate = (try? fm.attributesOfItem(atPath: b.path)[.modificationDate] as? Date) ?? .distantPast
+            return aDate < bDate
+        }
     }
 
     /// Writes the current built plates as an STL into the per-session
     /// temporary directory, then asks Bambu Studio to open the file. Slicers
     /// happily handle multi-solid STLs, so top + bottom go out as one mesh
     /// (same as the Save panel path).
+    /// Writes the simulator-flavoured USDZ (named FluidVolume / inlet / outlet
+    /// / gate / blocker bodies) to the sandbox temp dir and asks NSWorkspace
+    /// to open it with Flow Simulator. Bodies only exist in this export —
+    /// the regular STL pipeline and 3D preview ignore them.
+    private func openInFlowSimulator() {
+        guard let flowURL = flowSimulatorAppURL else { return }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(stlFilename).usdz")
+        do {
+            try SimulatorExporter.exportUSDZ(document.circuit, to: url)
+        } catch {
+            NSLog("vpcb: failed to write USDZ for Flow Simulator: \(error)")
+            return
+        }
+        let config = NSWorkspace.OpenConfiguration()
+        NSWorkspace.shared.open([url], withApplicationAt: flowURL, configuration: config) { _, error in
+            if let error {
+                NSLog("vpcb: NSWorkspace.open(Flow Simulator) failed: \(error)")
+            }
+        }
+    }
+
     private func openInBambuStudio() {
         guard let built else { return }
         guard let bambuURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.bambuStudioBundleID) else {
