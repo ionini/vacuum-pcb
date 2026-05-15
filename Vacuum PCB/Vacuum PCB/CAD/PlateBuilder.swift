@@ -15,6 +15,11 @@ enum PlateBuilder {
     struct Output {
         let topPlate: Mesh
         let bottomPlate: Mesh
+        /// Union of every channel / drop bore / dimple / serpentine / port bore
+        /// that was subtracted from the top plate. Used by the 3D preview's
+        /// "features only" mode to show the routing solids without the plate.
+        let topFeatures: Mesh
+        let bottomFeatures: Mesh
     }
 
     static func build(_ doc: CircuitDocument) -> Output {
@@ -95,12 +100,14 @@ enum PlateBuilder {
             }
         }
 
-        if !topCutters.isEmpty {
-            top = top.subtracting(Mesh.union(topCutters))
-        }
-        if !bottomCutters.isEmpty {
-            bottom = bottom.subtracting(Mesh.union(bottomCutters))
-        }
+        // Union the cutter sets once and reuse: the subtractions consume the
+        // same union the preview's features-only mode renders, so we avoid
+        // building it twice.
+        let topFeatures = topCutters.isEmpty ? Mesh.empty : Mesh.union(topCutters)
+        let bottomFeatures = bottomCutters.isEmpty ? Mesh.empty : Mesh.union(bottomCutters)
+
+        if !topCutters.isEmpty    { top = top.subtracting(topFeatures) }
+        if !bottomCutters.isEmpty { bottom = bottom.subtracting(bottomFeatures) }
 
         // Euclid's BSP CSG can leave hairline cracks where curved surfaces meet flat ones.
         // makeWatertight inserts missing edge vertices without altering shape, and slicers
@@ -108,7 +115,10 @@ enum PlateBuilder {
         if !top.isWatertight { top = top.makeWatertight() }
         if !bottom.isWatertight { bottom = bottom.makeWatertight() }
 
-        return Output(topPlate: top, bottomPlate: bottom)
+        return Output(
+            topPlate: top, bottomPlate: bottom,
+            topFeatures: topFeatures, bottomFeatures: bottomFeatures
+        )
     }
 
     // MARK: - Plate base

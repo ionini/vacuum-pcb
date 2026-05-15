@@ -2,27 +2,47 @@ import SwiftUI
 import SceneKit
 import Euclid
 
+/// What to show in the 3D preview. `bodyOnly` is the printable view; the other
+/// two modes peel the plates back to expose the routing solids.
+enum PreviewDisplayMode: String, CaseIterable, Hashable {
+    case bodyOnly
+    case both
+    case featuresOnly
+
+    var label: String {
+        switch self {
+        case .bodyOnly:     return "Body"
+        case .both:         return "Both"
+        case .featuresOnly: return "Channels"
+        }
+    }
+}
+
 /// SceneKit-backed 3D preview of the two plates.
 ///
-/// Built once with `makeNSView`; `updateNSView` only swaps the plate geometries
-/// on existing nodes so orbit / zoom state survives document edits. Camera is
-/// orthographic and seeded at the standard iso angle (looking down the +X+Y+Z
-/// octant toward origin, with Z as visual up).
+/// Built once with `makeNSView`; `updateNSView` only swaps geometries on the
+/// existing nodes so orbit / zoom state survives document edits. Camera is
+/// orthographic and seeded at the standard iso angle (Z-up, viewed from the
+/// +X / -Y / +Z octant).
 ///
 /// Camera control mirrors the flow_simulator setup: the controller's pivot is
-/// pinned to the model's centroid instead of letting SceneKit recompute it
-/// from the bounding box, which would drift as geometry changes. Orbit uses
-/// angle-mapping with inertia for a smoother feel than the default trackball.
+/// pinned to the model centroid instead of letting SceneKit recompute it from
+/// the bounding box, which would drift as geometry changes.
 struct Scene3DView: NSViewRepresentable {
     var top: Mesh
     var bottom: Mesh
+    var topFeatures: Mesh
+    var bottomFeatures: Mesh
     var boardOutline: Rect
+    var displayMode: PreviewDisplayMode
 
     final class Coordinator {
         let scene = SCNScene()
         let modelRoot = SCNNode()
         let topNode = SCNNode()
         let bottomNode = SCNNode()
+        let topFeaturesNode = SCNNode()
+        let bottomFeaturesNode = SCNNode()
         let camera = SCNCamera()
         let cameraNode = SCNNode()
         var lastOutline: Rect?
@@ -39,18 +59,12 @@ struct Scene3DView: NSViewRepresentable {
         view.allowsCameraControl = true
         view.autoenablesDefaultLighting = false
 
-        // Model root holds both plates and absorbs the centering translation
-        // that puts the board centroid at world origin. Doing the centering on
-        // a parent node (instead of mutating mesh transforms) keeps Euclid
-        // meshes in their authored world coordinates.
         c.scene.rootNode.addChildNode(c.modelRoot)
         c.modelRoot.addChildNode(c.topNode)
         c.modelRoot.addChildNode(c.bottomNode)
+        c.modelRoot.addChildNode(c.topFeaturesNode)
+        c.modelRoot.addChildNode(c.bottomFeaturesNode)
 
-        // Orthographic + iso vantage. Z is the plate-normal axis in our
-        // coordinate system, so up = (0,0,1) and the camera sits in the
-        // +X / -Y / +Z octant — same dimetric angle as flow_simulator's
-        // (0, 60, 60), just re-axised because our up is Z.
         c.camera.usesOrthographicProjection = true
         c.camera.zNear = 0.01
         c.camera.zFar = 10_000
@@ -61,6 +75,7 @@ struct Scene3DView: NSViewRepresentable {
 
         addLights(to: c.scene)
         applyGeometries(coordinator: c)
+        applyDisplayMode(coordinator: c)
         applyFraming(coordinator: c, animated: false)
         configureCameraController(view.defaultCameraController, target: SCNVector3Zero)
 
@@ -70,10 +85,7 @@ struct Scene3DView: NSViewRepresentable {
     func updateNSView(_ view: SCNView, context: Context) {
         let c = context.coordinator
         applyGeometries(coordinator: c)
-        // Re-frame only when the board outline actually changed — otherwise
-        // every document edit would yank the user's orbit back to the seeded
-        // iso angle. ortho scale is reapplied alongside the recenter because
-        // both depend on board size.
+        applyDisplayMode(coordinator: c)
         if c.lastOutline != boardOutline {
             applyFraming(coordinator: c, animated: true)
         }
@@ -82,11 +94,13 @@ struct Scene3DView: NSViewRepresentable {
     // MARK: - Geometry
 
     private func applyGeometries(coordinator c: Coordinator) {
-        c.topNode.geometry = scnGeometry(for: top, color: .systemBlue)
-        c.bottomNode.geometry = scnGeometry(for: bottom, color: .systemTeal)
+        c.topNode.geometry = plateGeometry(for: top, color: .systemBlue)
+        c.bottomNode.geometry = plateGeometry(for: bottom, color: .systemTeal)
+        c.topFeaturesNode.geometry = featuresGeometry(for: topFeatures, color: .systemBlue)
+        c.bottomFeaturesNode.geometry = featuresGeometry(for: bottomFeatures, color: .systemTeal)
     }
 
-    private func scnGeometry(for mesh: Mesh, color: NSColor) -> SCNGeometry {
+    private func plateGeometry(for mesh: Mesh, color: NSColor) -> SCNGeometry {
         let geometry = SCNGeometry(mesh)
         let material = SCNMaterial()
         material.diffuse.contents = color.withAlphaComponent(0.55)
@@ -97,13 +111,46 @@ struct Scene3DView: NSViewRepresentable {
         return geometry
     }
 
+    /// Feature solids are rendered opaque and slightly emissive so they pop
+    /// against the translucent plate body in `both` mode and read clearly on
+    /// their own in `featuresOnly`. Color tracks layer to match the schematic
+    /// and physical canvas conventions.
+    private func featuresGeometry(for mesh: Mesh, color: NSColor) -> SCNGeometry {
+        let geometry = SCNGeometry(mesh)
+        let material = SCNMaterial()
+        material.diffuse.contents = color
+        material.emission.contents = color.withAlphaComponent(0.15)
+        material.isDoubleSided = false
+        material.lightingModel = .blinn
+        geometry.materials = [material]
+        return geometry
+    }
+
+    private func applyDisplayMode(coordinator c: Coordinator) {
+        switch displayMode {
+        case .bodyOnly:
+            c.topNode.isHidden = false
+            c.bottomNode.isHidden = false
+            c.topFeaturesNode.isHidden = true
+            c.bottomFeaturesNode.isHidden = true
+        case .both:
+            c.topNode.isHidden = false
+            c.bottomNode.isHidden = false
+            c.topFeaturesNode.isHidden = false
+            c.bottomFeaturesNode.isHidden = false
+        case .featuresOnly:
+            c.topNode.isHidden = true
+            c.bottomNode.isHidden = true
+            c.topFeaturesNode.isHidden = false
+            c.bottomFeaturesNode.isHidden = false
+        }
+    }
+
     // MARK: - Framing
 
     private func applyFraming(coordinator c: Coordinator, animated: Bool) {
         let cx = boardOutline.origin.x + boardOutline.size.width / 2
         let cy = boardOutline.origin.y + boardOutline.size.height / 2
-        // Center the model so orbit (which pivots around world origin) feels
-        // natural. Z stays at 0 because the silicone plane already sits there.
         let translate = SCNAction.move(to: SCNVector3(-cx, -cy, 0),
                                        duration: animated ? 0.25 : 0)
         c.modelRoot.runAction(translate)
@@ -111,14 +158,8 @@ struct Scene3DView: NSViewRepresentable {
         let diag = (boardOutline.size.width * boardOutline.size.width
                   + boardOutline.size.height * boardOutline.size.height).squareRoot()
         let viewSpan = max(diag, 20)
-
-        // Orthographic scale = half-height of the visible world in mm. Pad a bit
-        // so the plates aren't kissing the viewport edge.
         c.camera.orthographicScale = viewSpan * 0.65
 
-        // Camera position: pull back along the iso ray by enough distance that
-        // zFar comfortably contains the plates. The actual distance doesn't
-        // matter for an ortho camera (no perspective), but it does for clipping.
         let dist = viewSpan * 2.5
         let p = dist / sqrt(3.0)
         c.cameraNode.position = SCNVector3(p, -p, p)
@@ -142,8 +183,6 @@ struct Scene3DView: NSViewRepresentable {
         ambient.light?.intensity = 300
         scene.rootNode.addChildNode(ambient)
 
-        // A single directional key from above-front so plate edges read with
-        // some shading even though materials are mostly translucent.
         let key = SCNNode()
         key.light = SCNLight()
         key.light?.type = .directional

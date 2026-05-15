@@ -12,6 +12,7 @@ struct DocumentView: View {
     @State private var isBuilding = false
     @State private var showExporter = false
     @State private var buildToken = 0
+    @State private var previewMode: PreviewDisplayMode = .bodyOnly
 
     enum Tab: Hashable { case schematic, physical, preview }
 
@@ -75,11 +76,17 @@ struct DocumentView: View {
 
     @ViewBuilder private var previewView: some View {
         if let built {
-            Scene3DView(
-                top: built.topPlate,
-                bottom: built.bottomPlate,
-                boardOutline: document.circuit.physical.boardOutline
-            )
+            ZStack(alignment: .top) {
+                Scene3DView(
+                    top: built.topPlate,
+                    bottom: built.bottomPlate,
+                    topFeatures: built.topFeatures,
+                    bottomFeatures: built.bottomFeatures,
+                    boardOutline: document.circuit.physical.boardOutline,
+                    displayMode: previewMode
+                )
+                previewModePicker
+            }
         } else if isBuilding {
             ProgressView("Building plates…")
         } else {
@@ -89,6 +96,20 @@ struct DocumentView: View {
                 description: Text("Add components and route nets, then come back here.")
             )
         }
+    }
+
+    private var previewModePicker: some View {
+        Picker("Show", selection: $previewMode) {
+            ForEach(PreviewDisplayMode.allCases, id: \.self) { mode in
+                Text(mode.label).tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
+        .padding(8)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .padding(.top, 8)
     }
 
     // MARK: - Sidebar
