@@ -13,25 +13,54 @@ struct PlacementBodyView: View {
     let isSelected: Bool
 
     var body: some View {
-        Canvas { ctx, _ in
-            let origin = transform.toScreen(placement.position)
-            ctx.translateBy(x: origin.x, y: origin.y)
-            ctx.rotate(by: .radians(placement.rotation.radians))
+        ZStack(alignment: .topLeading) {
+            Canvas { ctx, _ in
+                let origin = transform.toScreen(placement.position)
+                ctx.translateBy(x: origin.x, y: origin.y)
+                ctx.rotate(by: .radians(placement.rotation.radians))
 
-            switch component.kind {
-            case .transistor:
-                drawTransistor(in: &ctx)
-            case .resistor:
-                drawResistor(in: &ctx)
-            case .vacuumSource, .atmVent, .port:
-                drawPort(in: &ctx)
-            }
+                switch component.kind {
+                case .transistor:
+                    drawTransistor(in: &ctx)
+                case .resistor:
+                    drawResistor(in: &ctx)
+                case .vacuumSource, .atmVent, .port:
+                    drawPort(in: &ctx)
+                }
 
-            if isSelected {
-                drawSelectionRing(in: &ctx)
+                if isSelected {
+                    drawSelectionRing(in: &ctx)
+                }
             }
+            // Component label as a separate SwiftUI Text so it stays upright
+            // regardless of placement rotation and uses crisp text rendering
+            // rather than canvas-rasterised glyphs.
+            label
         }
         .allowsHitTesting(false)
+    }
+
+    private var label: some View {
+        let screen = transform.toScreen(placement.position)
+        let offset = labelOffset()
+        return Text(component.label)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 3)
+            .padding(.vertical, 1)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 3))
+            .fixedSize()
+            .position(x: screen.x, y: screen.y + offset)
+    }
+
+    /// Pixels below the placement centre to drop the label. We use the *max*
+    /// of width/height so rotation can't push the body into the label —
+    /// rotating r90/r270 swaps width and height but the longer side has
+    /// already been accounted for.
+    private func labelOffset() -> CGFloat {
+        let bounds = component.footprint.boundingRect
+        let half = max(bounds.size.width, bounds.size.height) / 2
+        return CGFloat(half) * transform.ptsPerMm + 10
     }
 
     // MARK: - Per-kind glyphs

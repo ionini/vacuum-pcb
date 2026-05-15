@@ -8,19 +8,29 @@ struct ParkingLotView: View {
     /// Called when the user begins a drag for a given component.
     /// The receiver uses NSItemProvider to ship the component id.
     let providerForComponent: (UUID) -> NSItemProvider
+    /// Drops every unplaced component onto the board in a default grid.
+    /// Useful for big imported schematics where one-by-one drags would be
+    /// tedious — the user can then rearrange + start routing.
+    let onPlaceAll: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Parking lot")
-                .font(.caption.bold())
-                .foregroundStyle(.secondary)
-                .padding(.top, 4)
+            HStack {
+                Text("Parking lot")
+                    .font(.caption.bold())
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.top, 4)
 
             if unplaced.isEmpty {
                 Text("All placed")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             } else {
+                Button("Place all", action: onPlaceAll)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
                 ScrollView {
                     VStack(spacing: 4) {
                         ForEach(unplaced) { c in

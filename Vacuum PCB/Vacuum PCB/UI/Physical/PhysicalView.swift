@@ -11,6 +11,7 @@ struct PhysicalView: View {
     @State private var visible: LayerVisibility = .both
     @State private var routingLayer: Layer = .top
     @State private var routingError: String?
+    @State private var showRatsnest: Bool = true
 
     var body: some View {
         HStack(spacing: 0) {
@@ -18,7 +19,8 @@ struct PhysicalView: View {
                 document: document.circuit,
                 providerForComponent: { id in
                     NSItemProvider(object: id.uuidString as NSString)
-                }
+                },
+                onPlaceAll: placeAllUnplaced
             )
             Divider()
             VStack(spacing: 0) {
@@ -28,7 +30,8 @@ struct PhysicalView: View {
                     routingState: $routingState,
                     visible: $visible,
                     routingLayer: $routingLayer,
-                    routingError: $routingError
+                    routingError: $routingError,
+                    showRatsnest: showRatsnest
                 )
                 Divider()
                 bottomStrip
@@ -64,6 +67,13 @@ struct PhysicalView: View {
                                             startsAtVia: startsAtVia)
                 }
             }
+
+            Divider().frame(height: 18)
+
+            Toggle("Ratsnest", isOn: $showRatsnest)
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .font(.caption)
 
             Divider().frame(height: 18)
 
@@ -107,6 +117,42 @@ struct PhysicalView: View {
                 .multilineTextAlignment(.trailing)
                 .frame(width: 48)
             Text("mm").font(.caption2).foregroundStyle(.tertiary)
+        }
+    }
+
+    /// Drop every parking-lot component onto the board in a coarse grid,
+    /// snapped to the manufacturing gridPitch. Transistors default to the
+    /// bottom plate (matches the parking-lot drop semantics); everything
+    /// else lands on top. The grid origin sits a few mm inside the board
+    /// outline so the user can pan their eye across and start routing.
+    private func placeAllUnplaced() {
+        let placed = Set(document.circuit.physical.placements.map(\.componentId))
+        let unplaced = document.circuit.logic.components.filter { !placed.contains($0.id) }
+        guard !unplaced.isEmpty else { return }
+
+        let outline = document.circuit.physical.boardOutline
+        let grid = document.circuit.manufacturing.gridPitch
+        let margin: Double = 3
+        let spacing: Double = 8
+        let usableW = max(spacing, outline.size.width - 2 * margin)
+        let cols = max(1, Int(usableW / spacing) + 1)
+
+        func snap(_ v: Double) -> Double { (v / grid).rounded() * grid }
+
+        for (i, component) in unplaced.enumerated() {
+            let col = i % cols
+            let row = i / cols
+            let x = snap(outline.origin.x + margin + Double(col) * spacing)
+            let y = snap(outline.origin.y + margin + Double(row) * spacing)
+            let defaultLayer: Layer = (component.kind == .transistor) ? .bottom : .top
+            document.circuit.physical.placements.append(
+                Placement(
+                    componentId: component.id,
+                    position: Point(x: x, y: y),
+                    rotation: .r0,
+                    layer: defaultLayer
+                )
+            )
         }
     }
 

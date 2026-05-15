@@ -10,6 +10,7 @@ struct PhysicalCanvasView: View {
     @Binding var visible: LayerVisibility
     @Binding var routingLayer: Layer
     @Binding var routingError: String?
+    var showRatsnest: Bool
 
     @State private var transform: CanvasTransform = .default
     @State private var mouseLocation: CGPoint = .zero
@@ -80,6 +81,9 @@ struct PhysicalCanvasView: View {
                     visible: visible,
                     manufacturing: manufacturing
                 )
+                if showRatsnest {
+                    RatsnestOverlay(document: document.circuit, transform: transform)
+                }
 
                 placementBodies
                 placementHitTargets
