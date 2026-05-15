@@ -13,6 +13,10 @@ struct DocumentView: View {
     @State private var showExporter = false
     @State private var buildToken = 0
     @State private var previewMode: PreviewDisplayMode = .bodyOnly
+    /// Set whenever the document mutates; cleared after a successful build.
+    /// We don't rebuild eagerly any more — CSG is expensive and the user is
+    /// almost never on the 3D Preview tab while editing.
+    @State private var previewDirty: Bool = true
 
     enum Tab: Hashable { case schematic, physical, preview }
 
@@ -30,14 +34,25 @@ struct DocumentView: View {
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button { showExporter = true } label: {
-                    Label("Export STL…", systemImage: "square.and.arrow.up")
+                Button {
+                    // Make sure we're exporting an up-to-date mesh. If the
+                    // preview is dirty, kick off a build first; the user can
+                    // press Export again once it's ready.
+                    if previewDirty { rebuild() } else { showExporter = true }
+                } label: {
+                    Label(previewDirty ? "Build & Export…" : "Export STL…",
+                          systemImage: "square.and.arrow.up")
                 }
-                .disabled(built == nil)
+                .disabled(isBuilding)
             }
         }
-        .onAppear { rebuild() }
-        .onChange(of: document.circuit) { _, _ in rebuild() }
+        .onChange(of: document.circuit) { _, _ in previewDirty = true }
+        .onChange(of: selectedTab) { _, newTab in
+            // Only rebuild the CSG when the user actually wants to look at
+            // the 3D preview. Avoids the per-edit Euclid CSG storm that was
+            // producing the "batch:" log spam and pinning a core.
+            if newTab == .preview, previewDirty, !isBuilding { rebuild() }
+        }
         .fileExporter(
             isPresented: $showExporter,
             document: stlExport,
@@ -75,7 +90,9 @@ struct DocumentView: View {
     }
 
     @ViewBuilder private var previewView: some View {
-        if let built {
+        if isBuilding {
+            ProgressView("Building plates…")
+        } else if let built {
             ZStack(alignment: .top) {
                 Scene3DView(
                     top: built.topPlate,
@@ -87,8 +104,6 @@ struct DocumentView: View {
                 )
                 previewModePicker
             }
-        } else if isBuilding {
-            ProgressView("Building plates…")
         } else {
             ContentUnavailableView(
                 "No geometry built",
@@ -202,6 +217,7 @@ struct DocumentView: View {
                 guard token == buildToken else { return }
                 self.built = result
                 self.isBuilding = false
+                self.previewDirty = false
             }
         }
     }
