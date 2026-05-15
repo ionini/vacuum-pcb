@@ -5,8 +5,10 @@ import UniformTypeIdentifiers
 /// the middle, layer/tool strip across the bottom of the canvas area.
 struct PhysicalView: View {
     @Binding var document: VPCBDocument
+    /// Lifted to DocumentView so the sidebar's DRC list can drive
+    /// highlight-on-click.
+    @Binding var selection: PhysicalSelection
 
-    @State private var selection: PhysicalSelection = .none
     @State private var routingState: RoutingState = .idle
     @State private var visible: LayerVisibility = .both
     @State private var routingLayer: Layer = .top

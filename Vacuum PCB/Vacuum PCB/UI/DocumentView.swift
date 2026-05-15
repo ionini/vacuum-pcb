@@ -7,6 +7,9 @@ struct DocumentView: View {
     @State private var selectedTab: Tab = .schematic
     @State private var selection: SchematicSelection = .none
     @State private var netDrawState: NetDrawState = .idle
+    /// Lifted up from PhysicalView so the sidebar's DRC list can jump to a
+    /// selection (and switch tabs) when the user clicks an issue.
+    @State private var physicalSelection: PhysicalSelection = .none
 
     @State private var built: PlateBuilder.Output?
     @State private var isBuilding = false
@@ -98,7 +101,7 @@ struct DocumentView: View {
                 netDrawState: $netDrawState
             )
         case .physical:
-            PhysicalView(document: $document)
+            PhysicalView(document: $document, selection: $physicalSelection)
         case .preview:
             previewView
         }
@@ -197,10 +200,17 @@ struct DocumentView: View {
                 .font(.caption)
                 .foregroundStyle(.orange)
             ForEach(issues.prefix(6)) { issue in
-                Text("• \(issue.summary)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                Button {
+                    focusIssue(issue)
+                } label: {
+                    Text("• \(issue.summary)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
             }
             if issues.count > 6 {
                 Text("… and \(issues.count - 6) more")
@@ -208,6 +218,16 @@ struct DocumentView: View {
                     .foregroundStyle(.tertiary)
             }
         }
+    }
+
+    /// Click handler for an issue row in the sidebar. Asks DRC for the
+    /// physical-canvas selection that highlights the offending element(s),
+    /// applies it, and jumps to the physical tab if we have a target there.
+    private func focusIssue(_ issue: DRC.Issue) {
+        guard let sel = DRC.physicalSelection(for: issue, in: document.circuit)
+        else { return }
+        physicalSelection = sel
+        selectedTab = .physical
     }
 
     private func stat(_ name: String, _ value: Int) -> some View {

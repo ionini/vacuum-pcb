@@ -38,14 +38,23 @@ enum DRC {
             /// A via waypoint exists at this XY but has no matching via
             /// waypoint on the *opposite* layer's segment of the same net —
             /// the cross-plate bore is one-sided and won't connect through
-            /// the silicone.
-            case orphanVia(Point)
+            /// the silicone. `segmentIndex` is the index of the segment
+            /// inside the issue's net that carries this orphan via, so the
+            /// sidebar can select it on click.
+            case orphanVia(position: Point, segmentIndex: Int)
             /// Two route segments belonging to different nets pass within
             /// `manufacturing.minChannelSpacing` of each other on the same
-            /// plate. CSG would either fuse them into a short or leave the
-            /// plate material between them too thin to print. The `gap` is
-            /// the measured min distance (0 for crossings).
-            case channelClearance(otherNetLabel: String, layer: Layer, gap: Double)
+            /// plate. `selfSegmentIndex` is into the issue's net; the other
+            /// pair (`otherNetId`, `otherSegmentIndex`) identifies the
+            /// foreign segment so we can highlight both on click.
+            case channelClearance(
+                otherNetId: UUID,
+                otherNetLabel: String,
+                layer: Layer,
+                gap: Double,
+                selfSegmentIndex: Int,
+                otherSegmentIndex: Int
+            )
         }
 
         var summary: String {
@@ -56,13 +65,48 @@ enum DRC {
                 return "\(netLabel): no route drawn"
             case .disconnectedPin(let p):
                 return "\(netLabel): pin \(p.pinKey) unreached by routing"
-            case .orphanVia(let p):
+            case .orphanVia(let p, _):
                 return "\(netLabel): unpaired via at (\(String(format: "%.1f", p.x)), \(String(format: "%.1f", p.y)))"
-            case .channelClearance(let other, let layer, let gap):
+            case .channelClearance(_, let other, let layer, let gap, _, _):
                 let where_ = layer == .top ? "top" : "bottom"
                 let gapTxt = gap < 0.01 ? "crossing" : "\(String(format: "%.2f", gap)) mm gap"
                 return "\(netLabel) ↔ \(other) on \(where_): \(gapTxt)"
             }
+        }
+    }
+
+    /// Maps an issue to a physical-canvas selection that highlights the
+    /// offending elements. Returns `nil` if the issue can't be visualised
+    /// on the physical view (e.g. an unplaced pin).
+    static func physicalSelection(for issue: Issue, in document: CircuitDocument) -> PhysicalSelection? {
+        switch issue.kind {
+        case .unplacedPin:
+            return nil
+        case .noRouteDrawn:
+            guard let net = document.logic.nets.first(where: { $0.id == issue.netId }) else { return nil }
+            var sel = PhysicalSelection()
+            sel.placements = Set(net.pins.map(\.componentId))
+            return sel.isEmpty ? nil : sel
+        case .disconnectedPin(let pinRef):
+            return .placement(pinRef.componentId)
+        case .orphanVia(_, let segIdx):
+            return .routeSegment(netId: issue.netId, segmentIndex: segIdx)
+        case let .channelClearance(otherNetId, _, _, _, selfSeg, otherSeg):
+            // Highlight the self-segment as the focused route, and the
+            // foreign segment via its waypoints so both halves of the
+            // collision are visible at once. The placements set is left
+            // empty so the user's attention stays on the routes.
+            var sel = PhysicalSelection.routeSegment(netId: issue.netId, segmentIndex: selfSeg)
+            if let otherRoute = document.physical.routes.first(where: { $0.netId == otherNetId }),
+               otherSeg < otherRoute.segments.count {
+                let segment = otherRoute.segments[otherSeg]
+                for wIdx in 0..<segment.waypoints.count {
+                    sel.waypoints.insert(RouteWaypointAddress(
+                        netId: otherNetId, segmentIndex: otherSeg, waypointIndex: wIdx
+                    ))
+                }
+            }
+            return sel
         }
     }
 
@@ -166,23 +210,34 @@ enum DRC {
     }
 
     private static func viaIssues(net: Net, segments: [Segment]) -> [Issue] {
-        // Group via waypoints by approximate XY → which layers carry one.
-        var groups: [(position: Point, layers: Set<Layer>)] = []
+        // Group via waypoints by approximate XY → which layers carry one,
+        // and which segments hold them so the sidebar can select the
+        // offending segment when the user clicks the issue.
+        struct Group {
+            var position: Point
+            var layers: Set<Layer>
+            var segmentIndices: [Int]
+        }
+        var groups: [Group] = []
         let eps = 0.05
-        for segment in segments {
+        for (segIdx, segment) in segments.enumerated() {
             for wp in segment.waypoints where wp.kind == .via {
                 if let i = groups.firstIndex(where: {
                     abs($0.position.x - wp.position.x) < eps && abs($0.position.y - wp.position.y) < eps
                 }) {
                     groups[i].layers.insert(segment.layer)
+                    groups[i].segmentIndices.append(segIdx)
                 } else {
-                    groups.append((wp.position, [segment.layer]))
+                    groups.append(Group(position: wp.position, layers: [segment.layer], segmentIndices: [segIdx]))
                 }
             }
         }
         return groups
             .filter { $0.layers.count < 2 }
-            .map { Issue(netId: net.id, netLabel: net.label, kind: .orphanVia($0.position)) }
+            .map { Issue(
+                netId: net.id, netLabel: net.label,
+                kind: .orphanVia(position: $0.position, segmentIndex: $0.segmentIndices.first ?? 0)
+            ) }
     }
 
     // MARK: - Channel clearance
@@ -190,6 +245,7 @@ enum DRC {
     private struct ChannelEdge {
         let netId: UUID
         let netLabel: String
+        let segmentIndex: Int
         let layer: Layer
         let a: Point
         let b: Point
@@ -226,7 +282,12 @@ enum DRC {
                 reported.insert(key)
                 issues.append(Issue(
                     netId: a.netId, netLabel: a.netLabel,
-                    kind: .channelClearance(otherNetLabel: b.netLabel, layer: a.layer, gap: d)
+                    kind: .channelClearance(
+                        otherNetId: b.netId, otherNetLabel: b.netLabel,
+                        layer: a.layer, gap: d,
+                        selfSegmentIndex: a.segmentIndex,
+                        otherSegmentIndex: b.segmentIndex
+                    )
                 ))
             }
         }
@@ -238,12 +299,13 @@ enum DRC {
         var out: [ChannelEdge] = []
         for route in doc.physical.routes {
             let label = labels[route.netId] ?? "?"
-            for seg in route.segments {
+            for (segIdx, seg) in route.segments.enumerated() {
                 let pts = seg.waypoints
                 guard pts.count >= 2 else { continue }
                 for i in 0..<(pts.count - 1) {
                     out.append(ChannelEdge(
-                        netId: route.netId, netLabel: label, layer: seg.layer,
+                        netId: route.netId, netLabel: label,
+                        segmentIndex: segIdx, layer: seg.layer,
                         a: pts[i].position, b: pts[i + 1].position
                     ))
                 }
