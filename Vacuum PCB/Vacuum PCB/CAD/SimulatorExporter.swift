@@ -317,39 +317,37 @@ enum SimulatorExporter {
             .translated(by: Vector(placement.position.x, placement.position.y, cz))
     }
 
-    /// Closed-by-default slab between the two source/drain drop bores, on
-    /// the silicone face of the *opposite* plate from the dimple. Silicone
-    /// seals this region until the matching gate pulls it down.
+    /// Closed-by-default slab that bridges the two source/drain drop bores
+    /// across the silicone gap. Silicone seals it until the matching gate
+    /// pulls it open; once open, the slab volume connects bore A to bore B.
+    ///
+    /// The slab spans the full silicone gap in Z, with a small overhang into
+    /// both plates so that it reliably overlaps the bore tops in the
+    /// simulator's voxel grid (each bore terminates at its plate's
+    /// silicone-facing surface). In XY it covers both bores by at least one
+    /// full bore diameter past each pin centre — slimmer margins lose the
+    /// connection when the importer rounds to its cell size.
     private static func blockerBody(
         placement: Placement, footprint: Footprint, m: ManufacturingConstants,
         topInnerZ: Double, bottomInnerZ: Double
     ) -> Mesh {
-        // Pins "a" and "b" are the source/drain holes (relativeLayer: .opposite).
         guard let pinA = footprint.pin("a"), let pinB = footprint.pin("b") else { return .empty }
-        let oppLayer: Layer = placement.layer == .top ? .bottom : .top
-        let innerZ = oppLayer == .top ? topInnerZ : bottomInnerZ
-        let halfThickness = m.siliconeThickness / 2
-        // Slab sits centred on the opposite plate's silicone-facing surface
-        // and is the thickness of the silicone. Width: pin pitch + margin
-        // so it fully encompasses both drop bores. Height (y in the local
-        // frame): a hair wider than the bore so flow opens cleanly.
         let aWorld = placement.worldPosition(of: pinA)
         let bWorld = placement.worldPosition(of: pinB)
         let centerXY = Point(x: (aWorld.x + bWorld.x) / 2, y: (aWorld.y + bWorld.y) / 2)
         let pinPitch = ((aWorld.x - bWorld.x) * (aWorld.x - bWorld.x)
                       + (aWorld.y - bWorld.y) * (aWorld.y - bWorld.y)).squareRoot()
-        // Local rotation: align long axis with the pin a→b direction.
         let theta = atan2(bWorld.y - aWorld.y, bWorld.x - aWorld.x)
-        let length = pinPitch + m.channelDiameter // include the bore caps
-        let height = m.channelDiameter + 0.4
-        let thickness = m.siliconeThickness + 0.2
-        let box = Mesh.cube(center: .zero, size: Vector(length, height, thickness))
+
+        let boreOverlap = 0.3
+        let length = pinPitch + 2 * m.channelDiameter
+        let height = m.channelDiameter + 0.6
+        let thickness = m.siliconeThickness + 2 * boreOverlap
+        let centerZ = (topInnerZ + bottomInnerZ) / 2
+
+        return Mesh.cube(center: .zero, size: Vector(length, height, thickness))
             .rotated(by: Euclid.Rotation.yaw(.radians(theta)))
-            .translated(by: Vector(centerXY.x, centerXY.y, innerZ))
-        // Pull a tiny clipping by intersecting nothing — just return the
-        // slab. The simulator handles overlap with FluidVolume itself.
-        _ = halfThickness
-        return box
+            .translated(by: Vector(centerXY.x, centerXY.y, centerZ))
     }
 
     // MARK: - Misc
