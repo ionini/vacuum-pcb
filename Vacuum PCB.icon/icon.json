@@ -1,0 +1,33 @@
+{
+  "fill" : {
+    "automatic-gradient" : "extended-srgb:0.00000,0.53333,1.00000,1.00000"
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "image-name" : "742C23E1-1EC1-4DB1-B4E3-3B0BC6879643.png",
+          "name" : "742C23E1-1EC1-4DB1-B4E3-3B0BC6879643",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              0,
+              -16.809948591542934
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "squares" : "shared"
+  }
+}
