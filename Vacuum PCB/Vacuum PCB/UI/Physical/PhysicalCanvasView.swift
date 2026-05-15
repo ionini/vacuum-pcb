@@ -20,9 +20,19 @@ struct PhysicalCanvasView: View {
     /// body, pin handles, and hit target can render at the cursor without
     /// committing to the document on every gesture tick (which would kick
     /// off a DRC pass and 3D rebuild every frame).
+    ///
+    /// `withRoutes` (Cmd held at drag start) opts into rubber-band mode:
+    /// every route waypoint sitting on one of the placement's pins at drag
+    /// start gets dragged in tandem. `originalPosition` is captured so the
+    /// final delta is computed against the start position rather than the
+    /// possibly-already-mutated current `placement.position`. `attached`
+    /// stores the waypoint addresses to drag — empty in plain mode.
     struct DraggingPlacement: Equatable {
         let componentId: UUID
         var translation: CGSize
+        let withRoutes: Bool
+        let originalPosition: Point
+        let attached: Set<RouteWaypointAddress>
     }
 
     /// Live state for the selected segment's vertex drag. Held in-view so
@@ -61,7 +71,8 @@ struct PhysicalCanvasView: View {
                     visible: visible,
                     selection: selection,
                     manufacturing: manufacturing,
-                    dragOverride: dragOverride
+                    dragOverride: dragOverride,
+                    placementOverride: placementRouteOverride
                 )
                 ViasOverlay(
                     document: document.circuit,
@@ -223,9 +234,18 @@ struct PhysicalCanvasView: View {
         DragGesture(minimumDistance: 2, coordinateSpace: .global)
             .onChanged { value in
                 if draggingPlacement == nil {
+                    // Sample Cmd at drag start. Holding Cmd opts into
+                    // rubber-band mode where the connected route endpoints
+                    // follow the placement; plain drag leaves routes alone
+                    // (the standard PCB-CAD "Move" semantics, where routes
+                    // are deliberate enough that you re-route by hand).
+                    let withRoutes = NSEvent.modifierFlags.contains(.command)
                     draggingPlacement = DraggingPlacement(
                         componentId: placement.componentId,
-                        translation: value.translation
+                        translation: value.translation,
+                        withRoutes: withRoutes,
+                        originalPosition: placement.position,
+                        attached: withRoutes ? attachedWaypoints(for: placement) : []
                     )
                     selection = .placement(componentId: placement.componentId)
                     routingState = .idle
@@ -234,15 +254,73 @@ struct PhysicalCanvasView: View {
                 }
             }
             .onEnded { value in
-                let base = transform.toScreen(placement.position)
+                guard let drag = draggingPlacement else { return }
+                let base = transform.toScreen(drag.originalPosition)
                 let endWorld = transform.toWorld(
                     CGPoint(x: base.x + value.translation.width,
                             y: base.y + value.translation.height)
                 )
                 let snapped = transform.snap(endWorld, grid: grid)
-                movePlacement(placement.componentId, to: snapped)
+                let delta = Point(
+                    x: snapped.x - drag.originalPosition.x,
+                    y: snapped.y - drag.originalPosition.y
+                )
+                movePlacement(drag.componentId, to: snapped)
+                if drag.withRoutes {
+                    for addr in drag.attached {
+                        moveRouteWaypoint(addr, by: delta)
+                    }
+                }
                 draggingPlacement = nil
             }
+    }
+
+    /// Builds the override that RoutesOverlay reads during a Cmd-drag so the
+    /// connected routes visibly follow the cursor. Nil for plain drags and
+    /// when there's nothing attached.
+    private var placementRouteOverride: RoutesOverlay.PlacementRouteOverride? {
+        guard let drag = draggingPlacement, drag.withRoutes, !drag.attached.isEmpty
+        else { return nil }
+        let deltaWorld = Point(
+            x: drag.translation.width / transform.ptsPerMm,
+            y: drag.translation.height / transform.ptsPerMm
+        )
+        return RoutesOverlay.PlacementRouteOverride(delta: deltaWorld, attached: drag.attached)
+    }
+
+    /// Every waypoint sitting on one of this placement's pins, captured at
+    /// drag start so the document can be queried once instead of every
+    /// frame. Matching is positional (0.05 mm) which is the same tolerance
+    /// the DRC graph uses, so any pin-coincident waypoint is included —
+    /// including vias that happen to land on a pin.
+    private func attachedWaypoints(for placement: Placement) -> Set<RouteWaypointAddress> {
+        guard let component = component(for: placement.componentId) else { return [] }
+        let pinWorlds = component.footprint.pins.map { placement.worldPosition(of: $0) }
+        var result: Set<RouteWaypointAddress> = []
+        for route in document.circuit.physical.routes {
+            for (sIdx, segment) in route.segments.enumerated() {
+                for (wIdx, wp) in segment.waypoints.enumerated() {
+                    if pinWorlds.contains(where: {
+                        abs($0.x - wp.position.x) < 0.05 && abs($0.y - wp.position.y) < 0.05
+                    }) {
+                        result.insert(RouteWaypointAddress(
+                            netId: route.netId, segmentIndex: sIdx, waypointIndex: wIdx
+                        ))
+                    }
+                }
+            }
+        }
+        return result
+    }
+
+    private func moveRouteWaypoint(_ a: RouteWaypointAddress, by delta: Point) {
+        guard let rIdx = document.circuit.physical.routes.firstIndex(where: { $0.netId == a.netId }),
+              a.segmentIndex < document.circuit.physical.routes[rIdx].segments.count,
+              a.waypointIndex < document.circuit.physical.routes[rIdx].segments[a.segmentIndex].waypoints.count
+        else { return }
+        let current = document.circuit.physical.routes[rIdx].segments[a.segmentIndex].waypoints[a.waypointIndex].position
+        document.circuit.physical.routes[rIdx].segments[a.segmentIndex].waypoints[a.waypointIndex].position =
+            Point(x: current.x + delta.x, y: current.y + delta.y)
     }
 
     private func hitSize(for c: Component) -> CGSize {

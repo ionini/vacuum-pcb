@@ -13,12 +13,34 @@ struct RoutesOverlay: View {
     /// renders using `dragOverride.waypoints` instead of the document's stored
     /// waypoints, so the polyline previews live as the user drags a handle.
     var dragOverride: DragOverride?
+    /// In-progress placement drag with Cmd held: every waypoint listed in
+    /// `attached` is rendered with `delta` added to its stored position, so
+    /// the connected routes rubber-band along with the placement.
+    var placementOverride: PlacementRouteOverride?
 
     struct DragOverride: Equatable {
         let netId: UUID
         let segmentIndex: Int
         let waypoints: [Point]
     }
+
+    struct PlacementRouteOverride: Equatable {
+        let delta: Point
+        let attached: Set<RouteWaypointAddress>
+    }
+}
+
+/// Stable identity for a single waypoint inside the document: which net, which
+/// segment within that net's route, which waypoint within that segment. Used
+/// to drive partial overrides in route rendering (placement drag rubber-band)
+/// without copying full waypoint lists around.
+struct RouteWaypointAddress: Hashable {
+    let netId: UUID
+    let segmentIndex: Int
+    let waypointIndex: Int
+}
+
+extension RoutesOverlay {
 
     var body: some View {
         Canvas { ctx, _ in
@@ -27,7 +49,10 @@ struct RoutesOverlay: View {
                 for (segIdx, segment) in route.segments.enumerated() {
                     guard visible.contains(segment.layer) else { continue }
                     let isSelected = selectionMatches(netId: route.netId, segmentIndex: segIdx)
-                    let positions = waypoints(for: route.netId, segmentIndex: segIdx, fallback: segment.waypoints.map(\.position))
+                    let positions = waypoints(
+                        for: route.netId, segmentIndex: segIdx,
+                        fallback: segment.waypoints.map(\.position)
+                    )
                     let pts = positions.map { transform.toScreen($0) }
                     guard pts.count >= 2 else { continue }
                     var path = Path()
@@ -51,10 +76,19 @@ struct RoutesOverlay: View {
     }
 
     private func waypoints(for netId: UUID, segmentIndex: Int, fallback: [Point]) -> [Point] {
+        // Vertex-drag override wins outright; it provides a full polyline.
         if let o = dragOverride, o.netId == netId, o.segmentIndex == segmentIndex {
             return o.waypoints
         }
-        return fallback
+        // Otherwise, optionally offset individual waypoints flagged by the
+        // active placement drag (rubber-band).
+        guard let p = placementOverride, !p.attached.isEmpty else { return fallback }
+        return fallback.enumerated().map { i, point in
+            let key = RouteWaypointAddress(netId: netId, segmentIndex: segmentIndex, waypointIndex: i)
+            return p.attached.contains(key)
+                ? Point(x: point.x + p.delta.x, y: point.y + p.delta.y)
+                : point
+        }
     }
 
     private func selectionMatches(netId: UUID, segmentIndex: Int) -> Bool {
