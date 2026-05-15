@@ -239,6 +239,12 @@ struct PhysicalCanvasView: View {
                         .frame(width: size.width, height: size.height)
                         .position(pos)
                         .offset(dragOffset(for: placement.componentId))
+                        // Disable the whole hit target while the user is
+                        // routing — otherwise a waypoint tap that strays
+                        // into a placement's 40–60 pt halo cancels the
+                        // route. Pin handles stay active so clicking a pin
+                        // can still commit the route.
+                        .allowsHitTesting(!routingState.inProgress)
                         .gesture(placementDragGesture(placement))
                         .onTapGesture {
                             handlePlacementTap(componentId: placement.componentId)
