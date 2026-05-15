@@ -445,13 +445,14 @@ struct PhysicalCanvasView: View {
 
     private func hitSize(for c: Component) -> CGSize {
         // Footprint exclusion-rect dimensions in pts, padded so small parts
-        // (especially ports at ~3 mm) stay easy to grab even when zoomed in
-        // close to their actual size. 40 pt minimum keeps the cursor target
-        // comfortable for a trackpad without overlapping neighbouring parts
-        // on a typical board.
+        // stay easy to grab. The arrowhead glyph for ports / rails extends
+        // well past the pin anchor — and the tip is exactly what users aim
+        // at — so give those kinds a generous minimum target.
         let bounds = c.footprint.boundingRect
-        let w = max(40, bounds.size.width * transform.ptsPerMm + 12)
-        let h = max(40, bounds.size.height * transform.ptsPerMm + 12)
+        let isArrowLike: Bool = (c.kind == .port || c.kind == .vacuumSource || c.kind == .atmVent)
+        let minSize: Double = isArrowLike ? 60 : 40
+        let w = max(minSize, bounds.size.width * transform.ptsPerMm + 12)
+        let h = max(minSize, bounds.size.height * transform.ptsPerMm + 12)
         return CGSize(width: w, height: h)
     }
 
