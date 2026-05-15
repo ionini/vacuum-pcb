@@ -1,8 +1,13 @@
 import SwiftUI
 
-/// Renders nets as a "rat's nest" — for each net with N pins, draw N-1 straight
-/// lines from each non-anchor pin to the first pin. Not pretty; functional.
-/// Selected nets stroke wider in the accent color so clicking the line is easy.
+/// Renders nets as a star from a "preferred anchor" pin: every other pin draws
+/// one line to the anchor. Anchor picked by kind — port first (input/output),
+/// then a rail (vacuum source / atm vent), then the first pin if neither
+/// exists. This matches the mental model "everything connects to the port /
+/// rail" better than KiCad's MST, which can hop between physically-close
+/// component pins and obscure where a net actually terminates.
+///
+/// Selected nets stroke wider in the accent color.
 struct NetLinesView: View {
     let document: CircuitDocument
     let selection: SchematicSelection
@@ -11,14 +16,12 @@ struct NetLinesView: View {
         Canvas { ctx, _ in
             let positions = pinPositions()
             for net in document.logic.nets {
-                guard let anchor = net.pins.first else { continue }
-                guard let anchorPt = positions[anchor] else { continue }
                 let isSelected = selection.netId == net.id
-                for pin in net.pins.dropFirst() {
-                    guard let pt = positions[pin] else { continue }
+                let placed = net.pins.compactMap { ref in positions[ref].map { (ref, $0) } }
+                for (a, b) in starEdges(placed) {
                     var path = Path()
-                    path.move(to: anchorPt)
-                    path.addLine(to: pt)
+                    path.move(to: a)
+                    path.addLine(to: b)
                     ctx.stroke(
                         path,
                         with: .color(isSelected ? .accentColor : .secondary),
@@ -43,5 +46,31 @@ struct NetLinesView: View {
             }
         }
         return out
+    }
+
+    /// Star: pick an anchor pin, draw a line from it to every other pin.
+    private func starEdges(_ pins: [(PinRef, CGPoint)]) -> [(CGPoint, CGPoint)] {
+        guard pins.count >= 2 else { return [] }
+        let anchorIdx = preferredAnchor(in: pins)
+        let anchor = pins[anchorIdx].1
+        var edges: [(CGPoint, CGPoint)] = []
+        edges.reserveCapacity(pins.count - 1)
+        for (i, entry) in pins.enumerated() where i != anchorIdx {
+            edges.append((anchor, entry.1))
+        }
+        return edges
+    }
+
+    /// Anchor priority: port (input/output) > rail (vac/vent) > first pin.
+    /// Resolves once per net per redraw; nets are small (a handful of pins).
+    private func preferredAnchor(in pins: [(PinRef, CGPoint)]) -> Int {
+        func kind(of ref: PinRef) -> ComponentKind? {
+            document.logic.components.first(where: { $0.id == ref.componentId })?.kind
+        }
+        if let i = pins.firstIndex(where: { kind(of: $0.0) == .port }) { return i }
+        if let i = pins.firstIndex(where: {
+            let k = kind(of: $0.0); return k == .vacuumSource || k == .atmVent
+        }) { return i }
+        return 0
     }
 }
