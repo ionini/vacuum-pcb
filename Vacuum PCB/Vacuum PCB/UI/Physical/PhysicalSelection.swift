@@ -10,6 +10,16 @@ enum PhysicalSelection: Hashable {
         if case let .placement(id) = self { return id }
         return nil
     }
+
+    /// True when ⌫ has something to remove. Used to gate the hidden
+    /// keyboardShortcut(.delete) button — see SchematicSelection for the
+    /// rationale.
+    var isDeletable: Bool {
+        switch self {
+        case .placement, .routeSegment: return true
+        case .none:                     return false
+        }
+    }
 }
 
 /// State of the click-pin → click-waypoints → click-pin routing interaction.

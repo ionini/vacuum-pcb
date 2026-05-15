@@ -17,6 +17,17 @@ enum SchematicSelection: Hashable {
         if case let .net(id) = self { return id }
         return nil
     }
+
+    /// True when ⌫ has something to remove. Used to gate the canvas's hidden
+    /// keyboardShortcut(.delete) button so the shortcut only "fires" when
+    /// meaningful — otherwise we silently swallow the keystroke from contexts
+    /// like a focused TextField that should handle it itself.
+    var isDeletable: Bool {
+        switch self {
+        case .component, .net: return true
+        case .pin, .none:      return false
+        }
+    }
 }
 
 /// State machine for the click-pin → click-pin net-drawing interaction.

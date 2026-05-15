@@ -9,7 +9,6 @@ struct SchematicCanvasView: View {
     @Binding var netDrawState: NetDrawState
 
     @State private var mouseLocation: CGPoint = .zero
-    @FocusState private var canvasFocused: Bool
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -18,7 +17,6 @@ struct SchematicCanvasView: View {
                 .onTapGesture {
                     selection = .none
                     netDrawState = .idle
-                    canvasFocused = true
                 }
 
             NetLinesView(document: document.circuit, selection: selection)
@@ -39,6 +37,13 @@ struct SchematicCanvasView: View {
                let start = pinScreenPosition(firstPin) {
                 rubberBand(from: start, to: mouseLocation)
             }
+
+            // Hidden buttons drive keyboard shortcuts at the window level
+            // without depending on SwiftUI focus — tapping a child view (a
+            // component symbol, a pin handle) doesn't disturb them. They still
+            // correctly defer to first-responder text fields (e.g. the inline
+            // rename field), so typing Delete while renaming edits the text.
+            keyShortcuts
         }
         .onContinuousHover { phase in
             switch phase {
@@ -46,22 +51,23 @@ struct SchematicCanvasView: View {
             case .ended: break
             }
         }
-        .focusable()
-        .focused($canvasFocused)
-        .onAppear { canvasFocused = true }
-        .onKeyPress(.escape) {
+    }
+
+    @ViewBuilder private var keyShortcuts: some View {
+        Button("Delete selection") { deleteSelection() }
+            .keyboardShortcut(.delete, modifiers: [])
+            .disabled(!selection.isDeletable)
+            .opacity(0).frame(width: 0, height: 0)
+        Button("Forward delete selection") { deleteSelection() }
+            .keyboardShortcut(.deleteForward, modifiers: [])
+            .disabled(!selection.isDeletable)
+            .opacity(0).frame(width: 0, height: 0)
+        Button("Cancel") {
             netDrawState = .idle
             selection = .none
-            return .handled
         }
-        .onKeyPress(.delete) {
-            deleteSelection()
-            return .handled
-        }
-        .onKeyPress(.deleteForward) {
-            deleteSelection()
-            return .handled
-        }
+        .keyboardShortcut(.cancelAction)
+        .opacity(0).frame(width: 0, height: 0)
     }
 
     // MARK: - Rubber band

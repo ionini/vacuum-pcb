@@ -24,8 +24,6 @@ struct DocumentView: View {
                 Divider()
                 tabContent
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                Divider()
-                InspectorStrip(document: $document, selection: $selection)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }

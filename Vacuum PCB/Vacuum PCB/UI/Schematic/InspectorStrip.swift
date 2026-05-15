@@ -65,7 +65,8 @@ struct InspectorStrip: View {
                     Text("L").tag(ResistorSize.large)
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 140)
+                .labelsHidden()
+                .fixedSize()
             }
             if c.kind == .port {
                 Picker("Direction", selection: portDirectionBinding(c)) {
@@ -73,7 +74,8 @@ struct InspectorStrip: View {
                     Text("Output").tag(Optional(PortDirection.output))
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 160)
+                .labelsHidden()
+                .fixedSize()
             }
         }
     }

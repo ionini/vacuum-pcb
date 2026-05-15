@@ -54,7 +54,10 @@ struct ComponentNodeView: View {
     // MARK: - Drag
 
     private var dragGesture: some Gesture {
-        DragGesture(minimumDistance: 2)
+        // `.global` matters: the symbol lives inside the ZStack we're offsetting,
+        // so a `.local` translation would shrink to zero as the view moves under
+        // the cursor and the component would fight the drag.
+        DragGesture(minimumDistance: 2, coordinateSpace: .global)
             .onChanged { value in
                 dragOffset = value.translation
             }

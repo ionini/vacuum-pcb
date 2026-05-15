@@ -8,14 +8,18 @@ struct SchematicView: View {
     @Binding var netDrawState: NetDrawState
 
     var body: some View {
-        HStack(spacing: 0) {
-            ComponentPaletteView(onAdd: addComponent)
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                ComponentPaletteView(onAdd: addComponent)
+                Divider()
+                SchematicCanvasView(
+                    document: $document,
+                    selection: $selection,
+                    netDrawState: $netDrawState
+                )
+            }
             Divider()
-            SchematicCanvasView(
-                document: $document,
-                selection: $selection,
-                netDrawState: $netDrawState
-            )
+            InspectorStrip(document: $document, selection: $selection)
         }
     }
 

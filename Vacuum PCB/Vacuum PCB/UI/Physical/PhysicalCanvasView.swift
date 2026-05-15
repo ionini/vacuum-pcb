@@ -12,7 +12,6 @@ struct PhysicalCanvasView: View {
 
     @State private var transform: CanvasTransform = .default
     @State private var mouseLocation: CGPoint = .zero
-    @FocusState private var canvasFocused: Bool
 
     private var manufacturing: ManufacturingConstants { document.circuit.manufacturing }
     private var grid: Double { manufacturing.gridPitch }
@@ -47,26 +46,19 @@ struct PhysicalCanvasView: View {
                     transform: transform,
                     gridMm: grid
                 )
+
+                // Window-level keyboard shortcuts; see SchematicCanvasView
+                // for the rationale (focus-independent so child taps don't
+                // mute them).
+                keyShortcuts
             }
             .clipped()
             .background(Color(NSColor.controlBackgroundColor))
             .onContinuousHover { phase in
                 if case .active(let p) = phase { mouseLocation = p }
             }
-            .focusable()
-            .focused($canvasFocused)
-            .onAppear {
-                recomputeTransform(viewSize: geo.size)
-                canvasFocused = true
-            }
+            .onAppear { recomputeTransform(viewSize: geo.size) }
             .onChange(of: geo.size) { _, new in recomputeTransform(viewSize: new) }
-            .onKeyPress(.escape) { routingState = .idle; selection = .none; return .handled }
-            .onKeyPress(.delete)        { deleteSelection(); return .handled }
-            .onKeyPress(.deleteForward) { deleteSelection(); return .handled }
-            .onKeyPress("r")            { rotateSelection(); return .handled }
-            .onKeyPress("R")            { rotateSelection(); return .handled }
-            .onKeyPress("f")            { flipLayerSelection(); return .handled }
-            .onKeyPress("F")            { flipLayerSelection(); return .handled }
             .onDrop(of: [.text], delegate: ParkingDropDelegate(
                 document: $document,
                 transform: { transform },
@@ -75,6 +67,31 @@ struct PhysicalCanvasView: View {
                 selection: $selection
             ))
         }
+    }
+
+    @ViewBuilder private var keyShortcuts: some View {
+        Button("Delete selection") { deleteSelection() }
+            .keyboardShortcut(.delete, modifiers: [])
+            .disabled(!selection.isDeletable)
+            .opacity(0).frame(width: 0, height: 0)
+        Button("Forward delete selection") { deleteSelection() }
+            .keyboardShortcut(.deleteForward, modifiers: [])
+            .disabled(!selection.isDeletable)
+            .opacity(0).frame(width: 0, height: 0)
+        Button("Cancel routing") {
+            routingState = .idle
+            selection = .none
+        }
+        .keyboardShortcut(.cancelAction)
+        .opacity(0).frame(width: 0, height: 0)
+        Button("Rotate") { rotateSelection() }
+            .keyboardShortcut("r", modifiers: [])
+            .disabled(selection.placementComponentId == nil)
+            .opacity(0).frame(width: 0, height: 0)
+        Button("Flip layer") { flipLayerSelection() }
+            .keyboardShortcut("f", modifiers: [])
+            .disabled(selection.placementComponentId == nil)
+            .opacity(0).frame(width: 0, height: 0)
     }
 
     // MARK: - Background visuals
@@ -224,7 +241,14 @@ struct PhysicalCanvasView: View {
     private func handleBackgroundTap(at pt: CGPoint) {
         switch routingState {
         case .idle:
-            selection = .none
+            // Hit-test route segments before deselecting. RoutesOverlay is a
+            // Canvas (cheap render, no per-segment hit testing), so we test
+            // here by computing point-to-polyline distance.
+            if let hit = routeSegmentHit(at: pt) {
+                selection = .routeSegment(netId: hit.netId, segmentIndex: hit.segmentIndex)
+            } else {
+                selection = .none
+            }
         case .routing(let netId, var wps, let layer):
             let world = transform.snap(transform.toWorld(pt), grid: grid)
             guard let last = wps.last else { return }
@@ -233,6 +257,43 @@ struct PhysicalCanvasView: View {
             if !approximatelyEqual(world, wps.last ?? last) { wps.append(world) }
             routingState = .routing(netId: netId, waypoints: wps, layer: layer)
         }
+    }
+
+    /// Returns the closest visible route segment whose polyline passes within
+    /// the channel-stroke width of `pt` (screen pts). Nil if nothing is close.
+    private func routeSegmentHit(at pt: CGPoint) -> (netId: UUID, segmentIndex: Int)? {
+        // Match RoutesOverlay's stroke width and add a small slop so a click
+        // near the edge of the rendered channel still hits.
+        let channelStroke = max(1.5, manufacturing.channelDiameter * transform.ptsPerMm * 0.85)
+        let threshold = max(6.0, channelStroke / 2 + 3.0)
+        var best: (netId: UUID, segmentIndex: Int, distance: Double)?
+        for route in document.circuit.physical.routes {
+            for (segIdx, segment) in route.segments.enumerated() {
+                guard visible.contains(segment.layer) else { continue }
+                let pts = segment.waypoints.map { transform.toScreen($0.position) }
+                guard pts.count >= 2 else { continue }
+                for i in 0..<(pts.count - 1) {
+                    let d = distanceFromPoint(pt, toSegmentFrom: pts[i], to: pts[i + 1])
+                    if d <= threshold, d < (best?.distance ?? .greatestFiniteMagnitude) {
+                        best = (route.netId, segIdx, d)
+                    }
+                }
+            }
+        }
+        return best.map { ($0.netId, $0.segmentIndex) }
+    }
+
+    private func distanceFromPoint(_ p: CGPoint, toSegmentFrom a: CGPoint, to b: CGPoint) -> Double {
+        let dx = b.x - a.x
+        let dy = b.y - a.y
+        let lenSq = dx * dx + dy * dy
+        guard lenSq > 0 else {
+            return hypot(Double(p.x - a.x), Double(p.y - a.y))
+        }
+        let t = max(0, min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq))
+        let projX = a.x + CGFloat(t) * dx
+        let projY = a.y + CGFloat(t) * dy
+        return hypot(Double(p.x - projX), Double(p.y - projY))
     }
 
     private func handlePinTap(componentId: UUID, pinKey: String) {
