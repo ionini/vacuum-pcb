@@ -17,6 +17,15 @@ struct DocumentView: View {
     /// We don't rebuild eagerly any more — CSG is expensive and the user is
     /// almost never on the 3D Preview tab while editing.
     @State private var previewDirty: Bool = true
+    /// What to do after the current build finishes, if the user kicked it off
+    /// from the Export menu. Lets "Open in Bambu Studio" feel synchronous
+    /// even when CSG has to run first.
+    @State private var pendingExportAction: ExportAction?
+
+    enum ExportAction {
+        case saveSTL
+        case openInBambuStudio
+    }
 
     enum Tab: Hashable { case schematic, physical, preview }
 
@@ -34,13 +43,12 @@ struct DocumentView: View {
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button {
-                    // Make sure we're exporting an up-to-date mesh. If the
-                    // preview is dirty, kick off a build first; the user can
-                    // press Export again once it's ready.
-                    if previewDirty { rebuild() } else { showExporter = true }
+                Menu {
+                    Button("Save STL file…") { triggerExport(.saveSTL) }
+                    Button("Open in Bambu Studio") { triggerExport(.openInBambuStudio) }
+                        .disabled(!bambuStudioInstalled)
                 } label: {
-                    Label(previewDirty ? "Build & Export…" : "Export STL…",
+                    Label(previewDirty ? "Build & Export…" : "Export…",
                           systemImage: "square.and.arrow.up")
                 }
                 .disabled(isBuilding)
@@ -204,6 +212,62 @@ struct DocumentView: View {
         return c == 0 ? "vacuum-pcb" : "vacuum-pcb-\(c)components"
     }
 
+    // MARK: - Export actions
+
+    private func triggerExport(_ action: ExportAction) {
+        // If the preview is stale, queue the action and rebuild first. The
+        // rebuild completion handler will fire the queued action exactly
+        // once, so "Open in Bambu Studio" feels like a single tap.
+        if previewDirty || built == nil {
+            pendingExportAction = action
+            if !isBuilding { rebuild() }
+            return
+        }
+        perform(action)
+    }
+
+    private func perform(_ action: ExportAction) {
+        switch action {
+        case .saveSTL:
+            showExporter = true
+        case .openInBambuStudio:
+            openInBambuStudio()
+        }
+    }
+
+    private static let bambuStudioBundleID = "com.bambulab.bambu-studio"
+
+    private var bambuStudioInstalled: Bool {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.bambuStudioBundleID) != nil
+    }
+
+    /// Writes the current built plates as an STL into the per-session
+    /// temporary directory, then asks Bambu Studio to open the file. Slicers
+    /// happily handle multi-solid STLs, so top + bottom go out as one mesh
+    /// (same as the Save panel path).
+    private func openInBambuStudio() {
+        guard let built else { return }
+        guard let bambuURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.bambuStudioBundleID) else {
+            return
+        }
+        let combined = Mesh.merge([built.topPlate, built.bottomPlate])
+        let data = combined.stlData()
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(stlFilename).stl")
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            NSLog("vpcb: failed to write STL for Bambu Studio: \(error)")
+            return
+        }
+        let config = NSWorkspace.OpenConfiguration()
+        NSWorkspace.shared.open([url], withApplicationAt: bambuURL, configuration: config) { _, error in
+            if let error {
+                NSLog("vpcb: NSWorkspace.open(Bambu Studio) failed: \(error)")
+            }
+        }
+    }
+
     // MARK: - Build
 
     private func rebuild() {
@@ -218,6 +282,10 @@ struct DocumentView: View {
                 self.built = result
                 self.isBuilding = false
                 self.previewDirty = false
+                if let action = self.pendingExportAction {
+                    self.pendingExportAction = nil
+                    self.perform(action)
+                }
             }
         }
     }
