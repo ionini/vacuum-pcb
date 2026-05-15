@@ -14,9 +14,22 @@
 		F9B05BDC2FB671F10071BB7F /* Vacuum PCB.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Vacuum PCB.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		F9D46A962FB7514C00F65C51 /* Exceptions for "Vacuum PCB" folder in "Vacuum PCB" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = F9B05BDB2FB671F10071BB7F /* Vacuum PCB */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		F9B05BDE2FB671F10071BB7F /* Vacuum PCB */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				F9D46A962FB7514C00F65C51 /* Exceptions for "Vacuum PCB" folder in "Vacuum PCB" target */,
+			);
 			path = "Vacuum PCB";
 			sourceTree = "<group>";
 		};
