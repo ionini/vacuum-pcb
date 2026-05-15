@@ -70,13 +70,11 @@ extension ComponentKind {
             )
 
         case .resistor:
-            let length: Double
-            switch resistorSize ?? .medium {
-            case .small:  length = 6.0
-            case .medium: length = 10.0
-            case .large:  length = 16.0
-            }
-            let width = 3.0
+            // Resistor footprint is the same physical size regardless of S/M/L.
+            // The S/M/L choice picks how aggressively the serpentine zigzags
+            // inside this bounding box, *not* how big the body is.
+            let length = ManufacturingConstants.resistorFootprintLength
+            let width = ManufacturingConstants.resistorFootprintWidth
             let halfLen = length / 2
             let halfWid = width / 2
             return Footprint(
