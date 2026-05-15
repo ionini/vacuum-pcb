@@ -100,6 +100,29 @@ enum PlateBuilder {
             }
         }
 
+        // 3. Vias — vertical bores that cut through *both* plates at the
+        // marked XY so a top-layer channel and a bottom-layer channel meet
+        // through the silicone. The silicone itself is punched at the same
+        // XY by the user at assembly. Dedup by position because each via
+        // is represented twice in the document (once at the end of the
+        // outgoing segment, once at the start of the incoming segment on
+        // the other layer).
+        var seenViaPositions: [Point] = []
+        for route in doc.physical.routes {
+            for segment in route.segments {
+                for wp in segment.waypoints where wp.kind == .via {
+                    if seenViaPositions.contains(where: { approxEqualXY($0, wp.position) }) { continue }
+                    seenViaPositions.append(wp.position)
+                    let cutter = viaCutterMesh(
+                        at: wp.position, radius: m.channelDiameter / 2,
+                        topMidZ: topMidZ, bottomMidZ: bottomMidZ
+                    )
+                    topCutters.append(cutter)
+                    bottomCutters.append(cutter)
+                }
+            }
+        }
+
         // Union the cutter sets once and reuse: the subtractions consume the
         // same union the preview's features-only mode renders, so we avoid
         // building it twice.
@@ -207,6 +230,32 @@ enum PlateBuilder {
         return Mesh.cylinder(radius: radius, height: len, slices: 16)
             .rotated(by: Euclid.Rotation.pitch(.halfPi))
             .translated(by: Vector(p.x, p.y, cz))
+    }
+
+    // MARK: - Via
+
+    /// Vertical cylinder spanning from the top plate's channel midline down to
+    /// the bottom plate's channel midline at the given XY. The same mesh is
+    /// added to both plates' cutter lists: the top plate keeps only the upper
+    /// half (CSG subtraction with that plate's volume), the bottom plate keeps
+    /// the lower half. Silicone in between is the user's job to punch at the
+    /// same XY at assembly.
+    private static func viaCutterMesh(
+        at p: Point, radius: Double,
+        topMidZ: Double, bottomMidZ: Double
+    ) -> Mesh {
+        let eps = 0.05
+        let zHi = topMidZ + eps
+        let zLo = bottomMidZ - eps
+        let len = zHi - zLo
+        let cz = (zHi + zLo) / 2
+        return Mesh.cylinder(radius: radius, height: len, slices: 24)
+            .rotated(by: Euclid.Rotation.pitch(.halfPi))
+            .translated(by: Vector(p.x, p.y, cz))
+    }
+
+    private static func approxEqualXY(_ a: Point, _ b: Point, eps: Double = 0.05) -> Bool {
+        abs(a.x - b.x) < eps && abs(a.y - b.y) < eps
     }
 
     // MARK: - Dimples

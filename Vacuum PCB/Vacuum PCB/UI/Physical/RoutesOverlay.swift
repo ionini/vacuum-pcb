@@ -70,6 +70,51 @@ struct RoutesOverlay: View {
     }
 }
 
+/// Renders vias as a concentric "target" symbol at every via waypoint XY
+/// (deduped across the segment pair that share the position). Drawn on top of
+/// the route polylines so the cross-layer transition reads clearly.
+struct ViasOverlay: View {
+    let document: CircuitDocument
+    let transform: CanvasTransform
+    let visible: LayerVisibility
+    let manufacturing: ManufacturingConstants
+
+    var body: some View {
+        Canvas { ctx, _ in
+            // Show vias whenever either of their two segments would be
+            // visible — same logic as the routes overlay.
+            var seen: [Point] = []
+            let outerRadius = max(5, manufacturing.channelDiameter * transform.ptsPerMm * 0.75)
+            let innerRadius = outerRadius * 0.5
+            for route in document.physical.routes {
+                for segment in route.segments {
+                    guard visible.contains(segment.layer) else { continue }
+                    for wp in segment.waypoints where wp.kind == .via {
+                        if seen.contains(where: {
+                            abs($0.x - wp.position.x) < 0.05 && abs($0.y - wp.position.y) < 0.05
+                        }) { continue }
+                        seen.append(wp.position)
+                        let center = transform.toScreen(wp.position)
+                        let outer = CGRect(
+                            x: center.x - outerRadius, y: center.y - outerRadius,
+                            width: outerRadius * 2, height: outerRadius * 2
+                        )
+                        let inner = CGRect(
+                            x: center.x - innerRadius, y: center.y - innerRadius,
+                            width: innerRadius * 2, height: innerRadius * 2
+                        )
+                        ctx.fill(Path(ellipseIn: outer), with: .color(Color.primary.opacity(0.18)))
+                        ctx.stroke(Path(ellipseIn: outer),
+                                   with: .color(Color.primary.opacity(0.85)), lineWidth: 1.5)
+                        ctx.fill(Path(ellipseIn: inner), with: .color(Color.primary.opacity(0.85)))
+                    }
+                }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
 /// Overlay showing the in-progress polyline while the user is routing.
 /// Drawn as a dashed line; previews the auto-elbow that will be inserted on next click.
 struct RoutingPreviewOverlay: View {
@@ -80,7 +125,7 @@ struct RoutingPreviewOverlay: View {
 
     var body: some View {
         Canvas { ctx, _ in
-            guard case let .routing(_, waypoints, layer) = routingState,
+            guard case let .routing(_, waypoints, layer, _) = routingState,
                   let lastWorld = waypoints.last else { return }
             let mouseWorld = transform.snap(transform.toWorld(mouseLocation), grid: gridMm)
             let elbow = elbowPoint(from: lastWorld, to: mouseWorld)

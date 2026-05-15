@@ -59,8 +59,9 @@ struct PhysicalView: View {
             .onChange(of: routingLayer) { _, newLayer in
                 // If we're mid-route, update the layer of the in-progress polyline
                 // so the user sees the change immediately.
-                if case let .routing(netId, wps, _) = routingState {
-                    routingState = .routing(netId: netId, waypoints: wps, layer: newLayer)
+                if case let .routing(netId, wps, _, startsAtVia) = routingState {
+                    routingState = .routing(netId: netId, waypoints: wps, layer: newLayer,
+                                            startsAtVia: startsAtVia)
                 }
             }
 
@@ -95,9 +96,9 @@ struct PhysicalView: View {
             case .routeSegment:
                 return Text("Route segment selected. ⌫ to delete.")
             }
-        case .routing(let netId, let wps, let layer):
+        case .routing(let netId, let wps, let layer, _):
             let netLabel = document.circuit.logic.nets.first(where: { $0.id == netId })?.label ?? "?"
-            return Text("Routing net \(netLabel) on \(layer == .top ? "top" : "bottom") · \(wps.count) waypoints · click a pin on this net to commit, ESC to cancel.")
+            return Text("Routing net \(netLabel) on \(layer == .top ? "top" : "bottom") · \(wps.count) waypoints · V to drop a via, click a pin on this net to commit, ESC to cancel.")
         }
     }
 }

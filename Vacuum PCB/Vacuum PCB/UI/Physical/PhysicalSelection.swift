@@ -25,9 +25,14 @@ enum PhysicalSelection: Hashable {
 /// State of the click-pin → click-waypoints → click-pin routing interaction.
 /// `waypoints` is the in-progress polyline (world mm). The pinning starts on
 /// the first pin, so `waypoints[0]` is the first pin's world location.
+///
+/// `startsAtVia` marks segments that picked up routing after the user dropped
+/// a via — the first waypoint then needs `kind: .via` when committed so the
+/// CAD pipeline knows to drill the cross-plate bore. Plain pin-started
+/// routes leave it `false`.
 enum RoutingState: Hashable {
     case idle
-    case routing(netId: UUID, waypoints: [Point], layer: Layer)
+    case routing(netId: UUID, waypoints: [Point], layer: Layer, startsAtVia: Bool)
 
     var inProgress: Bool {
         if case .routing = self { return true }

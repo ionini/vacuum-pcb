@@ -63,6 +63,12 @@ struct PhysicalCanvasView: View {
                     manufacturing: manufacturing,
                     dragOverride: dragOverride
                 )
+                ViasOverlay(
+                    document: document.circuit,
+                    transform: transform,
+                    visible: visible,
+                    manufacturing: manufacturing
+                )
 
                 placementBodies
                 placementHitTargets
@@ -76,10 +82,20 @@ struct PhysicalCanvasView: View {
                     gridMm: grid
                 )
 
-                // Window-level keyboard shortcuts; see SchematicCanvasView
-                // for the rationale (focus-independent so child taps don't
-                // mute them).
-                keyShortcuts
+                // NSEvent-monitor key catcher. Replaces the hidden-Button
+                // approach which would silently lose its shortcut when
+                // focus drifted to a non-canvas view.
+                KeyEventCatcher(handlers: [
+                    KeyCodes.delete: { deleteSelection() },
+                    KeyCodes.forwardDelete: { deleteSelection() },
+                    KeyCodes.escape: {
+                        routingState = .idle
+                        selection = .none
+                    },
+                    KeyCodes.r: { rotateSelection() },
+                    KeyCodes.f: { flipLayerSelection() },
+                    KeyCodes.v: { dropViaAtCursor() },
+                ])
 
                 // Right-click catcher overlays the whole canvas. SwiftUI on
                 // macOS doesn't surface secondary-button taps natively, so a
@@ -104,30 +120,6 @@ struct PhysicalCanvasView: View {
         }
     }
 
-    @ViewBuilder private var keyShortcuts: some View {
-        Button("Delete selection") { deleteSelection() }
-            .keyboardShortcut(.delete, modifiers: [])
-            .disabled(!selection.isDeletable)
-            .opacity(0).frame(width: 0, height: 0)
-        Button("Forward delete selection") { deleteSelection() }
-            .keyboardShortcut(.deleteForward, modifiers: [])
-            .disabled(!selection.isDeletable)
-            .opacity(0).frame(width: 0, height: 0)
-        Button("Cancel routing") {
-            routingState = .idle
-            selection = .none
-        }
-        .keyboardShortcut(.cancelAction)
-        .opacity(0).frame(width: 0, height: 0)
-        Button("Rotate") { rotateSelection() }
-            .keyboardShortcut("r", modifiers: [])
-            .disabled(selection.placementComponentId == nil)
-            .opacity(0).frame(width: 0, height: 0)
-        Button("Flip layer") { flipLayerSelection() }
-            .keyboardShortcut("f", modifiers: [])
-            .disabled(selection.placementComponentId == nil)
-            .opacity(0).frame(width: 0, height: 0)
-    }
 
     // MARK: - Background visuals
 
@@ -293,7 +285,7 @@ struct PhysicalCanvasView: View {
     }
 
     private func isFirstRoutingPin(componentId: UUID, key: String) -> Bool {
-        guard case let .routing(_, waypoints, _) = routingState,
+        guard case let .routing(_, waypoints, _, _) = routingState,
               let firstWP = waypoints.first,
               let placement = document.circuit.physical.placements.first(where: { $0.componentId == componentId }),
               let component = component(for: componentId),
@@ -397,8 +389,42 @@ struct PhysicalCanvasView: View {
         guard let rIdx = document.circuit.physical.routes.firstIndex(where: { $0.netId == netId }),
               segIdx < document.circuit.physical.routes[rIdx].segments.count
         else { return }
-        document.circuit.physical.routes[rIdx].segments[segIdx].waypoints =
-            waypoints.map { Waypoint(position: $0) }
+        // Preserve each waypoint's kind by index — drag only mutates positions,
+        // never the count, so the index→kind mapping survives. Skipping this
+        // would silently turn every via into a plain .point and orphan the
+        // sibling on the other layer.
+        let previous = document.circuit.physical.routes[rIdx].segments[segIdx].waypoints
+        let newWaypoints = waypoints.enumerated().map { i, p -> Waypoint in
+            let kind: WaypointKind = i < previous.count ? previous[i].kind : .point
+            return Waypoint(position: p, kind: kind)
+        }
+        document.circuit.physical.routes[rIdx].segments[segIdx].waypoints = newWaypoints
+
+        // Drag any sibling via on another segment that shared the old XY.
+        for i in 0..<min(previous.count, waypoints.count) {
+            guard previous[i].kind == .via else { continue }
+            let oldPos = previous[i].position
+            let newPos = waypoints[i]
+            if abs(oldPos.x - newPos.x) < 0.001 && abs(oldPos.y - newPos.y) < 0.001 { continue }
+            moveSiblingVias(netId: netId, excluding: segIdx, from: oldPos, to: newPos)
+        }
+    }
+
+    /// Vias are paired — the matching via lives on a different segment of
+    /// the same net. When the dragged via moves, find every other via on the
+    /// net that was sitting at the old XY and drag it to the new XY too so
+    /// the cross-plate bore stays joined.
+    private func moveSiblingVias(netId: UUID, excluding segIdx: Int, from oldPos: Point, to newPos: Point) {
+        guard let rIdx = document.circuit.physical.routes.firstIndex(where: { $0.netId == netId })
+        else { return }
+        for sIdx in document.circuit.physical.routes[rIdx].segments.indices where sIdx != segIdx {
+            let waypoints = document.circuit.physical.routes[rIdx].segments[sIdx].waypoints
+            for (wIdx, wp) in waypoints.enumerated() where wp.kind == .via {
+                if abs(wp.position.x - oldPos.x) < 0.05 && abs(wp.position.y - oldPos.y) < 0.05 {
+                    document.circuit.physical.routes[rIdx].segments[sIdx].waypoints[wIdx].position = newPos
+                }
+            }
+        }
     }
 
     /// Right-click semantics:
@@ -500,13 +526,13 @@ struct PhysicalCanvasView: View {
             } else {
                 selection = .none
             }
-        case .routing(let netId, var wps, let layer):
+        case .routing(let netId, var wps, let layer, let startsAtVia):
             let world = transform.snap(transform.toWorld(pt), grid: grid)
             guard let last = wps.last else { return }
             let elbow = elbow(from: last, to: world)
             if !approximatelyEqual(elbow, last) { wps.append(elbow) }
             if !approximatelyEqual(world, wps.last ?? last) { wps.append(world) }
-            routingState = .routing(netId: netId, waypoints: wps, layer: layer)
+            routingState = .routing(netId: netId, waypoints: wps, layer: layer, startsAtVia: startsAtVia)
         }
     }
 
@@ -567,11 +593,11 @@ struct PhysicalCanvasView: View {
             // Auto-pick the route layer from the pin so the channel actually connects.
             // The bottom-strip layer picker still works for changing direction mid-route.
             routingLayer = pinLayer
-            routingState = .routing(netId: net.id, waypoints: [world], layer: pinLayer)
+            routingState = .routing(netId: net.id, waypoints: [world], layer: pinLayer, startsAtVia: false)
             selection = .none
             routingError = nil
 
-        case let .routing(netId, wps, layer):
+        case let .routing(netId, wps, layer, startsAtVia):
             // Same pin clicked again with only one waypoint → cancel
             if let first = wps.first, approximatelyEqual(first, world), wps.count == 1 {
                 routingState = .idle
@@ -597,18 +623,55 @@ struct PhysicalCanvasView: View {
                 if !approximatelyEqual(elbow, last) { finalPath.append(elbow) }
                 if !approximatelyEqual(world, finalPath.last ?? last) { finalPath.append(world) }
             }
-            appendRouteSegment(netId: netId, points: finalPath, layer: layer)
+            appendRouteSegment(netId: netId, points: finalPath, layer: layer, startsAtVia: startsAtVia)
             routingState = .idle
             _ = pinLayer // referenced for future layer-mismatch warning
         }
     }
 
-    private func appendRouteSegment(netId: UUID, points: [Point], layer: Layer) {
+    /// Place a via at the snapped cursor position while mid-route. Commits
+    /// the in-progress segment with the via as its terminating waypoint, then
+    /// restarts routing from the same XY on the *other* layer (same net), with
+    /// startsAtVia=true so the next commit emits the matching via on the new
+    /// segment's first waypoint.
+    private func dropViaAtCursor() {
+        guard case let .routing(netId, wps, layer, startsAtVia) = routingState else { return }
+        let cursorWorld = transform.snap(transform.toWorld(mouseLocation), grid: grid)
+        guard let last = wps.last else { return }
+
+        // Build the polyline that ends at the via, joining with an auto-elbow
+        // the same way a normal pin commit does. The first waypoint may itself
+        // be a via if this segment was started by a previous V press.
+        var finalPath: [Waypoint] = []
+        for (i, p) in wps.enumerated() {
+            let kind: WaypointKind = (i == 0 && startsAtVia) ? .via : .point
+            finalPath.append(Waypoint(position: p, kind: kind))
+        }
+        let elbow = elbow(from: last, to: cursorWorld)
+        if !approximatelyEqual(elbow, last) {
+            finalPath.append(Waypoint(position: elbow, kind: .point))
+        }
+        finalPath.append(Waypoint(position: cursorWorld, kind: .via))
+
+        let segment = Segment(waypoints: finalPath, layer: layer)
+        if let i = document.circuit.physical.routes.firstIndex(where: { $0.netId == netId }) {
+            document.circuit.physical.routes[i].segments.append(segment)
+        } else {
+            document.circuit.physical.routes.append(Route(netId: netId, segments: [segment]))
+        }
+
+        // Continue routing from the via on the other layer.
+        let nextLayer: Layer = layer == .top ? .bottom : .top
+        routingLayer = nextLayer
+        routingState = .routing(netId: netId, waypoints: [cursorWorld], layer: nextLayer, startsAtVia: true)
+    }
+
+    private func appendRouteSegment(netId: UUID, points: [Point], layer: Layer, startsAtVia: Bool) {
         guard points.count >= 2 else { return }
-        let segment = Segment(
-            waypoints: points.map { Waypoint(position: $0) },
-            layer: layer
-        )
+        let waypoints = points.enumerated().map { i, p in
+            Waypoint(position: p, kind: (i == 0 && startsAtVia) ? .via : .point)
+        }
+        let segment = Segment(waypoints: waypoints, layer: layer)
         if let i = document.circuit.physical.routes.firstIndex(where: { $0.netId == netId }) {
             document.circuit.physical.routes[i].segments.append(segment)
         } else {

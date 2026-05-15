@@ -38,6 +38,11 @@ enum DRC {
             /// it from the rest of the net's pins. Either the user hasn't
             /// finished routing or a segment endpoint isn't quite on the pin.
             case disconnectedPin(PinRef)
+            /// A via waypoint exists at this XY but has no matching via
+            /// waypoint on the *opposite* layer's segment of the same net —
+            /// the cross-plate bore is one-sided and won't connect through
+            /// the silicone.
+            case orphanVia(Point)
         }
 
         var summary: String {
@@ -48,6 +53,8 @@ enum DRC {
                 return "\(netLabel): no route drawn"
             case .disconnectedPin(let p):
                 return "\(netLabel): pin \(p.pinKey) unreached by routing"
+            case .orphanVia(let p):
+                return "\(netLabel): unpaired via at (\(String(format: "%.1f", p.x)), \(String(format: "%.1f", p.y)))"
             }
         }
     }
@@ -142,6 +149,31 @@ enum DRC {
         for (pinRef, root) in roots where root != referenceRoot {
             issues.append(Issue(netId: net.id, netLabel: net.label, kind: .disconnectedPin(pinRef)))
         }
+
+        // Every via must appear at the *same* XY on at least one segment per
+        // layer; otherwise the cross-plate bore is one-sided.
+        issues.append(contentsOf: viaIssues(net: net, segments: segments))
+
         return issues
+    }
+
+    private static func viaIssues(net: Net, segments: [Segment]) -> [Issue] {
+        // Group via waypoints by approximate XY → which layers carry one.
+        var groups: [(position: Point, layers: Set<Layer>)] = []
+        let eps = 0.05
+        for segment in segments {
+            for wp in segment.waypoints where wp.kind == .via {
+                if let i = groups.firstIndex(where: {
+                    abs($0.position.x - wp.position.x) < eps && abs($0.position.y - wp.position.y) < eps
+                }) {
+                    groups[i].layers.insert(segment.layer)
+                } else {
+                    groups.append((wp.position, [segment.layer]))
+                }
+            }
+        }
+        return groups
+            .filter { $0.layers.count < 2 }
+            .map { Issue(netId: net.id, netLabel: net.label, kind: .orphanVia($0.position)) }
     }
 }
