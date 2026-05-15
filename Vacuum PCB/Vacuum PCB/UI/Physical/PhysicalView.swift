@@ -65,6 +65,10 @@ struct PhysicalView: View {
                 }
             }
 
+            Divider().frame(height: 18)
+
+            boardSizeEditor
+
             Spacer()
 
             if let routingError {
@@ -82,6 +86,35 @@ struct PhysicalView: View {
         .padding(.vertical, 8)
         .background(.regularMaterial)
         .frame(minHeight: 44)
+    }
+
+    /// Compact "Board: W × H mm" widget for the physical-tab bottom strip.
+    /// Full manufacturing settings live on the 3D preview sidebar; here we
+    /// only surface the board outline since it directly affects the canvas
+    /// the user is editing.
+    private var boardSizeEditor: some View {
+        HStack(spacing: 4) {
+            Text("Board").font(.caption).foregroundStyle(.secondary)
+            TextField("", value: boardSizeBinding(\.width),
+                      format: .number.precision(.fractionLength(0...2)))
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.trailing)
+                .frame(width: 48)
+            Text("×").font(.caption).foregroundStyle(.secondary)
+            TextField("", value: boardSizeBinding(\.height),
+                      format: .number.precision(.fractionLength(0...2)))
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.trailing)
+                .frame(width: 48)
+            Text("mm").font(.caption2).foregroundStyle(.tertiary)
+        }
+    }
+
+    private func boardSizeBinding(_ keyPath: WritableKeyPath<Size, Double>) -> Binding<Double> {
+        Binding(
+            get: { document.circuit.physical.boardOutline.size[keyPath: keyPath] },
+            set: { document.circuit.physical.boardOutline.size[keyPath: keyPath] = max(1, $0) }
+        )
     }
 
     private var statusText: Text {

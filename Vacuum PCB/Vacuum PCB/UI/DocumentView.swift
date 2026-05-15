@@ -54,7 +54,14 @@ struct DocumentView: View {
                 .disabled(isBuilding)
             }
         }
-        .onChange(of: document.circuit) { _, _ in previewDirty = true }
+        .onChange(of: document.circuit) { _, _ in
+            previewDirty = true
+            // When the user is already on the 3D Preview tab, rebuild
+            // immediately so settings-panel "Apply" feels responsive. On
+            // other tabs we defer until they switch back. `rebuild()`
+            // bumps `buildToken`, so any in-flight build is superseded.
+            if selectedTab == .preview { rebuild() }
+        }
         .onChange(of: selectedTab) { _, newTab in
             // Only rebuild the CSG when the user actually wants to look at
             // the 3D preview. Avoids the per-edit Euclid CSG storm that was
@@ -138,25 +145,34 @@ struct DocumentView: View {
     // MARK: - Sidebar
 
     private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Document").font(.title3).bold()
-            stat("Components", document.circuit.logic.components.count)
-            stat("Nets",       document.circuit.logic.nets.count)
-            stat("Placements", document.circuit.physical.placements.count)
-            stat("Routes",     document.circuit.physical.routes.count)
-            Divider()
-            let outline = document.circuit.physical.boardOutline
-            Text("Board: \(format(outline.size.width)) × \(format(outline.size.height)) mm")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            if isBuilding {
-                ProgressView("Rebuilding…").controlSize(.small)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Document").font(.title3).bold()
+                stat("Components", document.circuit.logic.components.count)
+                stat("Nets",       document.circuit.logic.nets.count)
+                stat("Placements", document.circuit.physical.placements.count)
+                stat("Routes",     document.circuit.physical.routes.count)
+                Divider()
+                let outline = document.circuit.physical.boardOutline
+                Text("Board: \(format(outline.size.width)) × \(format(outline.size.height)) mm")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if isBuilding {
+                    ProgressView("Rebuilding…").controlSize(.small)
+                }
+                drcSection
+
+                // Settings show up on the 3D Preview tab, where they're most
+                // relevant — the user is looking at what the constants
+                // actually produce.
+                if selectedTab == .preview {
+                    Divider()
+                    ManufacturingSettingsView(document: $document)
+                }
             }
-            drcSection
-            Spacer()
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// DRC summary: how many nets are clean, how many have routing issues,
