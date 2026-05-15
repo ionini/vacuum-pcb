@@ -9,6 +9,16 @@ struct RoutesOverlay: View {
     let visible: LayerVisibility
     let selection: PhysicalSelection
     let manufacturing: ManufacturingConstants
+    /// In-progress vertex drag on the selected segment. When set, this segment
+    /// renders using `dragOverride.waypoints` instead of the document's stored
+    /// waypoints, so the polyline previews live as the user drags a handle.
+    var dragOverride: DragOverride?
+
+    struct DragOverride: Equatable {
+        let netId: UUID
+        let segmentIndex: Int
+        let waypoints: [Point]
+    }
 
     var body: some View {
         Canvas { ctx, _ in
@@ -17,7 +27,8 @@ struct RoutesOverlay: View {
                 for (segIdx, segment) in route.segments.enumerated() {
                     guard visible.contains(segment.layer) else { continue }
                     let isSelected = selectionMatches(netId: route.netId, segmentIndex: segIdx)
-                    let pts = segment.waypoints.map { transform.toScreen($0.position) }
+                    let positions = waypoints(for: route.netId, segmentIndex: segIdx, fallback: segment.waypoints.map(\.position))
+                    let pts = positions.map { transform.toScreen($0) }
                     guard pts.count >= 2 else { continue }
                     var path = Path()
                     path.move(to: pts[0])
@@ -37,6 +48,13 @@ struct RoutesOverlay: View {
             }
         }
         .allowsHitTesting(false)
+    }
+
+    private func waypoints(for netId: UUID, segmentIndex: Int, fallback: [Point]) -> [Point] {
+        if let o = dragOverride, o.netId == netId, o.segmentIndex == segmentIndex {
+            return o.waypoints
+        }
+        return fallback
     }
 
     private func selectionMatches(netId: UUID, segmentIndex: Int) -> Bool {

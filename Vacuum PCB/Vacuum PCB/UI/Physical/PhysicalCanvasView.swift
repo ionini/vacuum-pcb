@@ -12,6 +12,22 @@ struct PhysicalCanvasView: View {
 
     @State private var transform: CanvasTransform = .default
     @State private var mouseLocation: CGPoint = .zero
+    @State private var draggingWaypoint: DraggingWaypoint?
+
+    /// Live state for the selected segment's vertex drag. Held in-view so
+    /// the document isn't mutated on every gesture tick (which would kick
+    /// off a 3D-preview CSG rebuild per frame). On release we apply the
+    /// grid-snapped delta to the document once.
+    struct DraggingWaypoint: Equatable {
+        let netId: UUID
+        let segmentIndex: Int
+        let waypointIndex: Int
+        /// Original waypoint positions of the segment at drag start. We keep
+        /// them so the live preview composes deltas against a stable baseline
+        /// rather than reading them back from the document each tick.
+        let originals: [Point]
+        var translation: CGSize
+    }
 
     private var manufacturing: ManufacturingConstants { document.circuit.manufacturing }
     private var grid: Double { manufacturing.gridPitch }
@@ -33,12 +49,14 @@ struct PhysicalCanvasView: View {
                     transform: transform,
                     visible: visible,
                     selection: selection,
-                    manufacturing: manufacturing
+                    manufacturing: manufacturing,
+                    dragOverride: dragOverride
                 )
 
                 placementBodies
                 placementHitTargets
                 pinHandles
+                routeHandles
 
                 RoutingPreviewOverlay(
                     routingState: routingState,
@@ -51,6 +69,12 @@ struct PhysicalCanvasView: View {
                 // for the rationale (focus-independent so child taps don't
                 // mute them).
                 keyShortcuts
+
+                // Right-click catcher overlays the whole canvas. SwiftUI on
+                // macOS doesn't surface secondary-button taps natively, so a
+                // thin NSView fields rightMouseDown and forwards the location.
+                RightClickCatcher { pt in handleRightClick(at: pt) }
+                    .allowsHitTesting(true)
             }
             .clipped()
             .background(Color(NSColor.controlBackgroundColor))
@@ -234,6 +258,190 @@ struct PhysicalCanvasView: View {
         else { return false }
         let world = placement.worldPosition(of: pin)
         return abs(world.x - firstWP.x) < 0.001 && abs(world.y - firstWP.y) < 0.001
+    }
+
+    // MARK: - Route waypoint handles
+
+    /// Small draggable handles at each waypoint of the selected route segment.
+    /// Dragging a handle slides that waypoint and pulls its neighbors along
+    /// whichever axis keeps the adjacent Manhattan segment Manhattan.
+    @ViewBuilder private var routeHandles: some View {
+        if case let .routeSegment(netId, segIdx) = selection,
+           let route = document.circuit.physical.routes.first(where: { $0.netId == netId }),
+           segIdx < route.segments.count,
+           visible.contains(route.segments[segIdx].layer) {
+            let segment = route.segments[segIdx]
+            let originals = segment.waypoints.map(\.position)
+            let displayed = displayedWaypoints(originals: originals, netId: netId, segIdx: segIdx)
+            ForEach(Array(displayed.enumerated()), id: \.offset) { i, world in
+                WaypointHandle()
+                    .position(transform.toScreen(world))
+                    .gesture(handleDragGesture(netId: netId, segIdx: segIdx, idx: i, originals: originals))
+            }
+        }
+    }
+
+    /// Returns the waypoint positions to render for a given segment, applying
+    /// the in-progress drag (if it targets this segment) so handles and
+    /// `RoutesOverlay` stay in lockstep during the gesture.
+    private func displayedWaypoints(originals: [Point], netId: UUID, segIdx: Int) -> [Point] {
+        guard let drag = draggingWaypoint,
+              drag.netId == netId, drag.segmentIndex == segIdx
+        else { return originals }
+        let deltaWorld = Point(
+            x: drag.translation.width / transform.ptsPerMm,
+            y: drag.translation.height / transform.ptsPerMm
+        )
+        return applyDrag(originals: drag.originals, index: drag.waypointIndex, delta: deltaWorld)
+    }
+
+    private var dragOverride: RoutesOverlay.DragOverride? {
+        guard let drag = draggingWaypoint else { return nil }
+        let deltaWorld = Point(
+            x: drag.translation.width / transform.ptsPerMm,
+            y: drag.translation.height / transform.ptsPerMm
+        )
+        let new = applyDrag(originals: drag.originals, index: drag.waypointIndex, delta: deltaWorld)
+        return RoutesOverlay.DragOverride(netId: drag.netId, segmentIndex: drag.segmentIndex, waypoints: new)
+    }
+
+    private func handleDragGesture(netId: UUID, segIdx: Int, idx: Int, originals: [Point]) -> some Gesture {
+        // `.global` mirrors the schematic drag fix: the handle is positioned
+        // by a view that moves with the gesture's local coord space, so local
+        // translations collapse to zero.
+        DragGesture(minimumDistance: 1, coordinateSpace: .global)
+            .onChanged { value in
+                if draggingWaypoint == nil {
+                    draggingWaypoint = DraggingWaypoint(
+                        netId: netId,
+                        segmentIndex: segIdx,
+                        waypointIndex: idx,
+                        originals: originals,
+                        translation: value.translation
+                    )
+                } else {
+                    draggingWaypoint?.translation = value.translation
+                }
+            }
+            .onEnded { value in
+                let raw = Point(
+                    x: value.translation.width / transform.ptsPerMm,
+                    y: value.translation.height / transform.ptsPerMm
+                )
+                let snapped = Point(
+                    x: (raw.x / grid).rounded() * grid,
+                    y: (raw.y / grid).rounded() * grid
+                )
+                let new = applyDrag(originals: originals, index: idx, delta: snapped)
+                commitWaypoints(netId: netId, segIdx: segIdx, waypoints: new)
+                draggingWaypoint = nil
+            }
+    }
+
+    /// Moves only `originals[index]` by `delta`. Neighbors stay put — the
+    /// polyline can become non-Manhattan, which the CAD pipeline handles
+    /// (channels are swept along arbitrary 2D polylines). To restore right
+    /// angles the user drags adjacent nodes or right-clicks to add new ones.
+    private func applyDrag(originals: [Point], index: Int, delta: Point) -> [Point] {
+        var wps = originals
+        guard (0..<wps.count).contains(index) else { return wps }
+        wps[index] = Point(x: originals[index].x + delta.x,
+                           y: originals[index].y + delta.y)
+        return wps
+    }
+
+    private func commitWaypoints(netId: UUID, segIdx: Int, waypoints: [Point]) {
+        guard let rIdx = document.circuit.physical.routes.firstIndex(where: { $0.netId == netId }),
+              segIdx < document.circuit.physical.routes[rIdx].segments.count
+        else { return }
+        document.circuit.physical.routes[rIdx].segments[segIdx].waypoints =
+            waypoints.map { Waypoint(position: $0) }
+    }
+
+    /// Right-click semantics:
+    ///   * On a visible waypoint handle of the **selected** segment (interior
+    ///     waypoints only — endpoints are anchored to pins) → delete that
+    ///     waypoint.
+    ///   * Otherwise, near any visible route edge → insert a new waypoint at
+    ///     the projected click location. The projection keeps the inserted
+    ///     point on the existing polyline so the new vertex is initially
+    ///     colinear; drag a handle to introduce the bend.
+    private func handleRightClick(at pt: CGPoint) {
+        if case let .routeSegment(netId, segIdx) = selection,
+           let waypointIdx = selectedSegmentWaypointHit(at: pt, netId: netId, segIdx: segIdx) {
+            deleteWaypoint(netId: netId, segIdx: segIdx, waypointIndex: waypointIdx)
+            return
+        }
+        insertWaypointFromRightClick(at: pt)
+    }
+
+    /// Hit-test against the interior waypoint handles of the selected segment.
+    /// Endpoints are skipped: they sit on pins and removing them would silently
+    /// shorten the route — surprising. Use ⌫ to delete the whole segment.
+    private func selectedSegmentWaypointHit(at pt: CGPoint, netId: UUID, segIdx: Int) -> Int? {
+        guard let route = document.circuit.physical.routes.first(where: { $0.netId == netId }),
+              segIdx < route.segments.count
+        else { return nil }
+        let segment = route.segments[segIdx]
+        let n = segment.waypoints.count
+        // Match the handle's hit area (~22pt square → ~11pt radius).
+        let threshold: Double = 11
+        var best: (idx: Int, distance: Double)?
+        for (i, wp) in segment.waypoints.enumerated() {
+            guard i > 0, i < n - 1 else { continue }
+            let screen = transform.toScreen(wp.position)
+            let d = hypot(Double(pt.x - screen.x), Double(pt.y - screen.y))
+            if d <= threshold, d < (best?.distance ?? .greatestFiniteMagnitude) {
+                best = (i, d)
+            }
+        }
+        return best?.idx
+    }
+
+    private func deleteWaypoint(netId: UUID, segIdx: Int, waypointIndex: Int) {
+        guard let rIdx = document.circuit.physical.routes.firstIndex(where: { $0.netId == netId }),
+              segIdx < document.circuit.physical.routes[rIdx].segments.count
+        else { return }
+        var segment = document.circuit.physical.routes[rIdx].segments[segIdx]
+        guard waypointIndex < segment.waypoints.count else { return }
+        segment.waypoints.remove(at: waypointIndex)
+        document.circuit.physical.routes[rIdx].segments[segIdx] = segment
+    }
+
+    private func insertWaypointFromRightClick(at pt: CGPoint) {
+        let threshold: Double = 12
+        var best: (netId: UUID, segIdx: Int, edgeIdx: Int, projected: Point, distance: Double)?
+        for route in document.circuit.physical.routes {
+            for (segIdx, segment) in route.segments.enumerated() {
+                guard visible.contains(segment.layer) else { continue }
+                let pts = segment.waypoints.map { transform.toScreen($0.position) }
+                guard pts.count >= 2 else { continue }
+                for i in 0..<(pts.count - 1) {
+                    let d = distanceFromPoint(pt, toSegmentFrom: pts[i], to: pts[i + 1])
+                    if d <= threshold, d < (best?.distance ?? .greatestFiniteMagnitude) {
+                        let projScreen = projectPoint(pt, ontoSegmentFrom: pts[i], to: pts[i + 1])
+                        let projWorld = transform.snap(transform.toWorld(projScreen), grid: grid)
+                        best = (route.netId, segIdx, i, projWorld, d)
+                    }
+                }
+            }
+        }
+        guard let hit = best,
+              let rIdx = document.circuit.physical.routes.firstIndex(where: { $0.netId == hit.netId }),
+              hit.segIdx < document.circuit.physical.routes[rIdx].segments.count
+        else { return }
+        document.circuit.physical.routes[rIdx].segments[hit.segIdx].waypoints
+            .insert(Waypoint(position: hit.projected), at: hit.edgeIdx + 1)
+        selection = .routeSegment(netId: hit.netId, segmentIndex: hit.segIdx)
+    }
+
+    private func projectPoint(_ p: CGPoint, ontoSegmentFrom a: CGPoint, to b: CGPoint) -> CGPoint {
+        let dx = b.x - a.x
+        let dy = b.y - a.y
+        let lenSq = dx * dx + dy * dy
+        guard lenSq > 0 else { return a }
+        let t = max(0, min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq))
+        return CGPoint(x: a.x + CGFloat(t) * dx, y: a.y + CGFloat(t) * dy)
     }
 
     // MARK: - Interaction
@@ -455,6 +663,82 @@ struct PhysicalPinHandle: View {
     private var strokeColor: Color {
         if isFirstOfRouting { return .accentColor }
         return .primary.opacity(0.85)
+    }
+}
+
+// MARK: - Route waypoint handle
+
+/// Small draggable dot at one waypoint of the selected route segment. Visual
+/// only — the drag gesture is attached at the call site so it has access to
+/// the in-view drag state.
+struct WaypointHandle: View {
+    @State private var hovered = false
+
+    var body: some View {
+        Circle()
+            .fill(Color.accentColor)
+            .overlay(Circle().stroke(Color.white, lineWidth: 1.2))
+            .frame(width: hovered ? 13 : 10, height: hovered ? 13 : 10)
+            .contentShape(Rectangle().size(width: 22, height: 22))
+            .onHover { hovered = $0 }
+            .help("Drag to reshape route")
+            .animation(.easeOut(duration: 0.08), value: hovered)
+    }
+}
+
+// MARK: - Right-click catcher
+
+/// SwiftUI on macOS doesn't expose secondary-button taps, so we drop a thin
+/// NSView into the hierarchy that:
+///  * returns `nil` from `hitTest` so left clicks (and other gestures) pass
+///    through to sibling SwiftUI views beneath it,
+///  * registers a local NSEvent monitor while attached to a window so that
+///    right-clicks anywhere over the host view are observed and reported
+///    in SwiftUI-style (Y-down) coordinates.
+struct RightClickCatcher: NSViewRepresentable {
+    let onRightClick: (CGPoint) -> Void
+
+    func makeNSView(context: Context) -> RightClickCatcherView {
+        let v = RightClickCatcherView()
+        v.onRightClick = onRightClick
+        return v
+    }
+
+    func updateNSView(_ nsView: RightClickCatcherView, context: Context) {
+        nsView.onRightClick = onRightClick
+    }
+}
+
+final class RightClickCatcherView: NSView {
+    var onRightClick: ((CGPoint) -> Void)?
+    private var monitor: Any?
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+            return
+        }
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) { [weak self] event in
+            guard let self,
+                  let win = self.window,
+                  event.window === win
+            else { return event }
+            let appKitPoint = self.convert(event.locationInWindow, from: nil)
+            guard self.bounds.contains(appKitPoint) else { return event }
+            // NSView is Y-up from bottom; SwiftUI's local coords go Y-down from top.
+            let swiftUIPoint = CGPoint(x: appKitPoint.x, y: self.bounds.height - appKitPoint.y)
+            self.onRightClick?(swiftUIPoint)
+            return nil
+        }
+    }
+
+    deinit {
+        if let monitor { NSEvent.removeMonitor(monitor) }
     }
 }
 
