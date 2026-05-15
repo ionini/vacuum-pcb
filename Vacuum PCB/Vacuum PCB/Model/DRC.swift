@@ -3,22 +3,19 @@ import Foundation
 /// Topology checks on the physical projection.
 ///
 /// The schematic owns the netlist; the physical layout is a projection that
-/// must realise it. Right now we check exactly one thing per net: are all of
-/// its pins connected to each other through routed segments?
-///
-/// Two segments are considered electrically (pneumatically) joined when they
-/// share a waypoint position. Pin world positions count as waypoints for this
-/// purpose, so a segment whose endpoint sits on a pin connects to that pin.
-/// This matches the CAD pipeline: channel meshes union together at shared
-/// waypoints via sphere joints.
+/// must realise it. Per-net we check that pins are joined by routed segments
+/// (union-find on waypoints, same logic the CAD pipeline relies on), and we
+/// cross-check pairs of route segments on each layer to make sure foreign
+/// nets aren't within `manufacturing.minChannelSpacing` of each other.
 ///
 /// What we *don't* check yet (deferred to a fuller iter-4 DRC):
 /// - routes crossing foreign component exclusion zones
 /// - pin/route layer mismatches
-/// - minimum channel spacing
 /// - net membership of route segments (we accept the document's `Route.netId`
 ///   without re-verifying that the segments only touch that net's pins —
 ///   the routing UI is supposed to enforce that at draw time).
+/// - resistor serpentines and port bores in the clearance check (route
+///   segments only for now).
 enum DRC {
     struct Issue: Identifiable, Hashable {
         let id = UUID()
@@ -43,6 +40,12 @@ enum DRC {
             /// the cross-plate bore is one-sided and won't connect through
             /// the silicone.
             case orphanVia(Point)
+            /// Two route segments belonging to different nets pass within
+            /// `manufacturing.minChannelSpacing` of each other on the same
+            /// plate. CSG would either fuse them into a short or leave the
+            /// plate material between them too thin to print. The `gap` is
+            /// the measured min distance (0 for crossings).
+            case channelClearance(otherNetLabel: String, layer: Layer, gap: Double)
         }
 
         var summary: String {
@@ -55,6 +58,10 @@ enum DRC {
                 return "\(netLabel): pin \(p.pinKey) unreached by routing"
             case .orphanVia(let p):
                 return "\(netLabel): unpaired via at (\(String(format: "%.1f", p.x)), \(String(format: "%.1f", p.y)))"
+            case .channelClearance(let other, let layer, let gap):
+                let where_ = layer == .top ? "top" : "bottom"
+                let gapTxt = gap < 0.01 ? "crossing" : "\(String(format: "%.2f", gap)) mm gap"
+                return "\(netLabel) ↔ \(other) on \(where_): \(gapTxt)"
             }
         }
     }
@@ -64,6 +71,7 @@ enum DRC {
         for net in document.logic.nets {
             issues.append(contentsOf: checkNet(net, in: document))
         }
+        issues.append(contentsOf: clearanceIssues(in: document))
         return issues
     }
 
@@ -175,5 +183,109 @@ enum DRC {
         return groups
             .filter { $0.layers.count < 2 }
             .map { Issue(netId: net.id, netLabel: net.label, kind: .orphanVia($0.position)) }
+    }
+
+    // MARK: - Channel clearance
+
+    private struct ChannelEdge {
+        let netId: UUID
+        let netLabel: String
+        let layer: Layer
+        let a: Point
+        let b: Point
+    }
+
+    /// Walks every pair of route polyline edges; if two edges on the same
+    /// layer belong to different nets and pass within `minChannelSpacing`,
+    /// emit one issue per (net-pair, layer) — we don't need to spam the
+    /// sidebar with every offending segment, the user just needs to know
+    /// "those two nets clash on top, look at the canvas".
+    private static func clearanceIssues(in doc: CircuitDocument) -> [Issue] {
+        let threshold = doc.manufacturing.minChannelSpacing
+        let edges = collectRouteEdges(in: doc)
+        guard edges.count >= 2 else { return [] }
+
+        struct PairKey: Hashable {
+            let first: UUID, second: UUID, layer: Layer
+            init(_ a: UUID, _ b: UUID, _ layer: Layer) {
+                let ordered = a.uuidString < b.uuidString ? (a, b) : (b, a)
+                self.first = ordered.0; self.second = ordered.1; self.layer = layer
+            }
+        }
+        var reported: Set<PairKey> = []
+        var issues: [Issue] = []
+        for i in 0..<edges.count {
+            for j in (i + 1)..<edges.count {
+                let a = edges[i], b = edges[j]
+                if a.netId == b.netId { continue }
+                if a.layer != b.layer { continue }
+                let key = PairKey(a.netId, b.netId, a.layer)
+                if reported.contains(key) { continue }
+                let d = segmentDistance(a.a, a.b, b.a, b.b)
+                guard d < threshold else { continue }
+                reported.insert(key)
+                issues.append(Issue(
+                    netId: a.netId, netLabel: a.netLabel,
+                    kind: .channelClearance(otherNetLabel: b.netLabel, layer: a.layer, gap: d)
+                ))
+            }
+        }
+        return issues
+    }
+
+    private static func collectRouteEdges(in doc: CircuitDocument) -> [ChannelEdge] {
+        let labels = Dictionary(uniqueKeysWithValues: doc.logic.nets.map { ($0.id, $0.label) })
+        var out: [ChannelEdge] = []
+        for route in doc.physical.routes {
+            let label = labels[route.netId] ?? "?"
+            for seg in route.segments {
+                let pts = seg.waypoints
+                guard pts.count >= 2 else { continue }
+                for i in 0..<(pts.count - 1) {
+                    out.append(ChannelEdge(
+                        netId: route.netId, netLabel: label, layer: seg.layer,
+                        a: pts[i].position, b: pts[i + 1].position
+                    ))
+                }
+            }
+        }
+        return out
+    }
+
+    /// 2D point-to-point on collapsed segments, point-to-segment otherwise,
+    /// and an explicit intersection test so two crossing edges produce a 0
+    /// gap (the four-endpoint distances alone would miss that).
+    private static func segmentDistance(_ a: Point, _ b: Point, _ c: Point, _ d: Point) -> Double {
+        if segmentsIntersect(a, b, c, d) { return 0 }
+        return min(
+            min(pointSegmentDistance(a, c, d), pointSegmentDistance(b, c, d)),
+            min(pointSegmentDistance(c, a, b), pointSegmentDistance(d, a, b))
+        )
+    }
+
+    private static func pointSegmentDistance(_ p: Point, _ a: Point, _ b: Point) -> Double {
+        let dx = b.x - a.x, dy = b.y - a.y
+        let lenSq = dx * dx + dy * dy
+        guard lenSq > 0 else {
+            let ex = p.x - a.x, ey = p.y - a.y
+            return (ex * ex + ey * ey).squareRoot()
+        }
+        let t = max(0, min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq))
+        let projX = a.x + t * dx
+        let projY = a.y + t * dy
+        let ex = p.x - projX, ey = p.y - projY
+        return (ex * ex + ey * ey).squareRoot()
+    }
+
+    private static func segmentsIntersect(_ p1: Point, _ p2: Point, _ p3: Point, _ p4: Point) -> Bool {
+        func cross(_ a: Point, _ b: Point, _ c: Point) -> Double {
+            (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
+        }
+        let d1 = cross(p3, p4, p1)
+        let d2 = cross(p3, p4, p2)
+        let d3 = cross(p1, p2, p3)
+        let d4 = cross(p1, p2, p4)
+        return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0))
+            && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))
     }
 }
