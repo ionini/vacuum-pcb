@@ -36,14 +36,24 @@ enum Ratsnest {
     private static func missingEdges(net: Net, in doc: CircuitDocument) -> [RatsnestEdge] {
         guard net.pins.count >= 2 else { return [] }
 
-        // 1. Resolve placed pin world positions.
-        var placedPins: [(ref: PinRef, position: Point)] = []
+        // 1. Resolve placed pin world positions + the owning component's
+        //    kind (so we can pick a port / rail anchor below).
+        struct PlacedPin {
+            let ref: PinRef
+            let position: Point
+            let kind: ComponentKind
+        }
+        var placedPins: [PlacedPin] = []
         for pinRef in net.pins {
             guard let placement = doc.physical.placements.first(where: { $0.componentId == pinRef.componentId }),
                   let component = doc.logic.components.first(where: { $0.id == pinRef.componentId }),
                   let fpPin = component.footprint.pin(pinRef.pinKey)
             else { continue }
-            placedPins.append((pinRef, placement.worldPosition(of: fpPin)))
+            placedPins.append(PlacedPin(
+                ref: pinRef,
+                position: placement.worldPosition(of: fpPin),
+                kind: component.kind
+            ))
         }
         guard placedPins.count >= 2 else { return [] }
 
@@ -102,8 +112,37 @@ enum Ratsnest {
             }
         }
 
-        // 4. Kruskal's MST: cheapest distance first, accept if the pair is
-        // not yet in the same combined component.
+        // 4. Pick the layout strategy, mirroring NetEdgeBuilder on the
+        // schematic side so the two views agree:
+        //   * If the net has a port (input/output) → star from it.
+        //   * Else if a rail (vac / vent) → star from it.
+        //   * Else fall back to Kruskal MST.
+        // Routes already drawn pre-merge their pins so an anchored star
+        // doesn't redraw a connection the user already routed.
+        let anchorIdx: Int? = {
+            if let i = placedPins.firstIndex(where: { $0.kind == .port }) { return i }
+            if let i = placedPins.firstIndex(where: {
+                $0.kind == .vacuumSource || $0.kind == .atmVent
+            }) { return i }
+            return nil
+        }()
+
+        if let anchorIdx {
+            var edges: [RatsnestEdge] = []
+            let anchor = placedPins[anchorIdx]
+            for i in 0..<placedPins.count where i != anchorIdx {
+                if pinFind(anchorIdx) == pinFind(i) { continue }
+                pinUnion(anchorIdx, i)
+                edges.append(RatsnestEdge(
+                    netId: net.id, netLabel: net.label,
+                    a: anchor.position,
+                    b: placedPins[i].position
+                ))
+            }
+            return edges
+        }
+
+        // 5. Kruskal's MST fallback for component-only nets.
         struct Edge { let i: Int; let j: Int; let d: Double }
         var pairs: [Edge] = []
         pairs.reserveCapacity(placedPins.count * (placedPins.count - 1) / 2)
