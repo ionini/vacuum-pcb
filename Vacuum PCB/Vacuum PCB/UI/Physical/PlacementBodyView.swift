@@ -56,31 +56,38 @@ struct PlacementBodyView: View {
     }
 
     private func drawResistor(in ctx: inout GraphicsContext) {
-        let halfLen: Double
-        switch component.resistorSize ?? .medium {
-        case .small:  halfLen = 3.0
-        case .medium: halfLen = 5.0
-        case .large:  halfLen = 8.0
-        }
-        let halfWid = 1.5
+        // Body is always the footprint size, independent of S/M/L — only the
+        // squiggle inside changes. Matches the CAD pipeline by calling the
+        // same path generator.
+        let halfLen = ManufacturingConstants.resistorFootprintLength / 2
+        let halfWid = ManufacturingConstants.resistorFootprintWidth / 2
         let hl = halfLen * transform.ptsPerMm
         let hw = halfWid * transform.ptsPerMm
         let rect = CGRect(x: -hl, y: -hw, width: 2 * hl, height: 2 * hw)
         let color = layerColor(placement.layer)
         ctx.stroke(Path(roundedRect: rect, cornerRadius: 1), with: .color(color), lineWidth: 1.0)
 
-        // Stylized serpentine.
-        let y = hw * 0.6
+        let transitions = ResistorGeometry.transitions(for: component.resistorSize ?? .medium)
+        let waypoints = ResistorGeometry.path(
+            transitions: transitions, halfLen: halfLen, halfWid: halfWid
+        )
+        guard let first = waypoints.first else { return }
         var path = Path()
-        path.move(to: CGPoint(x: -hl, y: 0))
-        path.addLine(to: CGPoint(x: -hl, y: y))
-        path.addLine(to: CGPoint(x:   0, y: y))
-        path.addLine(to: CGPoint(x:   0, y: -y))
-        path.addLine(to: CGPoint(x:  hl, y: -y))
-        path.addLine(to: CGPoint(x:  hl, y: 0))
-        ctx.stroke(path, with: .color(color.opacity(0.7)),
-                   style: StrokeStyle(lineWidth: max(2.0, transform.ptsPerMm * manufacturing.channelDiameter * 0.6),
-                                      lineCap: .round, lineJoin: .round))
+        path.move(to: screen(first))
+        for p in waypoints.dropFirst() { path.addLine(to: screen(p)) }
+        ctx.stroke(
+            path,
+            with: .color(color.opacity(0.7)),
+            style: StrokeStyle(
+                lineWidth: max(1.5, manufacturing.resistorChannelDiameter * transform.ptsPerMm * 0.85),
+                lineCap: .round,
+                lineJoin: .round
+            )
+        )
+    }
+
+    private func screen(_ p: Point) -> CGPoint {
+        CGPoint(x: p.x * transform.ptsPerMm, y: p.y * transform.ptsPerMm)
     }
 
     private func drawPort(in ctx: inout GraphicsContext) {
