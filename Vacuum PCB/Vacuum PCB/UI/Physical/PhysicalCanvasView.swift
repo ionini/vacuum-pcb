@@ -14,6 +14,16 @@ struct PhysicalCanvasView: View {
     @State private var transform: CanvasTransform = .default
     @State private var mouseLocation: CGPoint = .zero
     @State private var draggingWaypoint: DraggingWaypoint?
+    @State private var draggingPlacement: DraggingPlacement?
+
+    /// Live state for placement drags. We carry the offset in-view so the
+    /// body, pin handles, and hit target can render at the cursor without
+    /// committing to the document on every gesture tick (which would kick
+    /// off a DRC pass and 3D rebuild every frame).
+    struct DraggingPlacement: Equatable {
+        let componentId: UUID
+        var translation: CGSize
+    }
 
     /// Live state for the selected segment's vertex drag. Held in-view so
     /// the document isn't mutated on every gesture tick (which would kick
@@ -173,6 +183,7 @@ struct PhysicalCanvasView: View {
                         visible: visible,
                         isSelected: selection.placementComponentId == placement.componentId
                     )
+                    .offset(dragOffset(for: placement.componentId))
                 }
             }
         }
@@ -193,20 +204,8 @@ struct PhysicalCanvasView: View {
                         .contentShape(Rectangle())
                         .frame(width: size.width, height: size.height)
                         .position(pos)
-                        .gesture(
-                            DragGesture(minimumDistance: 2)
-                                .onChanged { _ in
-                                    selection = .placement(componentId: placement.componentId)
-                                }
-                                .onEnded { value in
-                                    let endWorld = transform.toWorld(
-                                        CGPoint(x: pos.x + value.translation.width,
-                                                y: pos.y + value.translation.height)
-                                    )
-                                    let snapped = transform.snap(endWorld, grid: grid)
-                                    movePlacement(placement.componentId, to: snapped)
-                                }
-                        )
+                        .offset(dragOffset(for: placement.componentId))
+                        .gesture(placementDragGesture(placement))
                         .onTapGesture {
                             selection = .placement(componentId: placement.componentId)
                             routingState = .idle
@@ -216,11 +215,53 @@ struct PhysicalCanvasView: View {
         }
     }
 
+    /// Screen-space offset to apply to all parts of a placement (body, hit
+    /// target, pin handles) while the user is dragging it. Zero when this
+    /// placement isn't the active drag.
+    private func dragOffset(for componentId: UUID) -> CGSize {
+        guard let d = draggingPlacement, d.componentId == componentId else { return .zero }
+        return d.translation
+    }
+
+    private func placementDragGesture(_ placement: Placement) -> some Gesture {
+        // `.global` because the hit target moves with the cursor via the
+        // .offset() above — a `.local` translation would collapse as the
+        // view moves under the gesture, same pattern as the schematic
+        // component drag.
+        DragGesture(minimumDistance: 2, coordinateSpace: .global)
+            .onChanged { value in
+                if draggingPlacement == nil {
+                    draggingPlacement = DraggingPlacement(
+                        componentId: placement.componentId,
+                        translation: value.translation
+                    )
+                    selection = .placement(componentId: placement.componentId)
+                    routingState = .idle
+                } else {
+                    draggingPlacement?.translation = value.translation
+                }
+            }
+            .onEnded { value in
+                let base = transform.toScreen(placement.position)
+                let endWorld = transform.toWorld(
+                    CGPoint(x: base.x + value.translation.width,
+                            y: base.y + value.translation.height)
+                )
+                let snapped = transform.snap(endWorld, grid: grid)
+                movePlacement(placement.componentId, to: snapped)
+                draggingPlacement = nil
+            }
+    }
+
     private func hitSize(for c: Component) -> CGSize {
-        // Footprint exclusion-rect dimensions in pts.
+        // Footprint exclusion-rect dimensions in pts, padded so small parts
+        // (especially ports at ~3 mm) stay easy to grab even when zoomed in
+        // close to their actual size. 40 pt minimum keeps the cursor target
+        // comfortable for a trackpad without overlapping neighbouring parts
+        // on a typical board.
         let bounds = c.footprint.boundingRect
-        let w = max(20, bounds.size.width * transform.ptsPerMm)
-        let h = max(20, bounds.size.height * transform.ptsPerMm)
+        let w = max(40, bounds.size.width * transform.ptsPerMm + 12)
+        let h = max(40, bounds.size.height * transform.ptsPerMm + 12)
         return CGSize(width: w, height: h)
     }
 
@@ -243,6 +284,7 @@ struct PhysicalCanvasView: View {
                                 handlePinTap(componentId: placement.componentId, pinKey: pin.key)
                             }
                             .position(screen)
+                            .offset(dragOffset(for: placement.componentId))
                         }
                     }
                 }
