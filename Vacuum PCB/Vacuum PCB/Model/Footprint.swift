@@ -8,10 +8,10 @@ enum RelativeLayer: Hashable {
     case same
     case opposite
 
-    func resolved(against base: Layer) -> Layer {
+    func resolved(against base: Plate) -> Plate {
         switch self {
         case .same: return base
-        case .opposite: return base == .top ? .bottom : .top
+        case .opposite: return base.opposite
         }
     }
 }
@@ -150,8 +150,10 @@ extension Placement {
         return Point(x: position.x + rotated.x, y: position.y + rotated.y)
     }
 
-    /// Resolved layer the pin actually sits on.
-    func resolvedLayer(of pin: FootprintPin) -> Layer {
+    /// Resolved plate the pin actually sits on. Component pins are anchored
+    /// to a plate (not a depth) — they always live at the silicone-facing
+    /// surface (depth 0).
+    func resolvedPlate(of pin: FootprintPin) -> Plate {
         pin.relativeLayer.resolved(against: layer)
     }
 }

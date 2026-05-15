@@ -49,11 +49,13 @@ enum SimulatorExporter {
         let m = doc.manufacturing
         let outline = doc.physical.boardOutline
 
-        // Z-layout mirrors the print pipeline.
+        // Z-layout mirrors the print pipeline. Depth-0 midlines are used for
+        // every component feature (drop bores, dimples, port bores, blocker,
+        // gate); routes look up their own layer's midline.
         let topInnerZ    =  m.siliconeThickness / 2
         let bottomInnerZ = -m.siliconeThickness / 2
-        let topMidZ      = topInnerZ + m.plateThickness / 2
-        let bottomMidZ   = bottomInnerZ - m.plateThickness / 2
+        let topMidZ      = m.midZ(for: Layer(plate: .top, depth: 0))
+        let bottomMidZ   = m.midZ(for: Layer(plate: .bottom, depth: 0))
 
         var fluidParts: [Mesh] = []
         var inletOutletBodies: [Body] = []
@@ -72,10 +74,10 @@ enum SimulatorExporter {
                 // Drop bores at each transistor pin contribute to the fluid
                 // volume so the channels reach the silicone face.
                 for pin in footprint.pins {
-                    let pinLayer = placement.resolvedLayer(of: pin)
+                    let pinPlate = placement.resolvedPlate(of: pin)
                     let pinWorld = placement.worldPosition(of: pin)
                     fluidParts.append(dropBoreMesh(
-                        at: pinWorld, onLayer: pinLayer,
+                        at: pinWorld, onPlate: pinPlate,
                         radius: m.channelDiameter / 2,
                         topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ,
                         topMidZ: topMidZ, bottomMidZ: bottomMidZ
@@ -104,7 +106,7 @@ enum SimulatorExporter {
                 let transitions = ResistorGeometry.transitions(for: component.resistorSize ?? .medium)
                 let local = ResistorGeometry.path(transitions: transitions, halfLen: halfLen, halfWid: halfWid)
                 let world = local.map { localToWorld($0, placement: placement) }
-                let midZ = placement.layer == .top ? topMidZ : bottomMidZ
+                let midZ = m.midZ(for: Layer(plate: placement.layer, depth: 0))
                 fluidParts.append(channelMesh(
                     waypoints: world,
                     radius: m.resistorChannelDiameter / 2,
@@ -126,22 +128,38 @@ enum SimulatorExporter {
             }
         }
 
-        // 2. Route channels + via tubes so top/bottom connect at each via.
+        // 2. Route channels + via tubes so layers connect at each via.
+        // Via tubes are collected separately so we can compute their full z
+        // span from both twins (twins may be on different plates or on the
+        // same plate at different depths).
+        struct ViaGroup { var position: Point; var layers: Set<Layer> }
+        var viaGroups: [ViaGroup] = []
         for route in doc.physical.routes {
             for segment in route.segments {
-                let midZ = segment.layer == .top ? topMidZ : bottomMidZ
+                let midZ = m.midZ(for: segment.layer)
                 fluidParts.append(channelMesh(
                     waypoints: segment.waypoints.map(\.position),
                     radius: m.channelDiameter / 2,
                     midZ: midZ
                 ))
                 for wp in segment.waypoints where wp.kind == .via {
-                    fluidParts.append(viaTubeMesh(
-                        at: wp.position, radius: m.channelDiameter / 2,
-                        topMidZ: topMidZ, bottomMidZ: bottomMidZ
-                    ))
+                    if let idx = viaGroups.firstIndex(where: {
+                        abs($0.position.x - wp.position.x) < 0.05 &&
+                        abs($0.position.y - wp.position.y) < 0.05
+                    }) {
+                        viaGroups[idx].layers.insert(segment.layer)
+                    } else {
+                        viaGroups.append(ViaGroup(position: wp.position, layers: [segment.layer]))
+                    }
                 }
             }
+        }
+        for group in viaGroups where group.layers.count >= 2 {
+            let zs = group.layers.map { m.midZ(for: $0) }
+            fluidParts.append(viaTubeMesh(
+                at: group.position, radius: m.channelDiameter / 2,
+                zLo: zs.min()!, zHi: zs.max()!
+            ))
         }
 
         let fluidVolume = fluidParts.isEmpty ? Mesh.empty : Mesh.union(fluidParts).makeWatertight()
@@ -192,13 +210,13 @@ enum SimulatorExporter {
     }
 
     private static func dropBoreMesh(
-        at p: Point, onLayer layer: Layer, radius: Double,
+        at p: Point, onPlate plate: Plate, radius: Double,
         topInnerZ: Double, bottomInnerZ: Double,
         topMidZ: Double, bottomMidZ: Double
     ) -> Mesh {
         let eps = 0.05
         let zLo: Double, zHi: Double
-        switch layer {
+        switch plate {
         case .top:    zLo = topInnerZ - eps;     zHi = topMidZ + eps
         case .bottom: zLo = bottomMidZ - eps;    zHi = bottomInnerZ + eps
         }
@@ -209,17 +227,17 @@ enum SimulatorExporter {
             .translated(by: Vector(p.x, p.y, cz))
     }
 
-    /// A short vertical bore through the silicone gap at a via waypoint so
-    /// the fluid volume bridges from top channel midline to bottom channel
-    /// midline. Same role the via cutter plays in the print pipeline.
+    /// Vertical tube spanning the via's twin layers so the fluid volume
+    /// bridges across them. Same role the via cutter plays in the print
+    /// pipeline; range is provided by the caller from the twins' midZs.
     private static func viaTubeMesh(
-        at p: Point, radius: Double, topMidZ: Double, bottomMidZ: Double
+        at p: Point, radius: Double, zLo: Double, zHi: Double
     ) -> Mesh {
         let eps = 0.05
-        let zHi = topMidZ + eps
-        let zLo = bottomMidZ - eps
-        let len = zHi - zLo
-        let cz = (zHi + zLo) / 2
+        let lo = zLo - eps
+        let hi = zHi + eps
+        let len = hi - lo
+        let cz = (hi + lo) / 2
         return Mesh.cylinder(radius: radius, height: len, slices: 16)
             .rotated(by: Euclid.Rotation.pitch(.halfPi))
             .translated(by: Vector(p.x, p.y, cz))

@@ -68,19 +68,39 @@ enum RoutingState: Hashable {
     }
 }
 
-/// Which layers are visible in the physical editor.
-struct LayerVisibility: Hashable {
-    var top: Bool
-    var bottom: Bool
+/// Which layers are visible in the physical editor. With multi-layer plates
+/// this generalises to either "everything", "everything on one plate", or an
+/// explicit pick of layers (the per-layer pills with multi-select).
+enum LayerVisibility: Hashable {
+    case all
+    case plateOnly(Plate)
+    case explicit(Set<Layer>)
 
-    static let both   = LayerVisibility(top: true,  bottom: true)
-    static let topOnly    = LayerVisibility(top: true,  bottom: false)
-    static let bottomOnly = LayerVisibility(top: false, bottom: true)
+    /// Legacy three-pill aliases. Existing code uses these as the canonical
+    /// values; UI extensions can swap in the multi-select variant later.
+    static let both: LayerVisibility = .all
+    static let topOnly: LayerVisibility = .plateOnly(.top)
+    static let bottomOnly: LayerVisibility = .plateOnly(.bottom)
 
     func contains(_ layer: Layer) -> Bool {
-        switch layer {
-        case .top: return top
-        case .bottom: return bottom
+        switch self {
+        case .all: return true
+        case .plateOnly(let plate): return layer.plate == plate
+        case .explicit(let set): return set.contains(layer)
+        }
+    }
+
+    /// Overload for plate-only queries (component bodies, dimples, etc.):
+    /// returns true if *any* layer on this plate is currently visible.
+    func contains(_ plate: Plate) -> Bool { showsAnyLayer(on: plate) }
+
+    /// True when every layer on the given plate is currently visible —
+    /// useful for component-body rendering, which is plate-level.
+    func showsAnyLayer(on plate: Plate) -> Bool {
+        switch self {
+        case .all: return true
+        case .plateOnly(let p): return p == plate
+        case .explicit(let set): return set.contains(where: { $0.plate == plate })
         }
     }
 }

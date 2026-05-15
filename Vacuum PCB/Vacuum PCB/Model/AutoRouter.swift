@@ -73,8 +73,8 @@ enum AutoRouter {
                 if alreadyConnected.same(edge.i, edge.j) { continue }
                 guard let path = AStar2L.run(
                     topGrid: top, bottomGrid: bottom, noVias: noVias,
-                    from: a.position, fromLayer: a.layer,
-                    to: b.position, toLayer: b.layer
+                    from: a.position, fromPlate: a.plate,
+                    to: b.position, toPlate: b.plate
                 ) else { continue }
                 var segments = pathToSegments(path)
                 // A* operates on the manufacturing grid, but pin offsets
@@ -92,7 +92,7 @@ enum AutoRouter {
                     // Mark the new segment in the appropriate grid so
                     // subsequent routes (in this run) avoid it.
                     let pts = seg.waypoints.map(\.position)
-                    let grid = seg.layer == .top ? top : bottom
+                    let grid = seg.layer.plate == .top ? top : bottom
                     for i in 0..<(pts.count - 1) {
                         grid.markLine(pts[i], pts[i + 1], halo: halo)
                     }
@@ -108,32 +108,38 @@ enum AutoRouter {
     /// waypoints — one at the end of the outgoing segment, one at the start
     /// of the incoming segment, both at the same XY. Same model the manual
     /// V-key routing uses.
-    private static func pathToSegments(_ path: [(point: Point, layer: Layer)]) -> [Segment] {
+    private static func pathToSegments(_ path: [(point: Point, plate: Plate)]) -> [Segment] {
         guard !path.isEmpty else { return [] }
         var segments: [Segment] = []
-        var currentLayer = path[0].layer
+        var currentPlate = path[0].plate
         var currentWaypoints: [Waypoint] = [Waypoint(position: path[0].point, kind: .point)]
         for i in 1..<path.count {
             let prev = path[i - 1]
             let cur = path[i]
-            if cur.layer != prev.layer {
+            if cur.plate != prev.plate {
                 // Replace the trailing waypoint of the current segment with
-                // a .via, then start a fresh segment on the new layer also
+                // a .via, then start a fresh segment on the new plate also
                 // beginning at this shared XY as a .via.
                 if let last = currentWaypoints.last {
                     currentWaypoints[currentWaypoints.count - 1] =
                         Waypoint(position: last.position, kind: .via)
                 }
-                segments.append(Segment(waypoints: compactWaypoints(currentWaypoints), layer: currentLayer))
-                currentLayer = cur.layer
+                segments.append(Segment(
+                    waypoints: compactWaypoints(currentWaypoints),
+                    layer: Layer(plate: currentPlate, depth: 0)
+                ))
+                currentPlate = cur.plate
                 currentWaypoints = [Waypoint(position: cur.point, kind: .via)]
             } else {
                 currentWaypoints.append(Waypoint(position: cur.point, kind: .point))
             }
         }
-        segments.append(Segment(waypoints: compactWaypoints(currentWaypoints), layer: currentLayer))
+        segments.append(Segment(
+            waypoints: compactWaypoints(currentWaypoints),
+            layer: Layer(plate: currentPlate, depth: 0)
+        ))
         // Drop any degenerate single-waypoint segments that would survive a
-        // zero-length layer change at the end of the path.
+        // zero-length plate change at the end of the path.
         return segments.filter { $0.waypoints.count >= 2 }
     }
 
@@ -180,7 +186,7 @@ enum AutoRouter {
 
     private struct PlacedPin {
         let position: Point
-        let layer: Layer
+        let plate: Plate
     }
 
     private static func placedPins(for net: Net, in doc: CircuitDocument) -> [PlacedPin] {
@@ -192,7 +198,7 @@ enum AutoRouter {
             else { continue }
             out.append(PlacedPin(
                 position: placement.worldPosition(of: fp),
-                layer: placement.resolvedLayer(of: fp)
+                plate: placement.resolvedPlate(of: fp)
             ))
         }
         return out
@@ -350,8 +356,8 @@ enum AutoRouter {
             else { continue }
             for fpPin in component.footprint.pins {
                 let world = placement.worldPosition(of: fpPin)
-                let layer = placement.resolvedLayer(of: fpPin)
-                let grid = layer == .top ? top : bottom
+                let plate = placement.resolvedPlate(of: fpPin)
+                let grid = plate == .top ? top : bottom
                 let (cx, cy) = grid.toGrid(world)
                 for dy in -1...1 {
                     for dx in -1...1 {
@@ -486,40 +492,41 @@ final class OccupancyGrid {
     }
 }
 
-// MARK: - Two-layer A*
+// MARK: - Two-plate A*
 
-/// A* over a (cell, layer) state space, so the planner can drop vias when
-/// the cheaper path needs the other plate. Same-layer step costs 1; a layer
+/// A* over a (cell, plate) state space, so the planner can drop vias when
+/// the cheaper path needs the other plate. Same-plate step costs 1; a plate
 /// change (via) costs `viaCost` (default 6) so plain runs are preferred.
+/// Auto-routing currently only uses depth-0 channels — the caller wraps the
+/// returned plates into `Layer(plate:, depth: 0)` segments.
 enum AStar2L {
     static func run(
         topGrid: OccupancyGrid, bottomGrid: OccupancyGrid,
         noVias: OccupancyGrid,
-        from start: Point, fromLayer startLayer: Layer,
-        to goal: Point, toLayer goalLayer: Layer,
+        from start: Point, fromPlate startPlate: Plate,
+        to goal: Point, toPlate goalPlate: Plate,
         viaCost: Int = 6
-    ) -> [(point: Point, layer: Layer)]? {
+    ) -> [(point: Point, plate: Plate)]? {
         // Both grids share dims; pick either for coordinate conversion.
         let (sx, sy) = topGrid.toGrid(start)
         let (gx, gy) = topGrid.toGrid(goal)
         guard topGrid.inBounds(sx, sy), topGrid.inBounds(gx, gy) else { return nil }
 
         let cols = topGrid.cols
-        let rows = topGrid.rows
-        let total = cols * rows
-        func gridFor(_ layer: Layer) -> OccupancyGrid {
-            layer == .top ? topGrid : bottomGrid
+        let total = cols * topGrid.rows
+        func gridFor(_ plate: Plate) -> OccupancyGrid {
+            plate == .top ? topGrid : bottomGrid
         }
-        func stateIdx(_ i: Int, _ j: Int, _ layer: Layer) -> Int {
-            (layer == .top ? 0 : 1) * total + j * cols + i
+        func stateIdx(_ i: Int, _ j: Int, _ plate: Plate) -> Int {
+            (plate == .top ? 0 : 1) * total + j * cols + i
         }
-        func unpack(_ idx: Int) -> (i: Int, j: Int, layer: Layer) {
-            let layer: Layer = idx < total ? .top : .bottom
+        func unpack(_ idx: Int) -> (i: Int, j: Int, plate: Plate) {
+            let plate: Plate = idx < total ? .top : .bottom
             let rem = idx % total
-            return (rem % cols, rem / cols, layer)
+            return (rem % cols, rem / cols, plate)
         }
-        func heuristic(_ i: Int, _ j: Int, _ layer: Layer) -> Int {
-            abs(i - gx) + abs(j - gy) + (layer == goalLayer ? 0 : viaCost)
+        func heuristic(_ i: Int, _ j: Int, _ plate: Plate) -> Int {
+            abs(i - gx) + abs(j - gy) + (plate == goalPlate ? 0 : viaCost)
         }
 
         struct Node: Comparable {
@@ -531,10 +538,10 @@ enum AStar2L {
 
         var gScore = Array(repeating: Int.max, count: total * 2)
         var parent = Array(repeating: -1, count: total * 2)
-        let startIdx = stateIdx(sx, sy, startLayer)
-        let goalIdx = stateIdx(gx, gy, goalLayer)
+        let startIdx = stateIdx(sx, sy, startPlate)
+        let goalIdx = stateIdx(gx, gy, goalPlate)
         gScore[startIdx] = 0
-        var open: [Node] = [Node(f: heuristic(sx, sy, startLayer), stateIdx: startIdx)]
+        var open: [Node] = [Node(f: heuristic(sx, sy, startPlate), stateIdx: startIdx)]
 
         let neighbours = [(1, 0), (-1, 0), (0, 1), (0, -1)]
 
@@ -546,39 +553,39 @@ enum AStar2L {
                 return reconstruct(parent: parent, goalIdx: goalIdx, total: total,
                                    cols: cols, topGrid: topGrid, bottomGrid: bottomGrid)
             }
-            let (ci, cj, clayer) = unpack(current.stateIdx)
-            // Same-layer 4-connected moves.
-            let curGrid = gridFor(clayer)
+            let (ci, cj, cplate) = unpack(current.stateIdx)
+            // Same-plate 4-connected moves.
+            let curGrid = gridFor(cplate)
             for (dx, dy) in neighbours {
                 let ni = ci + dx, nj = cj + dy
                 guard curGrid.inBounds(ni, nj) else { continue }
-                let isGoalCell = (ni == gx && nj == gy && clayer == goalLayer)
+                let isGoalCell = (ni == gx && nj == gy && cplate == goalPlate)
                 if curGrid.isBlocked(ni, nj), !isGoalCell { continue }
                 let tentative = gScore[current.stateIdx] + 1
-                let nIdx = stateIdx(ni, nj, clayer)
+                let nIdx = stateIdx(ni, nj, cplate)
                 if tentative < gScore[nIdx] {
                     gScore[nIdx] = tentative
                     parent[nIdx] = current.stateIdx
-                    open.append(Node(f: tentative + heuristic(ni, nj, clayer), stateIdx: nIdx))
+                    open.append(Node(f: tentative + heuristic(ni, nj, cplate), stateIdx: nIdx))
                 }
             }
-            // Layer change at this cell. Two extra checks:
-            //   * the cell on the *other* layer must be free (otherwise we'd
+            // Plate change at this cell. Two extra checks:
+            //   * the cell on the *other* plate must be free (otherwise we'd
             //     punch a via through an existing route on that side),
             //   * the no-via mask must not have flagged this cell — vias
             //     under component bodies (transistor dimples, resistors,
             //     port bores) would compromise the part.
-            let otherLayer: Layer = clayer == .top ? .bottom : .top
-            let isGoalCellOnOther = (ci == gx && cj == gy && otherLayer == goalLayer)
+            let otherPlate: Plate = cplate.opposite
+            let isGoalCellOnOther = (ci == gx && cj == gy && otherPlate == goalPlate)
             if !noVias.isBlocked(ci, cj),
-               !gridFor(otherLayer).isBlocked(ci, cj) || isGoalCellOnOther
+               !gridFor(otherPlate).isBlocked(ci, cj) || isGoalCellOnOther
             {
-                let nIdx = stateIdx(ci, cj, otherLayer)
+                let nIdx = stateIdx(ci, cj, otherPlate)
                 let tentative = gScore[current.stateIdx] + viaCost
                 if tentative < gScore[nIdx] {
                     gScore[nIdx] = tentative
                     parent[nIdx] = current.stateIdx
-                    open.append(Node(f: tentative + heuristic(ci, cj, otherLayer), stateIdx: nIdx))
+                    open.append(Node(f: tentative + heuristic(ci, cj, otherPlate), stateIdx: nIdx))
                 }
             }
         }
@@ -588,21 +595,21 @@ enum AStar2L {
     private static func reconstruct(
         parent: [Int], goalIdx: Int, total: Int, cols: Int,
         topGrid: OccupancyGrid, bottomGrid: OccupancyGrid
-    ) -> [(point: Point, layer: Layer)] {
-        var result: [(Point, Layer)] = []
+    ) -> [(point: Point, plate: Plate)] {
+        var result: [(Point, Plate)] = []
         var idx = goalIdx
         while idx >= 0 {
-            let layer: Layer = idx < total ? .top : .bottom
+            let plate: Plate = idx < total ? .top : .bottom
             let rem = idx % total
             let i = rem % cols
             let j = rem / cols
-            let grid = layer == .top ? topGrid : bottomGrid
-            result.append((grid.toWorld(i, j), layer))
+            let grid = plate == .top ? topGrid : bottomGrid
+            result.append((grid.toWorld(i, j), plate))
             let next = parent[idx]
             if next == idx || next < 0 { break }
             idx = next
         }
-        return result.reversed().map { (point: $0.0, layer: $0.1) }
+        return result.reversed().map { (point: $0.0, plate: $0.1) }
     }
 }
 

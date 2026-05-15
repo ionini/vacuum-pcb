@@ -68,7 +68,7 @@ enum DRC {
             case .orphanVia(let p, _):
                 return "\(netLabel): unpaired via at (\(String(format: "%.1f", p.x)), \(String(format: "%.1f", p.y)))"
             case .channelClearance(_, let other, let layer, let gap, _, _):
-                let where_ = layer == .top ? "top" : "bottom"
+                let where_ = layer.uiLabel
                 let gapTxt = gap < 0.01 ? "crossing" : "\(String(format: "%.2f", gap)) mm gap"
                 return "\(netLabel) ↔ \(other) on \(where_): \(gapTxt)"
             }

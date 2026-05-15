@@ -103,10 +103,20 @@ extension RoutesOverlay {
     }
 
     private func layerColor(_ layer: Layer) -> Color {
-        switch layer {
-        case .top: return .blue
-        case .bottom: return .teal
-        }
+        LayerPalette.color(for: layer)
+    }
+}
+
+/// Shared layer → Color mapping. Plate sets the hue family (top = blue,
+/// bottom = red) so the two plates remain instantly distinguishable; depth
+/// rotates the hue slightly so additional channel layers on the same plate
+/// read as distinct colours without leaving their family.
+enum LayerPalette {
+    static func color(for layer: Layer) -> Color {
+        let palette: [Color] = layer.plate == .top
+            ? [.blue, .cyan, .indigo]
+            : [.red, .orange, .pink]
+        return palette[min(layer.depth, palette.count - 1)]
     }
 }
 
@@ -205,9 +215,6 @@ struct RoutingPreviewOverlay: View {
     }
 
     private func routeColor(_ layer: Layer) -> Color {
-        switch layer {
-        case .top: return .blue
-        case .bottom: return .teal
-        }
+        LayerPalette.color(for: layer)
     }
 }

@@ -31,8 +31,11 @@ struct ManufacturingSettingsView: View {
             }
 
             group("Plates") {
-                row("Plate thickness",    $draftMfg.plateThickness)
-                row("Silicone thickness", $draftMfg.siliconeThickness)
+                row("Plate thickness (single-layer)", $draftMfg.plateThickness)
+                row("Silicone thickness",             $draftMfg.siliconeThickness)
+                row("Inter-layer wall",               $draftMfg.interLayerWall)
+                Text("Multi-layer plates: plate thickness above is the depth-0 plate height. Each extra channel layer adds channelDiameter + inter-layer wall to that plate's height.")
+                    .font(.caption2).foregroundStyle(.secondary)
             }
 
             group("Channels") {
@@ -115,7 +118,8 @@ struct ManufacturingSettingsView: View {
             dimpleDepth: max(0.05, m.dimpleDepth),
             gridPitch: max(0.05, m.gridPitch),
             minChannelSpacing: max(0.05, m.minChannelSpacing),
-            resistorChannelDiameter: max(0.05, m.resistorChannelDiameter)
+            resistorChannelDiameter: max(0.05, m.resistorChannelDiameter),
+            interLayerWall: max(0.1, m.interLayerWall)
         )
     }
 

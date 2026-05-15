@@ -39,6 +39,12 @@ struct ManufacturingConstants: Codable, Hashable {
     /// (fixed) footprint, not how wide it is.
     var resistorChannelDiameter: Double
 
+    /// Plate material between two adjacent channel layers inside the same
+    /// plate (only relevant when `PhysicalLayout` has more than one layer on
+    /// that plate). Centre-to-centre spacing between consecutive layers is
+    /// `channelDiameter + interLayerWall`.
+    var interLayerWall: Double
+
     static let defaults = ManufacturingConstants(
         plateThickness: 5.0,
         channelDiameter: 1.5,
@@ -48,20 +54,23 @@ struct ManufacturingConstants: Codable, Hashable {
         dimpleDepth: 1.0,
         gridPitch: 1.0,
         minChannelSpacing: 1.5,
-        resistorChannelDiameter: 0.5
+        resistorChannelDiameter: 0.5,
+        interLayerWall: 0.6
     )
 
     // Codable hand-rolled so older .vpcb files (written before
-    // resistorChannelDiameter existed) still decode — they get the default.
+    // resistorChannelDiameter or interLayerWall existed) still decode — they
+    // get the default for any field they didn't write.
     private enum CodingKeys: String, CodingKey {
         case plateThickness, channelDiameter, portBoreDiameter, siliconeThickness
         case dimpleDiameter, dimpleDepth, gridPitch, minChannelSpacing
-        case resistorChannelDiameter
+        case resistorChannelDiameter, interLayerWall
     }
 
     init(plateThickness: Double, channelDiameter: Double, portBoreDiameter: Double,
          siliconeThickness: Double, dimpleDiameter: Double, dimpleDepth: Double,
-         gridPitch: Double, minChannelSpacing: Double, resistorChannelDiameter: Double) {
+         gridPitch: Double, minChannelSpacing: Double, resistorChannelDiameter: Double,
+         interLayerWall: Double) {
         self.plateThickness = plateThickness
         self.channelDiameter = channelDiameter
         self.portBoreDiameter = portBoreDiameter
@@ -71,6 +80,7 @@ struct ManufacturingConstants: Codable, Hashable {
         self.gridPitch = gridPitch
         self.minChannelSpacing = minChannelSpacing
         self.resistorChannelDiameter = resistorChannelDiameter
+        self.interLayerWall = interLayerWall
     }
 
     /// Outer length of the resistor footprint (pin-to-pin distance). Constant
@@ -92,5 +102,29 @@ struct ManufacturingConstants: Codable, Hashable {
         minChannelSpacing = try c.decode(Double.self, forKey: .minChannelSpacing)
         resistorChannelDiameter = try c.decodeIfPresent(Double.self,
                                                        forKey: .resistorChannelDiameter) ?? 0.5
+        interLayerWall = try c.decodeIfPresent(Double.self,
+                                              forKey: .interLayerWall) ?? 0.6
+    }
+
+    /// Effective thickness of a plate with `layerCount` channel layers. The
+    /// single-layer case (legacy) reduces to exactly `plateThickness` — depth
+    /// 0 sits at the plate midline as before. Each additional layer extends
+    /// the plate outward by `channelDiameter + interLayerWall`, preserving
+    /// the depth-0 channel's position relative to the silicone face.
+    func plateThickness(forLayerCount layerCount: Int) -> Double {
+        plateThickness + Double(max(0, layerCount - 1)) * (channelDiameter + interLayerWall)
+    }
+
+    /// World-Z of a channel layer's midline. The silicone gap is centred on
+    /// z = 0 with the top plate above (`topInnerZ = +siliconeThickness/2`)
+    /// and the bottom plate below. Depth 0 sits at the silicone-facing half
+    /// of the original plate slab (preserving today's geometry); each deeper
+    /// layer steps outward by `channelDiameter + interLayerWall`.
+    func midZ(for layer: Layer) -> Double {
+        let innerZ = layer.plate == .top
+            ? siliconeThickness / 2
+            : -siliconeThickness / 2
+        let baseOffset = plateThickness / 2 + Double(layer.depth) * (channelDiameter + interLayerWall)
+        return layer.plate == .top ? innerZ + baseOffset : innerZ - baseOffset
     }
 }

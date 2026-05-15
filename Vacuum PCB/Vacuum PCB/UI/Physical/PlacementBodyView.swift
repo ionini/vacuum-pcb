@@ -67,7 +67,7 @@ struct PlacementBodyView: View {
 
     private func drawTransistor(in ctx: inout GraphicsContext) {
         let dimpleR = manufacturing.dimpleDiameter / 2 * transform.ptsPerMm
-        let dimpleColor = layerColor(placement.layer)
+        let dimpleColor = plateColor(placement.layer)
         let dimpleRect = CGRect(x: -dimpleR, y: -dimpleR, width: 2 * dimpleR, height: 2 * dimpleR)
         ctx.fill(Path(ellipseIn: dimpleRect), with: .color(dimpleColor.opacity(0.25)))
         ctx.stroke(Path(ellipseIn: dimpleRect), with: .color(dimpleColor), lineWidth: 1.2)
@@ -75,8 +75,7 @@ struct PlacementBodyView: View {
         // Source/drain holes on the opposite plate
         let holeR = manufacturing.channelDiameter / 2 * transform.ptsPerMm
         let pitch = 1.5 * transform.ptsPerMm           // matches Footprint's halfPitch
-        let oppositeLayer: Layer = placement.layer == .top ? .bottom : .top
-        let holeColor = layerColor(oppositeLayer)
+        let holeColor = plateColor(placement.layer.opposite)
         for x in [-pitch, pitch] {
             let r = CGRect(x: x - holeR, y: -holeR, width: 2 * holeR, height: 2 * holeR)
             ctx.fill(Path(ellipseIn: r), with: .color(holeColor.opacity(0.45)))
@@ -92,7 +91,7 @@ struct PlacementBodyView: View {
         // makes wiring around it feel cramped.
         let halfLen = ManufacturingConstants.resistorFootprintLength / 2
         let halfWid = ManufacturingConstants.resistorFootprintWidth / 2
-        let color = layerColor(placement.layer)
+        let color = plateColor(placement.layer)
         let transitions = ResistorGeometry.transitions(for: component.resistorSize ?? .medium)
         let waypoints = ResistorGeometry.path(
             transitions: transitions, halfLen: halfLen, halfWid: halfWid
@@ -125,7 +124,7 @@ struct PlacementBodyView: View {
         tri.addLine(to: CGPoint(x: -r * 0.5, y:  r * 0.7))
         tri.addLine(to: CGPoint(x: -r * 0.5, y: -r * 0.7))
         tri.closeSubpath()
-        let color = layerColor(placement.layer)
+        let color = plateColor(placement.layer)
         ctx.fill(tri, with: .color(color.opacity(0.30)))
         ctx.stroke(tri, with: .color(color), lineWidth: 1.0)
 
@@ -144,10 +143,10 @@ struct PlacementBodyView: View {
                    style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
     }
 
-    private func layerColor(_ layer: Layer) -> Color {
-        switch layer {
-        case .top:    return Color.blue
-        case .bottom: return Color.teal
-        }
+    /// Component features all live at the silicone-facing surface of their
+    /// plate (depth 0), so reuse the shared depth-0 palette colour for that
+    /// plate. Multi-layer depth tinting only applies to routes.
+    private func plateColor(_ plate: Plate) -> Color {
+        LayerPalette.color(for: Layer(plate: plate, depth: 0))
     }
 }

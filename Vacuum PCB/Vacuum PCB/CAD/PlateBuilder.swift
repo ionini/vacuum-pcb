@@ -28,60 +28,71 @@ enum PlateBuilder {
 
         let topInnerZ = m.siliconeThickness / 2                  // top plate's silicone-facing face
         let bottomInnerZ = -m.siliconeThickness / 2              // bottom plate's silicone-facing face
-        let topMidZ = topInnerZ + m.plateThickness / 2           // channel midline, top
-        let bottomMidZ = bottomInnerZ - m.plateThickness / 2     // channel midline, bottom
 
-        var top = plateBase(outline: outline, thickness: m.plateThickness,
+        // Per-plate thicknesses scale with the number of channel layers in
+        // each plate. With layerCount == 1 they reduce to today's
+        // `plateThickness` value, so single-layer designs print bit-identical
+        // geometry.
+        let topThickness = m.plateThickness(forLayerCount: doc.physical.topLayers)
+        let bottomThickness = m.plateThickness(forLayerCount: doc.physical.bottomLayers)
+
+        var top = plateBase(outline: outline, thickness: topThickness,
                             innerZ: topInnerZ, side: .top)
-        var bottom = plateBase(outline: outline, thickness: m.plateThickness,
+        var bottom = plateBase(outline: outline, thickness: bottomThickness,
                                innerZ: bottomInnerZ, side: .bottom)
+
+        // Depth-0 midline z's, used by drop bores / dimples / port bores
+        // (all of which anchor to the silicone-facing channel layer).
+        let topMidZ = m.midZ(for: Layer(plate: .top, depth: 0))
+        let bottomMidZ = m.midZ(for: Layer(plate: .bottom, depth: 0))
 
         var topCutters: [Mesh] = []
         var bottomCutters: [Mesh] = []
 
-        // 1. Channels — round bores swept along Manhattan polylines at the plate midline.
+        // 1. Channels — round bores swept along Manhattan polylines at the
+        // layer's midline. Layer carries both the plate and the depth, so
+        // multi-layer routing falls out automatically.
         for route in doc.physical.routes {
             for segment in route.segments {
-                let midZ: Double
-                switch segment.layer {
-                case .top:    midZ = topMidZ
-                case .bottom: midZ = bottomMidZ
-                }
+                let midZ = m.midZ(for: segment.layer)
                 let channel = channelMesh(
                     waypoints: segment.waypoints.map(\.position),
                     radius: m.channelDiameter / 2,
                     midZ: midZ
                 )
-                appendCutter(channel, layer: segment.layer, top: &topCutters, bottom: &bottomCutters)
+                appendCutter(channel, plate: segment.layer.plate,
+                             top: &topCutters, bottom: &bottomCutters)
             }
         }
 
-        // 2. Component features.
+        // 2. Component features. All components anchor at depth 0; geometry
+        // unchanged from single-layer.
         let componentsById = Dictionary(uniqueKeysWithValues: doc.logic.components.map { ($0.id, $0) })
 
         for placement in doc.physical.placements {
             guard let component = componentsById[placement.componentId] else { continue }
             switch component.kind {
             case .transistor:
-                // Dimple on the placement's plate.
                 let dimple = dimpleMesh(
                     at: placement.position, layer: placement.layer, m: m,
                     topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ
                 )
-                appendCutter(dimple, layer: placement.layer, top: &topCutters, bottom: &bottomCutters)
+                appendCutter(dimple, plate: placement.layer,
+                             top: &topCutters, bottom: &bottomCutters)
 
                 // Drop bore at each transistor pin, connecting channel midline to the
                 // silicone face on whichever plate the pin sits on.
                 let footprint = component.footprint
                 for pin in footprint.pins {
-                    let pinLayer = placement.resolvedLayer(of: pin)
+                    let pinPlate = placement.resolvedPlate(of: pin)
                     let pinWorld = placement.worldPosition(of: pin)
                     let drop = dropBoreMesh(
-                        at: pinWorld, onLayer: pinLayer, radius: m.channelDiameter / 2,
+                        at: pinWorld, onPlate: pinPlate, radius: m.channelDiameter / 2,
                         topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ,
                         topMidZ: topMidZ, bottomMidZ: bottomMidZ
                     )
-                    appendCutter(drop, layer: pinLayer, top: &topCutters, bottom: &bottomCutters)
+                    appendCutter(drop, plate: pinPlate,
+                                 top: &topCutters, bottom: &bottomCutters)
                 }
 
             case .resistor:
@@ -89,38 +100,50 @@ enum PlateBuilder {
                     placement: placement, component: component, m: m,
                     topMidZ: topMidZ, bottomMidZ: bottomMidZ
                 )
-                appendCutter(serpentine, layer: placement.layer, top: &topCutters, bottom: &bottomCutters)
+                appendCutter(serpentine, plate: placement.layer,
+                             top: &topCutters, bottom: &bottomCutters)
 
             case .port, .vacuumSource, .atmVent:
                 let bore = portBoreMesh(
                     placement: placement, outline: outline, m: m,
                     topMidZ: topMidZ, bottomMidZ: bottomMidZ
                 )
-                appendCutter(bore, layer: placement.layer, top: &topCutters, bottom: &bottomCutters)
+                appendCutter(bore, plate: placement.layer,
+                             top: &topCutters, bottom: &bottomCutters)
             }
         }
 
-        // 3. Vias — vertical bores that cut through *both* plates at the
-        // marked XY so a top-layer channel and a bottom-layer channel meet
-        // through the silicone. The silicone itself is punched at the same
-        // XY by the user at assembly. Dedup by position because each via
-        // is represented twice in the document (once at the end of the
-        // outgoing segment, once at the start of the incoming segment on
-        // the other layer).
-        var seenViaPositions: [Point] = []
+        // 3. Vias — vertical bores spanning min(twin.z) … max(twin.z) at the
+        // marked XY. With multi-layer plates, twins can sit on the same plate
+        // at different depths (a vertical tube *inside* one plate, no
+        // silicone crossing), or on opposite plates (today's behaviour).
+        // Dedup by position because each via is represented twice in the
+        // document (once at each end of its twin pair).
+        struct ViaGroup { var position: Point; var layers: Set<Layer> }
+        var viaGroups: [ViaGroup] = []
         for route in doc.physical.routes {
             for segment in route.segments {
                 for wp in segment.waypoints where wp.kind == .via {
-                    if seenViaPositions.contains(where: { approxEqualXY($0, wp.position) }) { continue }
-                    seenViaPositions.append(wp.position)
-                    let cutter = viaCutterMesh(
-                        at: wp.position, radius: m.channelDiameter / 2,
-                        topMidZ: topMidZ, bottomMidZ: bottomMidZ
-                    )
-                    topCutters.append(cutter)
-                    bottomCutters.append(cutter)
+                    if let idx = viaGroups.firstIndex(where: { approxEqualXY($0.position, wp.position) }) {
+                        viaGroups[idx].layers.insert(segment.layer)
+                    } else {
+                        viaGroups.append(ViaGroup(position: wp.position, layers: [segment.layer]))
+                    }
                 }
             }
+        }
+        for group in viaGroups {
+            guard group.layers.count >= 2 else { continue }
+            let zs = group.layers.map { m.midZ(for: $0) }
+            let zLo = zs.min()!, zHi = zs.max()!
+            let cutter = viaCutterMesh(at: group.position, radius: m.channelDiameter / 2,
+                                       zLo: zLo, zHi: zHi)
+            // A via cuts whichever plate(s) it actually passes through. If
+            // every layer in the group is on the same plate, only that plate
+            // gets the cutter (no need to drill the opposite slab).
+            let plates = Set(group.layers.map { $0.plate })
+            if plates.contains(.top) { topCutters.append(cutter) }
+            if plates.contains(.bottom) { bottomCutters.append(cutter) }
         }
 
         // Union the cutter sets once and reuse: the subtractions consume the
@@ -147,7 +170,7 @@ enum PlateBuilder {
     // MARK: - Plate base
 
     private static func plateBase(
-        outline: Rect, thickness: Double, innerZ: Double, side: Layer
+        outline: Rect, thickness: Double, innerZ: Double, side: Plate
     ) -> Mesh {
         let cx = outline.origin.x + outline.size.width / 2
         let cy = outline.origin.y + outline.size.height / 2
@@ -209,13 +232,13 @@ enum PlateBuilder {
     /// silicone-facing surface of `layer`. Overshoots both ends by a small epsilon
     /// so CSG cuts are clean rather than tangent.
     private static func dropBoreMesh(
-        at p: Point, onLayer layer: Layer, radius: Double,
+        at p: Point, onPlate plate: Plate, radius: Double,
         topInnerZ: Double, bottomInnerZ: Double,
         topMidZ: Double, bottomMidZ: Double
     ) -> Mesh {
         let eps = 0.05
         let zLo: Double, zHi: Double
-        switch layer {
+        switch plate {
         case .top:
             // Drop from midline DOWN to silicone face.
             zLo = topInnerZ - eps
@@ -234,21 +257,21 @@ enum PlateBuilder {
 
     // MARK: - Via
 
-    /// Vertical cylinder spanning from the top plate's channel midline down to
-    /// the bottom plate's channel midline at the given XY. The same mesh is
-    /// added to both plates' cutter lists: the top plate keeps only the upper
-    /// half (CSG subtraction with that plate's volume), the bottom plate keeps
-    /// the lower half. Silicone in between is the user's job to punch at the
-    /// same XY at assembly.
+    /// Vertical cylinder spanning between the two twins of a via. With
+    /// multi-layer plates the twins can be on the same plate at different
+    /// depths (a tube *inside* one plate), or on opposite plates (the
+    /// traditional silicone-crossing via). Either way the cutter is one
+    /// cylinder; the caller decides which plate(s) it should subtract from.
+    /// Silicone between top and bottom plates is the user's job to punch at
+    /// the same XY at assembly.
     private static func viaCutterMesh(
-        at p: Point, radius: Double,
-        topMidZ: Double, bottomMidZ: Double
+        at p: Point, radius: Double, zLo: Double, zHi: Double
     ) -> Mesh {
         let eps = 0.05
-        let zHi = topMidZ + eps
-        let zLo = bottomMidZ - eps
-        let len = zHi - zLo
-        let cz = (zHi + zLo) / 2
+        let lo = zLo - eps
+        let hi = zHi + eps
+        let len = hi - lo
+        let cz = (hi + lo) / 2
         return Mesh.cylinder(radius: radius, height: len, slices: 24)
             .rotated(by: Euclid.Rotation.pitch(.halfPi))
             .translated(by: Vector(p.x, p.y, cz))
@@ -261,7 +284,7 @@ enum PlateBuilder {
     // MARK: - Dimples
 
     private static func dimpleMesh(
-        at center: Point, layer: Layer, m: ManufacturingConstants,
+        at center: Point, layer: Plate, m: ManufacturingConstants,
         topInnerZ: Double, bottomInnerZ: Double
     ) -> Mesh {
         let radius = m.dimpleDiameter / 2
@@ -350,10 +373,10 @@ enum PlateBuilder {
     }
 
     private static func appendCutter(
-        _ mesh: Mesh, layer: Layer,
+        _ mesh: Mesh, plate: Plate,
         top: inout [Mesh], bottom: inout [Mesh]
     ) {
-        switch layer {
+        switch plate {
         case .top:    top.append(mesh)
         case .bottom: bottom.append(mesh)
         }

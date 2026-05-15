@@ -469,13 +469,13 @@ struct PhysicalCanvasView: View {
             ForEach(document.circuit.physical.placements, id: \.componentId) { placement in
                 if let component = component(for: placement.componentId) {
                     ForEach(component.footprint.pins, id: \.key) { pin in
-                        let layer = placement.resolvedLayer(of: pin)
-                        if visible.contains(layer) {
+                        let pinPlate = placement.resolvedPlate(of: pin)
+                        if visible.contains(pinPlate) {
                             let world = placement.worldPosition(of: pin)
                             let screen = transform.toScreen(world)
                             PhysicalPinHandle(
                                 pinKey: pin.key,
-                                layer: layer,
+                                plate: pinPlate,
                                 isFirstOfRouting: isFirstRoutingPin(componentId: placement.componentId, key: pin.key)
                             ) {
                                 handlePinTap(componentId: placement.componentId, pinKey: pin.key)
@@ -956,7 +956,10 @@ struct PhysicalCanvasView: View {
               let pin = component.footprint.pin(pinKey)
         else { return }
         let world = placement.worldPosition(of: pin)
-        let pinLayer = placement.resolvedLayer(of: pin)
+        let pinPlate = placement.resolvedPlate(of: pin)
+        // Component pins always anchor at depth 0; routes can step away
+        // from this layer via vias if the user wants to use a deeper layer.
+        let pinLayer = Layer(plate: pinPlate, depth: 0)
 
         switch routingState {
         case .idle:
@@ -1037,8 +1040,12 @@ struct PhysicalCanvasView: View {
             document.circuit.physical.routes.append(Route(netId: netId, segments: [segment]))
         }
 
-        // Continue routing from the via on the other layer.
-        let nextLayer: Layer = layer == .top ? .bottom : .top
+        // Continue routing from the via on the other plate (depth 0). The
+        // user can change to a deeper layer via the routing-layer picker if
+        // they want a same-plate vertical via to a non-default depth — for
+        // now V always lands on the opposite plate, mirroring the legacy
+        // silicone-crossing via behaviour.
+        let nextLayer = Layer(plate: layer.plate.opposite, depth: 0)
         routingLayer = nextLayer
         routingState = .routing(netId: netId, waypoints: [cursorWorld], layer: nextLayer, startsAtVia: true)
     }
@@ -1092,8 +1099,8 @@ struct PhysicalCanvasView: View {
         for id in selection.placements {
             guard let i = document.circuit.physical.placements.firstIndex(where: { $0.componentId == id })
             else { continue }
-            let cur = document.circuit.physical.placements[i].layer
-            document.circuit.physical.placements[i].layer = cur == .top ? .bottom : .top
+            document.circuit.physical.placements[i].layer =
+                document.circuit.physical.placements[i].layer.opposite
         }
     }
 
@@ -1127,7 +1134,7 @@ struct PhysicalCanvasView: View {
 
 struct PhysicalPinHandle: View {
     let pinKey: String
-    let layer: Layer
+    let plate: Plate
     let isFirstOfRouting: Bool
     let onTap: () -> Void
 
@@ -1147,7 +1154,9 @@ struct PhysicalPinHandle: View {
     private var fillColor: Color {
         if isFirstOfRouting { return .accentColor }
         if hovered { return .accentColor.opacity(0.5) }
-        return layer == .top ? Color.blue.opacity(0.7) : Color.teal.opacity(0.7)
+        // Component pins live at depth 0 on their plate — use the canonical
+        // plate hue so the pin reads the same as a depth-0 route landing on it.
+        return LayerPalette.color(for: Layer(plate: plate, depth: 0)).opacity(0.7)
     }
 
     private var strokeColor: Color {
@@ -1269,9 +1278,9 @@ struct ParkingDropDelegate: DropDelegate {
         } else {
             // Default layer: bottom for transistor (dimple convention), top for others.
             let component = document.circuit.logic.components.first(where: { $0.id == id })
-            let defaultLayer: Layer = (component?.kind == .transistor) ? .bottom : .top
+            let defaultPlate: Plate = (component?.kind == .transistor) ? .bottom : .top
             document.circuit.physical.placements.append(
-                Placement(componentId: id, position: world, rotation: .r0, layer: defaultLayer)
+                Placement(componentId: id, position: world, rotation: .r0, layer: defaultPlate)
             )
         }
     }
