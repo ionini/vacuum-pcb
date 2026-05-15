@@ -39,6 +39,10 @@
 			<array>
 				<string>com.ionini.vacuum-pcb</string>
 			</array>
+			<!-- Have macOS overlay the app icon on a generic document frame.
+			     macOS 13+. Avoids shipping a hand-crafted .icns. -->
+			<key>CFBundleTypeIconSystemGenerated</key>
+			<true/>
 		</dict>
 	</array>
 	<key>UTExportedTypeDeclarations</key>
@@ -53,6 +57,11 @@
 				<string>public.json</string>
 				<string>public.data</string>
 			</array>
+			<!-- Same icon source as the document-types entry, so Spotlight and
+			     third-party apps see a glyph for the UTI even when this app
+			     isn't the active handler. -->
+			<key>UTTypeIconFile</key>
+			<string>AppIcon</string>
 			<key>UTTypeTagSpecification</key>
 			<dict>
 				<key>public.filename-extension</key>
