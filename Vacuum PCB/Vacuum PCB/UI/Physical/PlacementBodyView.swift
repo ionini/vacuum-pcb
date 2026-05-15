@@ -85,17 +85,14 @@ struct PlacementBodyView: View {
     }
 
     private func drawResistor(in ctx: inout GraphicsContext) {
-        // Body is always the footprint size, independent of S/M/L — only the
-        // squiggle inside changes. Matches the CAD pipeline by calling the
-        // same path generator.
+        // Draw just the serpentine channel — same waypoints + stroke width
+        // the CAD pipeline carves into the plate. The footprint exclusion
+        // rect is still enforced by DRC/auto-router, it's just no longer
+        // drawn as a fat outline that visually inflates the resistor and
+        // makes wiring around it feel cramped.
         let halfLen = ManufacturingConstants.resistorFootprintLength / 2
         let halfWid = ManufacturingConstants.resistorFootprintWidth / 2
-        let hl = halfLen * transform.ptsPerMm
-        let hw = halfWid * transform.ptsPerMm
-        let rect = CGRect(x: -hl, y: -hw, width: 2 * hl, height: 2 * hw)
         let color = layerColor(placement.layer)
-        ctx.stroke(Path(roundedRect: rect, cornerRadius: 1), with: .color(color), lineWidth: 1.0)
-
         let transitions = ResistorGeometry.transitions(for: component.resistorSize ?? .medium)
         let waypoints = ResistorGeometry.path(
             transitions: transitions, halfLen: halfLen, halfWid: halfWid
@@ -106,9 +103,9 @@ struct PlacementBodyView: View {
         for p in waypoints.dropFirst() { path.addLine(to: screen(p)) }
         ctx.stroke(
             path,
-            with: .color(color.opacity(0.7)),
+            with: .color(color.opacity(0.85)),
             style: StrokeStyle(
-                lineWidth: max(1.5, manufacturing.resistorChannelDiameter * transform.ptsPerMm * 0.85),
+                lineWidth: max(1.2, manufacturing.resistorChannelDiameter * transform.ptsPerMm * 0.85),
                 lineCap: .round,
                 lineJoin: .round
             )
