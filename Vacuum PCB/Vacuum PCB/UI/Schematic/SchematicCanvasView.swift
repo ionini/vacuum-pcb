@@ -92,28 +92,29 @@ struct SchematicCanvasView: View {
 
     // MARK: - Right-click on a net line
 
-    /// Hit-tests the click against every net's star edges (anchor → each other
-    /// pin) and, if one is close enough, removes that line's *non-anchor* pin
-    /// from its net. The net deletes itself if it falls below 2 pins, same as
-    /// the click-pin-twice toggle.
+    /// Walks the same edges NetLinesView draws, picks the closest line within
+    /// `threshold`, then removes whichever endpoint the click is nearer to.
+    /// Falling back to "closer endpoint" matters for the MST layout where
+    /// neither end of an edge is the anchor — under the old star-only logic
+    /// we always removed the non-anchor end, which made little sense for
+    /// component-to-component edges.
     private func handleRightClick(at pt: CGPoint) {
         let threshold: Double = 8
-        var best: (netId: UUID, pin: PinRef, distance: Double)?
-        let positions = pinPositions()
+        var best: (netId: UUID, pinToRemove: PinRef, distance: Double)?
         for net in document.circuit.logic.nets {
-            let placed = net.pins.compactMap { ref in positions[ref].map { (ref, $0) } }
-            guard placed.count >= 2 else { continue }
-            let anchorIdx = preferredAnchor(in: placed)
-            let anchorPos = placed[anchorIdx].1
-            for (i, entry) in placed.enumerated() where i != anchorIdx {
-                let d = distanceFromPoint(pt, toSegmentFrom: anchorPos, to: entry.1)
-                if d <= threshold, d < (best?.distance ?? .greatestFiniteMagnitude) {
-                    best = (net.id, entry.0, d)
+            for edge in NetEdgeBuilder.edges(for: net, in: document.circuit) {
+                let d = distanceFromPoint(pt, toSegmentFrom: edge.a.point, to: edge.b.point)
+                guard d <= threshold else { continue }
+                if d < (best?.distance ?? .greatestFiniteMagnitude) {
+                    let aDist = hypot(Double(pt.x - edge.a.point.x), Double(pt.y - edge.a.point.y))
+                    let bDist = hypot(Double(pt.x - edge.b.point.x), Double(pt.y - edge.b.point.y))
+                    let pin = aDist < bDist ? edge.a.pin : edge.b.pin
+                    best = (net.id, pin, d)
                 }
             }
         }
         guard let hit = best else { return }
-        removePin(hit.pin, fromNet: hit.netId)
+        removePin(hit.pinToRemove, fromNet: hit.netId)
     }
 
     private func removePin(_ pin: PinRef, fromNet netId: UUID) {
@@ -126,34 +127,6 @@ struct SchematicCanvasView: View {
             document.circuit.physical.routes.removeAll { $0.netId == killed }
             if case .net(let id) = selection, id == killed { selection = .none }
         }
-    }
-
-    /// Shared with NetLinesView's rendering — kept here as a small private
-    /// helper rather than promoting to a model file since hit-test geometry
-    /// is a view concern.
-    private func pinPositions() -> [PinRef: CGPoint] {
-        var out: [PinRef: CGPoint] = [:]
-        for component in document.circuit.logic.components {
-            guard let center = document.circuit.schematic.position(for: component.id) else { continue }
-            let metrics = ComponentSymbolMetrics.metrics(for: component.kind)
-            for key in component.kind.pinKeys {
-                let off = metrics.pinOffset(key)
-                out[PinRef(componentId: component.id, pinKey: key)] =
-                    CGPoint(x: center.x + off.x, y: center.y + off.y)
-            }
-        }
-        return out
-    }
-
-    private func preferredAnchor(in pins: [(PinRef, CGPoint)]) -> Int {
-        func kind(of ref: PinRef) -> ComponentKind? {
-            document.circuit.logic.components.first(where: { $0.id == ref.componentId })?.kind
-        }
-        if let i = pins.firstIndex(where: { kind(of: $0.0) == .port }) { return i }
-        if let i = pins.firstIndex(where: {
-            let k = kind(of: $0.0); return k == .vacuumSource || k == .atmVent
-        }) { return i }
-        return 0
     }
 
     private func distanceFromPoint(_ p: CGPoint, toSegmentFrom a: CGPoint, to b: CGPoint) -> Double {
