@@ -12,7 +12,7 @@ struct DocumentView: View {
     @State private var isBuilding = false
     @State private var showExporter = false
     @State private var buildToken = 0
-    @State private var previewMode: PreviewDisplayMode = .bodyOnly
+    @State private var previewMode: PreviewDisplayMode = .both
     /// Set whenever the document mutates; cleared after a successful build.
     /// We don't rebuild eagerly any more — CSG is expensive and the user is
     /// almost never on the 3D Preview tab while editing.
