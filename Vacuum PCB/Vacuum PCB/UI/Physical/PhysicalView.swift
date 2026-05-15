@@ -20,7 +20,9 @@ struct PhysicalView: View {
                 providerForComponent: { id in
                     NSItemProvider(object: id.uuidString as NSString)
                 },
-                onPlaceAll: placeAllUnplaced
+                onPlaceAll: placeAllUnplaced,
+                onAutoPlace: autoPlace,
+                onAutoRoute: autoRoute
             )
             Divider()
             VStack(spacing: 0) {
@@ -120,39 +122,114 @@ struct PhysicalView: View {
         }
     }
 
-    /// Drop every parking-lot component onto the board in a coarse grid,
-    /// snapped to the manufacturing gridPitch. Transistors default to the
-    /// bottom plate (matches the parking-lot drop semantics); everything
-    /// else lands on top. The grid origin sits a few mm inside the board
-    /// outline so the user can pan their eye across and start routing.
+    /// Drops every unplaced component onto the board, preserving its
+    /// schematic-side relative position. We compute the bounding box of the
+    /// unplaced components' schematic XYs, uniformly scale it to fit the
+    /// board outline (less a margin), and translate so the cluster is
+    /// centered. The result is "your schematic, projected onto the plate" —
+    /// rough enough to need hand-tuning, close enough that the user can
+    /// recognise their layout. Components without a schematic position
+    /// (shouldn't happen in practice) fall back to the centroid.
+    ///
+    /// Transistors default to the bottom plate, everything else to top —
+    /// same convention as the parking-lot drop.
     private func placeAllUnplaced() {
         let placed = Set(document.circuit.physical.placements.map(\.componentId))
         let unplaced = document.circuit.logic.components.filter { !placed.contains($0.id) }
         guard !unplaced.isEmpty else { return }
 
         let outline = document.circuit.physical.boardOutline
-        let grid = document.circuit.manufacturing.gridPitch
+        let pitch = document.circuit.manufacturing.gridPitch
         let margin: Double = 3
-        let spacing: Double = 8
-        let usableW = max(spacing, outline.size.width - 2 * margin)
-        let cols = max(1, Int(usableW / spacing) + 1)
+        func snap(_ v: Double) -> Double { (v / pitch).rounded() * pitch }
 
-        func snap(_ v: Double) -> Double { (v / grid).rounded() * grid }
+        // Bounding box of schematic positions. Coords are SwiftUI points;
+        // we just need their relative layout, the scale gets handled by the
+        // fit step.
+        var schematicPositions: [UUID: Point] = [:]
+        for component in unplaced {
+            if let p = document.circuit.schematic.position(for: component.id) {
+                schematicPositions[component.id] = p
+            }
+        }
+        let fallback = Point(
+            x: outline.origin.x + outline.size.width / 2,
+            y: outline.origin.y + outline.size.height / 2
+        )
+        if schematicPositions.isEmpty {
+            // No schematic info → just drop them all at the centroid.
+            for component in unplaced {
+                let defaultLayer: Layer = (component.kind == .transistor) ? .bottom : .top
+                document.circuit.physical.placements.append(
+                    Placement(
+                        componentId: component.id,
+                        position: Point(x: snap(fallback.x), y: snap(fallback.y)),
+                        rotation: .r0, layer: defaultLayer
+                    )
+                )
+            }
+            return
+        }
 
-        for (i, component) in unplaced.enumerated() {
-            let col = i % cols
-            let row = i / cols
-            let x = snap(outline.origin.x + margin + Double(col) * spacing)
-            let y = snap(outline.origin.y + margin + Double(row) * spacing)
+        let xs = schematicPositions.values.map(\.x)
+        let ys = schematicPositions.values.map(\.y)
+        let minX = xs.min() ?? 0, maxX = xs.max() ?? 1
+        let minY = ys.min() ?? 0, maxY = ys.max() ?? 1
+        let schWidth = max(1, maxX - minX)
+        let schHeight = max(1, maxY - minY)
+
+        let availW = max(pitch, outline.size.width - 2 * margin)
+        let availH = max(pitch, outline.size.height - 2 * margin)
+        let scale = min(availW / schWidth, availH / schHeight)
+        // Centre the scaled cluster inside the usable area.
+        let usedW = schWidth * scale
+        let usedH = schHeight * scale
+        let offsetX = outline.origin.x + margin + (availW - usedW) / 2
+        let offsetY = outline.origin.y + margin + (availH - usedH) / 2
+
+        for component in unplaced {
+            let sch = schematicPositions[component.id] ?? fallback
+            let pos = Point(
+                x: snap((sch.x - minX) * scale + offsetX),
+                y: snap((sch.y - minY) * scale + offsetY)
+            )
             let defaultLayer: Layer = (component.kind == .transistor) ? .bottom : .top
             document.circuit.physical.placements.append(
                 Placement(
                     componentId: component.id,
-                    position: Point(x: x, y: y),
+                    position: pos,
                     rotation: .r0,
                     layer: defaultLayer
                 )
             )
+        }
+    }
+
+    /// One-shot force-directed re-layout of every already-placed component.
+    /// Components are moved in place — relative ordering is preserved as a
+    /// starting point — so existing routes (mostly) survive, but the user
+    /// will typically need to re-route. Best run on a fresh "Place all"
+    /// before any routing.
+    private func autoPlace() {
+        let result = AutoPlacer.place(document.circuit)
+        for entry in result {
+            guard let i = document.circuit.physical.placements.firstIndex(where: { $0.componentId == entry.componentId })
+            else { continue }
+            document.circuit.physical.placements[i].position = entry.position
+        }
+    }
+
+    /// One-shot auto-router. Appends segments for any net pair on the same
+    /// layer that an A* path can find on the current occupancy. Existing
+    /// routes are preserved.
+    private func autoRoute() {
+        let plan = AutoRouter.plan(document.circuit)
+        for entry in plan {
+            if let i = document.circuit.physical.routes.firstIndex(where: { $0.netId == entry.netId }) {
+                document.circuit.physical.routes[i].segments.append(entry.segment)
+            } else {
+                document.circuit.physical.routes.append(Route(netId: entry.netId, segments: [entry.segment]))
+            }
         }
     }
 

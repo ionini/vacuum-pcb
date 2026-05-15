@@ -9,9 +9,14 @@ struct ParkingLotView: View {
     /// The receiver uses NSItemProvider to ship the component id.
     let providerForComponent: (UUID) -> NSItemProvider
     /// Drops every unplaced component onto the board in a default grid.
-    /// Useful for big imported schematics where one-by-one drags would be
-    /// tedious — the user can then rearrange + start routing.
     let onPlaceAll: () -> Void
+    /// Runs a force-directed auto-placer over already-placed components,
+    /// trying to compact the layout. User is expected to fix by hand.
+    let onAutoPlace: () -> Void
+    /// Runs a grid-A* auto-router over every still-unrouted net pair
+    /// whose pins share a layer. Single-pass, no rip-up — nets that can't
+    /// be routed stay in the ratsnest for the user to handle manually.
+    let onAutoRoute: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -39,6 +44,20 @@ struct ParkingLotView: View {
                     }
                 }
             }
+
+            Divider().padding(.vertical, 4)
+            Text("Auto").font(.caption.bold()).foregroundStyle(.secondary)
+            Button("Auto-place", action: onAutoPlace)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .disabled(document.physical.placements.count < 2)
+            Button("Auto-route", action: onAutoRoute)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .disabled(document.logic.nets.isEmpty)
+
             Spacer()
         }
         .frame(width: 160)
