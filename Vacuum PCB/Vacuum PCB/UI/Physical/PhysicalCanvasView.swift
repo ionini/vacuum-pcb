@@ -715,22 +715,44 @@ struct PhysicalCanvasView: View {
         selection = .routeSegment(netId: hit.netId, segmentIndex: hit.segIdx)
     }
 
-    /// Bulk-delete every selected placement (and detach any routes that
-    /// reach it), or the selected route segment. Route segments are
-    /// single-selection so this branches on whichever side is non-empty.
+    /// Bulk-delete everything in the current selection:
+    ///  * placements (just remove the placement; the logic-side component
+    ///    isn't touched — schematic edits delete those),
+    ///  * the focused route segment,
+    ///  * every segment that contains a marquee-selected waypoint (so a
+    ///    Cmd-marquee around a subcircuit can wipe the routes too).
+    ///
+    /// We collect the segment-removal set first, then process per-net in
+    /// descending segment-index order so removing earlier segments doesn't
+    /// shift indices of segments we still want to remove.
     private func deleteCurrentSelection() {
         if !selection.placements.isEmpty {
             for id in selection.placements {
                 document.circuit.physical.placements.removeAll { $0.componentId == id }
             }
         }
-        if let seg = selection.routeSegment,
-           let i = document.circuit.physical.routes.firstIndex(where: { $0.netId == seg.netId }) {
-            if seg.segmentIndex < document.circuit.physical.routes[i].segments.count {
-                document.circuit.physical.routes[i].segments.remove(at: seg.segmentIndex)
+
+        // Build the (netId, segmentIndex) set to remove from waypoint hits
+        // and the focused route segment.
+        var toRemove: [UUID: Set<Int>] = [:]
+        for addr in selection.waypoints {
+            toRemove[addr.netId, default: []].insert(addr.segmentIndex)
+        }
+        if let seg = selection.routeSegment {
+            toRemove[seg.netId, default: []].insert(seg.segmentIndex)
+        }
+
+        for (netId, segIndices) in toRemove {
+            guard let rIdx = document.circuit.physical.routes.firstIndex(where: { $0.netId == netId })
+            else { continue }
+            // Descending so earlier removals don't shift later indices.
+            for sIdx in segIndices.sorted(by: >) {
+                if sIdx < document.circuit.physical.routes[rIdx].segments.count {
+                    document.circuit.physical.routes[rIdx].segments.remove(at: sIdx)
+                }
             }
-            if document.circuit.physical.routes[i].segments.isEmpty {
-                document.circuit.physical.routes.remove(at: i)
+            if document.circuit.physical.routes[rIdx].segments.isEmpty {
+                document.circuit.physical.routes.remove(at: rIdx)
             }
         }
         selection = .none
