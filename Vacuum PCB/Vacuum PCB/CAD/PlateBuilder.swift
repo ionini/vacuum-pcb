@@ -154,9 +154,13 @@ enum PlateBuilder {
                 .translated(by: Vector(p.x, p.y, midZ)))
         }
 
-        // Cylinders between adjacent waypoints. Euclid's cylinder is Y-oriented;
-        // roll(90°) lays it along X, identity leaves it along Y. Length is the
-        // Euclidean span so this also handles diagonal segments cleanly.
+        // Cylinders between adjacent waypoints. Euclid's cylinder is Y-axis
+        // aligned. Roll(α) rotates around Z; the convention here is such that
+        // roll(π/2) sends a horizontal-segment cylinder along X (the original
+        // Manhattan-only code relied on this). Generalising: α = π/2 − θ,
+        // where θ = atan2(dy, dx) is the segment angle in XY. This puts the
+        // cylinder's long axis exactly along the segment so the joint spheres
+        // line up at any angle.
         for i in 0..<(waypoints.count - 1) {
             let a = waypoints[i]
             let b = waypoints[i + 1]
@@ -167,16 +171,11 @@ enum PlateBuilder {
 
             let cx = (a.x + b.x) / 2
             let cy = (a.y + b.y) / 2
+            let theta = atan2(dy, dx)
             let cyl = Mesh.cylinder(radius: radius, height: len, slices: 16)
-            let oriented: Mesh
-            if abs(dx) >= abs(dy) {
-                // Horizontal: lay cylinder along X.
-                oriented = cyl.rotated(by: Euclid.Rotation.roll(.halfPi))
-            } else {
-                // Vertical (in XY): keep along Y.
-                oriented = cyl
-            }
-            parts.append(oriented.translated(by: Vector(cx, cy, midZ)))
+                .rotated(by: Euclid.Rotation.roll(.radians(.pi / 2 - theta)))
+                .translated(by: Vector(cx, cy, midZ))
+            parts.append(cyl)
         }
         return Mesh.union(parts)
     }
@@ -235,28 +234,60 @@ enum PlateBuilder {
         placement: Placement, component: Component, m: ManufacturingConstants,
         topMidZ: Double, bottomMidZ: Double
     ) -> Mesh {
-        let footprint = component.footprint
-        let halfLen: Double
+        // Footprint is the same physical size for S/M/L; the resistor size
+        // picks how many times the channel zigzags inside it.
+        let halfLen = ManufacturingConstants.resistorFootprintLength / 2
+        let halfWid = ManufacturingConstants.resistorFootprintWidth / 2
+        let transitions: Int
         switch component.resistorSize ?? .medium {
-        case .small:  halfLen = 3.0
-        case .medium: halfLen = 5.0
-        case .large:  halfLen = 8.0
+        case .small:  transitions = 0   // straight line
+        case .medium: transitions = 3   // a couple bumps
+        case .large:  transitions = 10  // five back-and-forth crossings
         }
-        let halfWid = footprint.boundingRect.size.height / 2
 
-        // Single Z-bend zigzag in component-local frame, pin "1" → pin "2".
-        let y = halfWid * 0.6
-        let local: [Point] = [
-            Point(x: -halfLen, y: 0),
-            Point(x: -halfLen, y:  y),
-            Point(x:  0,       y:  y),
-            Point(x:  0,       y: -y),
-            Point(x:  halfLen, y: -y),
-            Point(x:  halfLen, y: 0),
-        ]
+        let local = resistorSerpentinePath(
+            transitions: transitions, halfLen: halfLen, halfWid: halfWid
+        )
         let world = local.map { transformLocalToWorld($0, placement: placement) }
         let midZ = placement.layer == .top ? topMidZ : bottomMidZ
-        return channelMesh(waypoints: world, radius: m.channelDiameter / 2, midZ: midZ)
+        return channelMesh(waypoints: world, radius: m.resistorChannelDiameter / 2, midZ: midZ)
+    }
+
+    /// Builds the local-frame waypoints of the resistor's internal channel.
+    /// `transitions` is the number of times the polyline jumps between the +y
+    /// and −y plateaus. 0 = straight wire, larger = denser zigzag. The polyline
+    /// always enters at pin1 = (−halfLen, 0) and exits at pin2 = (+halfLen, 0)
+    /// at baseline, with quick vertical jogs at each end.
+    private static func resistorSerpentinePath(
+        transitions: Int, halfLen: Double, halfWid: Double
+    ) -> [Point] {
+        let pin1 = Point(x: -halfLen, y: 0)
+        let pin2 = Point(x:  halfLen, y: 0)
+        if transitions <= 0 {
+            return [pin1, pin2]
+        }
+        // Plateaus sit slightly inside the bounding rect so the swept channel
+        // doesn't peek over the exclusion edge. 0.5 of halfWid leaves the
+        // ~0.25 mm radius bore comfortably inside the 4 mm tall body.
+        let plateauY = halfWid * 0.5
+        var pts: [Point] = []
+        pts.append(pin1)
+        // Lift onto the first plateau.
+        var currentY = plateauY
+        pts.append(Point(x: pin1.x, y: currentY))
+        // Evenly spaced vertical "walls". Between walls is a horizontal run on
+        // the current plateau; each wall flips currentY to the other plateau.
+        let spacing = (2 * halfLen) / Double(transitions + 1)
+        for i in 0..<transitions {
+            let x = pin1.x + Double(i + 1) * spacing
+            pts.append(Point(x: x, y: currentY))
+            currentY = -currentY
+            pts.append(Point(x: x, y: currentY))
+        }
+        // Run out to pin2 at the last plateau, then drop back to baseline.
+        pts.append(Point(x: pin2.x, y: currentY))
+        pts.append(pin2)
+        return pts
     }
 
     // MARK: - Edge ports
