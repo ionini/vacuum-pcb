@@ -166,15 +166,17 @@ struct PhysicalView: View {
     private var statusText: Text {
         switch routingState {
         case .idle:
-            switch selection {
-            case .none:
-                return Text("Drag from parking lot to place. Click pin to start routing. R rotate · F flip layer · ⌫ delete.")
-            case .placement(let id):
-                let label = document.circuit.logic.components.first(where: { $0.id == id })?.label ?? "?"
-                return Text("Placement \(label) selected. R rotate · F flip layer · ⌫ delete.")
-            case .routeSegment:
-                return Text("Route segment selected. ⌫ to delete.")
+            if selection.isEmpty {
+                return Text("Drag from parking lot to place. Marquee selects multiple. Click pin to start routing. R rotate · F flip layer · ⌫ delete.")
             }
+            if selection.routeSegment != nil {
+                return Text("Route segment selected. ⌫ to delete. Right-click an interior waypoint to remove it.")
+            }
+            if let only = selection.singlePlacement {
+                let label = document.circuit.logic.components.first(where: { $0.id == only })?.label ?? "?"
+                return Text("Placement \(label) selected. ⌘-drag to move with routes · R rotate · F flip layer · ⌫ delete.")
+            }
+            return Text("\(selection.placements.count) placements selected. ⌘-drag to move with routes · R rotate · F flip layer · ⌫ delete.")
         case .routing(let netId, let wps, let layer, _):
             let netLabel = document.circuit.logic.nets.first(where: { $0.id == netId })?.label ?? "?"
             return Text("Routing net \(netLabel) on \(layer == .top ? "top" : "bottom") · \(wps.count) waypoints · V to drop a via, click a pin on this net to commit, ESC to cancel.")

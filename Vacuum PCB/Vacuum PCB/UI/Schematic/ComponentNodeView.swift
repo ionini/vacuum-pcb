@@ -7,6 +7,12 @@ struct ComponentNodeView: View {
     @Binding var document: VPCBDocument
     @Binding var selection: SchematicSelection
     @Binding var netDrawState: NetDrawState
+    /// Shared multi-drag state owned by SchematicCanvasView. When the user
+    /// grabs a member of a multi-selection, the dragged ComponentNodeView
+    /// writes the participants + live translation here; every other node
+    /// reads it to apply the same offset so the whole group follows
+    /// together.
+    @Binding var multiDrag: SchematicMultiDrag?
 
     @State private var dragOffset: CGSize = .zero
     @State private var isRenaming = false
@@ -17,14 +23,26 @@ struct ComponentNodeView: View {
     }
 
     private var isSelected: Bool {
-        selection.componentId == component.id
+        selection.contains(component: component.id)
+    }
+
+    /// Effective offset applied to this node:
+    ///   * If a multi-drag is in flight and this node is participating →
+    ///     use the shared translation (other selected nodes follow the grab).
+    ///   * Otherwise our own dragOffset (set only when this node IS the
+    ///     grabbed one in single-drag mode).
+    private var effectiveOffset: CGSize {
+        if let multi = multiDrag, multi.participants.contains(component.id) {
+            return multi.translation
+        }
+        return dragOffset
     }
 
     var body: some View {
         ZStack {
             ComponentSymbolView(component: component, isSelected: isSelected)
                 .onTapGesture {
-                    selection = .component(component.id)
+                    handleSymbolTap()
                 }
                 .onTapGesture(count: 2) {
                     renameDraft = component.label
@@ -48,7 +66,23 @@ struct ComponentNodeView: View {
                     .offset(y: metrics.size.height / 2 + 12)
             }
         }
-        .offset(dragOffset)
+        .offset(effectiveOffset)
+    }
+
+    private func handleSymbolTap() {
+        if NSEvent.modifierFlags.contains(.command) {
+            // Cmd-click toggles in/out of the multi-selection.
+            var next = selection
+            next.net = nil
+            if next.components.contains(component.id) {
+                next.components.remove(component.id)
+            } else {
+                next.components.insert(component.id)
+            }
+            selection = next
+        } else {
+            selection = .component(component.id)
+        }
     }
 
     // MARK: - Drag
@@ -59,19 +93,62 @@ struct ComponentNodeView: View {
         // the cursor and the component would fight the drag.
         DragGesture(minimumDistance: 2, coordinateSpace: .global)
             .onChanged { value in
-                dragOffset = value.translation
+                if multiDrag == nil && dragOffset == .zero {
+                    // Decide on first tick: if this node is part of a
+                    // multi-selection, drive the shared state so the rest
+                    // of the group follows; otherwise fall back to local
+                    // single-component drag.
+                    if selection.contains(component: component.id), selection.components.count > 1 {
+                        startMultiDrag(initialTranslation: value.translation)
+                        return
+                    }
+                }
+                if multiDrag != nil {
+                    multiDrag?.translation = value.translation
+                } else {
+                    dragOffset = value.translation
+                }
             }
             .onEnded { value in
-                let current = document.circuit.schematic.position(for: component.id)
-                    ?? Point(x: 200, y: 200)
-                let next = Point(
-                    x: current.x + value.translation.width,
-                    y: current.y + value.translation.height
-                )
-                document.circuit.schematic.setPosition(next, for: component.id)
-                dragOffset = .zero
-                selection = .component(component.id)
+                if let multi = multiDrag {
+                    commitMultiDrag(multi, finalTranslation: value.translation)
+                    multiDrag = nil
+                } else {
+                    let current = document.circuit.schematic.position(for: component.id)
+                        ?? Point(x: 200, y: 200)
+                    let next = Point(
+                        x: current.x + value.translation.width,
+                        y: current.y + value.translation.height
+                    )
+                    document.circuit.schematic.setPosition(next, for: component.id)
+                    dragOffset = .zero
+                    selection = .component(component.id)
+                }
             }
+    }
+
+    private func startMultiDrag(initialTranslation: CGSize) {
+        var originals: [UUID: Point] = [:]
+        for id in selection.components {
+            if let p = document.circuit.schematic.position(for: id) {
+                originals[id] = p
+            }
+        }
+        multiDrag = SchematicMultiDrag(
+            participants: selection.components,
+            originals: originals,
+            translation: initialTranslation
+        )
+    }
+
+    private func commitMultiDrag(_ multi: SchematicMultiDrag, finalTranslation: CGSize) {
+        for (id, original) in multi.originals {
+            let next = Point(
+                x: original.x + finalTranslation.width,
+                y: original.y + finalTranslation.height
+            )
+            document.circuit.schematic.setPosition(next, for: id)
+        }
     }
 
     // MARK: - Pin tap

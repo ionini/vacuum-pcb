@@ -22,18 +22,39 @@ struct PhysicalCanvasView: View {
     /// committing to the document on every gesture tick (which would kick
     /// off a DRC pass and 3D rebuild every frame).
     ///
+    /// `originals` is keyed by componentId — multi-placement drag (when the
+    /// user grabs a member of an existing multi-selection) puts every
+    /// selected placement in the dictionary and moves them by the same
+    /// world-space delta. Single drag has one entry.
+    ///
     /// `withRoutes` (Cmd held at drag start) opts into rubber-band mode:
-    /// every route waypoint sitting on one of the placement's pins at drag
-    /// start gets dragged in tandem. `originalPosition` is captured so the
-    /// final delta is computed against the start position rather than the
-    /// possibly-already-mutated current `placement.position`. `attached`
-    /// stores the waypoint addresses to drag — empty in plain mode.
+    /// every route waypoint sitting on any of the dragged placements' pins
+    /// at drag start gets dragged in tandem.
     struct DraggingPlacement: Equatable {
-        let componentId: UUID
         var translation: CGSize
         let withRoutes: Bool
-        let originalPosition: Point
+        let originals: [UUID: Point]
         let attached: Set<RouteWaypointAddress>
+    }
+
+    /// Live state for the marquee box-select gesture: start/current screen
+    /// points captured during a background drag. Rendered as a dashed
+    /// rectangle; on release, every placement whose anchor is inside the
+    /// world rect joins the selection.
+    @State private var marquee: MarqueeRect?
+
+    struct MarqueeRect: Equatable {
+        var startScreen: CGPoint
+        var currentScreen: CGPoint
+
+        var rect: CGRect {
+            CGRect(
+                x: min(startScreen.x, currentScreen.x),
+                y: min(startScreen.y, currentScreen.y),
+                width: abs(currentScreen.x - startScreen.x),
+                height: abs(currentScreen.y - startScreen.y)
+            )
+        }
     }
 
     /// Live state for the selected segment's vertex drag. Held in-view so
@@ -62,6 +83,9 @@ struct PhysicalCanvasView: View {
                     .onTapGesture(coordinateSpace: .local) { pt in
                         handleBackgroundTap(at: pt)
                     }
+                    // Drag on empty canvas → marquee select. Min-distance 4
+                    // gives SwiftUI room to disambiguate from a click.
+                    .gesture(marqueeGesture)
 
                 gridLines(in: geo.size)
                 boardOutline
@@ -89,6 +113,9 @@ struct PhysicalCanvasView: View {
                 placementHitTargets
                 pinHandles
                 routeHandles
+                selectedWaypointMarkers
+
+                marqueeOverlay
 
                 RoutingPreviewOverlay(
                     routingState: routingState,
@@ -188,7 +215,7 @@ struct PhysicalCanvasView: View {
                         manufacturing: manufacturing,
                         transform: transform,
                         visible: visible,
-                        isSelected: selection.placementComponentId == placement.componentId
+                        isSelected: selection.contains(placement: placement.componentId)
                     )
                     .offset(dragOffset(for: placement.componentId))
                 }
@@ -214,8 +241,7 @@ struct PhysicalCanvasView: View {
                         .offset(dragOffset(for: placement.componentId))
                         .gesture(placementDragGesture(placement))
                         .onTapGesture {
-                            selection = .placement(componentId: placement.componentId)
-                            routingState = .idle
+                            handlePlacementTap(componentId: placement.componentId)
                         }
                 }
             }
@@ -224,10 +250,29 @@ struct PhysicalCanvasView: View {
 
     /// Screen-space offset to apply to all parts of a placement (body, hit
     /// target, pin handles) while the user is dragging it. Zero when this
-    /// placement isn't the active drag.
+    /// placement isn't part of the active drag set.
     private func dragOffset(for componentId: UUID) -> CGSize {
-        guard let d = draggingPlacement, d.componentId == componentId else { return .zero }
+        guard let d = draggingPlacement, d.originals[componentId] != nil else { return .zero }
         return d.translation
+    }
+
+    private func handlePlacementTap(componentId: UUID) {
+        if NSEvent.modifierFlags.contains(.command) {
+            // Cmd-click toggles in/out of the multi-selection without
+            // disturbing whatever else is selected. Route segment goes away
+            // when we transition into multi-select on placements.
+            var next = selection
+            next.routeSegment = nil
+            if next.placements.contains(componentId) {
+                next.placements.remove(componentId)
+            } else {
+                next.placements.insert(componentId)
+            }
+            selection = next
+        } else {
+            selection = .placement(componentId)
+        }
+        routingState = .idle
     }
 
     private func placementDragGesture(_ placement: Placement) -> some Gesture {
@@ -238,45 +283,77 @@ struct PhysicalCanvasView: View {
         DragGesture(minimumDistance: 2, coordinateSpace: .global)
             .onChanged { value in
                 if draggingPlacement == nil {
-                    // Sample Cmd at drag start. Holding Cmd opts into
-                    // rubber-band mode where the connected route endpoints
-                    // follow the placement; plain drag leaves routes alone
-                    // (the standard PCB-CAD "Move" semantics, where routes
-                    // are deliberate enough that you re-route by hand).
-                    let withRoutes = NSEvent.modifierFlags.contains(.command)
-                    draggingPlacement = DraggingPlacement(
-                        componentId: placement.componentId,
-                        translation: value.translation,
-                        withRoutes: withRoutes,
-                        originalPosition: placement.position,
-                        attached: withRoutes ? attachedWaypoints(for: placement) : []
-                    )
-                    selection = .placement(componentId: placement.componentId)
-                    routingState = .idle
+                    startPlacementDrag(grabbed: placement, translation: value.translation)
                 } else {
                     draggingPlacement?.translation = value.translation
                 }
             }
             .onEnded { value in
                 guard let drag = draggingPlacement else { return }
-                let base = transform.toScreen(drag.originalPosition)
-                let endWorld = transform.toWorld(
-                    CGPoint(x: base.x + value.translation.width,
-                            y: base.y + value.translation.height)
+                // Translate the grab into a grid-aligned world delta and
+                // apply it to every dragged placement + every attached
+                // waypoint. Snapping the delta (not each end position)
+                // keeps relative positions intact for multi-placement
+                // drags — every selected placement shifts by the same
+                // exact amount.
+                let raw = Point(
+                    x: value.translation.width / transform.ptsPerMm,
+                    y: value.translation.height / transform.ptsPerMm
                 )
-                let snapped = transform.snap(endWorld, grid: grid)
                 let delta = Point(
-                    x: snapped.x - drag.originalPosition.x,
-                    y: snapped.y - drag.originalPosition.y
+                    x: (raw.x / grid).rounded() * grid,
+                    y: (raw.y / grid).rounded() * grid
                 )
-                movePlacement(drag.componentId, to: snapped)
+                for (id, original) in drag.originals {
+                    movePlacement(id, to: Point(x: original.x + delta.x, y: original.y + delta.y))
+                }
                 if drag.withRoutes {
-                    for addr in drag.attached {
-                        moveRouteWaypoint(addr, by: delta)
-                    }
+                    applyWaypointDelta(addresses: drag.attached, delta: delta)
                 }
                 draggingPlacement = nil
             }
+    }
+
+    /// Builds the drag set the moment the user starts pulling on a placement.
+    /// - If the grabbed placement is part of an existing multi-selection,
+    ///   drag every selected placement (and any marquee-selected waypoints)
+    ///   together. The selection itself is unchanged.
+    /// - Otherwise the grabbed placement becomes the new sole selection and
+    ///   it's the only thing that drags.
+    /// Cmd held at this moment opts into rubber-band mode, capturing every
+    /// route waypoint sitting on any pin of any dragged placement on top of
+    /// whatever the selection already carries.
+    private func startPlacementDrag(grabbed placement: Placement, translation: CGSize) {
+        let withRoutes = NSEvent.modifierFlags.contains(.command)
+        let dragSet: Set<UUID>
+        var carriedWaypoints: Set<RouteWaypointAddress> = []
+        if selection.contains(placement: placement.componentId), selection.placements.count > 1 {
+            dragSet = selection.placements
+            carriedWaypoints = selection.waypoints
+        } else {
+            dragSet = [placement.componentId]
+            // Replace selection — but preserve the just-grabbed placement's
+            // selection. (Marquee-selected waypoints get dropped when the
+            // user clicks a single placement; matches their mental model.)
+            selection = .placement(placement.componentId)
+        }
+        var originals: [UUID: Point] = [:]
+        for id in dragSet {
+            if let p = document.circuit.physical.placements.first(where: { $0.componentId == id }) {
+                originals[id] = p.position
+            }
+        }
+        var attached = carriedWaypoints
+        if withRoutes {
+            attached.formUnion(attachedWaypoints(forComponentIds: dragSet))
+        }
+        draggingPlacement = DraggingPlacement(
+            translation: translation,
+            withRoutes: withRoutes || !carriedWaypoints.isEmpty,
+            originals: originals,
+            attached: attached
+        )
+        routingState = .idle
     }
 
     /// Builds the override that RoutesOverlay reads during a Cmd-drag so the
@@ -292,14 +369,22 @@ struct PhysicalCanvasView: View {
         return RoutesOverlay.PlacementRouteOverride(delta: deltaWorld, attached: drag.attached)
     }
 
-    /// Every waypoint sitting on one of this placement's pins, captured at
-    /// drag start so the document can be queried once instead of every
-    /// frame. Matching is positional (0.05 mm) which is the same tolerance
-    /// the DRC graph uses, so any pin-coincident waypoint is included —
-    /// including vias that happen to land on a pin.
-    private func attachedWaypoints(for placement: Placement) -> Set<RouteWaypointAddress> {
-        guard let component = component(for: placement.componentId) else { return [] }
-        let pinWorlds = component.footprint.pins.map { placement.worldPosition(of: $0) }
+    /// Every waypoint sitting on a pin of any placement in `componentIds`.
+    /// Matching is positional (0.05 mm) which is the same tolerance the DRC
+    /// graph uses, so any pin-coincident waypoint is included — including
+    /// vias that happen to land on a pin.
+    private func attachedWaypoints(forComponentIds componentIds: Set<UUID>) -> Set<RouteWaypointAddress> {
+        // Resolve every pin world position across the dragged placements.
+        var pinWorlds: [Point] = []
+        for id in componentIds {
+            guard let placement = document.circuit.physical.placements.first(where: { $0.componentId == id }),
+                  let component = component(for: id)
+            else { continue }
+            for pin in component.footprint.pins {
+                pinWorlds.append(placement.worldPosition(of: pin))
+            }
+        }
+        guard !pinWorlds.isEmpty else { return [] }
         var result: Set<RouteWaypointAddress> = []
         for route in document.circuit.physical.routes {
             for (sIdx, segment) in route.segments.enumerated() {
@@ -317,14 +402,45 @@ struct PhysicalCanvasView: View {
         return result
     }
 
-    private func moveRouteWaypoint(_ a: RouteWaypointAddress, by delta: Point) {
-        guard let rIdx = document.circuit.physical.routes.firstIndex(where: { $0.netId == a.netId }),
-              a.segmentIndex < document.circuit.physical.routes[rIdx].segments.count,
-              a.waypointIndex < document.circuit.physical.routes[rIdx].segments[a.segmentIndex].waypoints.count
-        else { return }
-        let current = document.circuit.physical.routes[rIdx].segments[a.segmentIndex].waypoints[a.waypointIndex].position
-        document.circuit.physical.routes[rIdx].segments[a.segmentIndex].waypoints[a.waypointIndex].position =
-            Point(x: current.x + delta.x, y: current.y + delta.y)
+    /// Shift a batch of waypoints by the same world-space delta in one pass.
+    /// Snapshots each original position first, then writes `original + delta`
+    /// directly — that way the sibling-via callback fired while writing one
+    /// via doesn't corrupt the next iteration's read of another via in the
+    /// same batch (which would result in a 2× delta for paired vias caught
+    /// by the same marquee).
+    ///
+    /// Sibling-via propagation still happens for vias whose twin isn't in
+    /// the batch (e.g. a pin-coincident via caught by Cmd-drag rubber-band
+    /// rather than the marquee). Twins already in the batch are skipped so
+    /// they aren't moved twice.
+    private func applyWaypointDelta(addresses: Set<RouteWaypointAddress>, delta: Point) {
+        struct Snapshot {
+            let oldPosition: Point
+            let kind: WaypointKind
+        }
+        var snapshot: [RouteWaypointAddress: Snapshot] = [:]
+        for addr in addresses {
+            guard let rIdx = document.circuit.physical.routes.firstIndex(where: { $0.netId == addr.netId }),
+                  addr.segmentIndex < document.circuit.physical.routes[rIdx].segments.count,
+                  addr.waypointIndex < document.circuit.physical.routes[rIdx].segments[addr.segmentIndex].waypoints.count
+            else { continue }
+            let wp = document.circuit.physical.routes[rIdx].segments[addr.segmentIndex].waypoints[addr.waypointIndex]
+            snapshot[addr] = Snapshot(oldPosition: wp.position, kind: wp.kind)
+        }
+
+        let inBatch = Set(snapshot.keys)
+        for (addr, snap) in snapshot {
+            guard let rIdx = document.circuit.physical.routes.firstIndex(where: { $0.netId == addr.netId })
+            else { continue }
+            let newPos = Point(x: snap.oldPosition.x + delta.x, y: snap.oldPosition.y + delta.y)
+            document.circuit.physical.routes[rIdx].segments[addr.segmentIndex].waypoints[addr.waypointIndex].position = newPos
+            if snap.kind == .via {
+                moveSiblingVias(
+                    netId: addr.netId, excluding: addr.segmentIndex,
+                    from: snap.oldPosition, to: newPos, skipping: inBatch
+                )
+            }
+        }
     }
 
     private func hitSize(for c: Component) -> CGSize {
@@ -383,17 +499,17 @@ struct PhysicalCanvasView: View {
     /// Dragging a handle slides that waypoint and pulls its neighbors along
     /// whichever axis keeps the adjacent Manhattan segment Manhattan.
     @ViewBuilder private var routeHandles: some View {
-        if case let .routeSegment(netId, segIdx) = selection,
-           let route = document.circuit.physical.routes.first(where: { $0.netId == netId }),
-           segIdx < route.segments.count,
-           visible.contains(route.segments[segIdx].layer) {
-            let segment = route.segments[segIdx]
+        if let seg = selection.routeSegment,
+           let route = document.circuit.physical.routes.first(where: { $0.netId == seg.netId }),
+           seg.segmentIndex < route.segments.count,
+           visible.contains(route.segments[seg.segmentIndex].layer) {
+            let segment = route.segments[seg.segmentIndex]
             let originals = segment.waypoints.map(\.position)
-            let displayed = displayedWaypoints(originals: originals, netId: netId, segIdx: segIdx)
+            let displayed = displayedWaypoints(originals: originals, netId: seg.netId, segIdx: seg.segmentIndex)
             ForEach(Array(displayed.enumerated()), id: \.offset) { i, world in
                 WaypointHandle()
                     .position(transform.toScreen(world))
-                    .gesture(handleDragGesture(netId: netId, segIdx: segIdx, idx: i, originals: originals))
+                    .gesture(handleDragGesture(netId: seg.netId, segIdx: seg.segmentIndex, idx: i, originals: originals))
             }
         }
     }
@@ -496,15 +612,28 @@ struct PhysicalCanvasView: View {
     /// the same net. When the dragged via moves, find every other via on the
     /// net that was sitting at the old XY and drag it to the new XY too so
     /// the cross-plate bore stays joined.
-    private func moveSiblingVias(netId: UUID, excluding segIdx: Int, from oldPos: Point, to newPos: Point) {
+    ///
+    /// `skipping` lets a batch caller (e.g. marquee multi-via drag) flag
+    /// waypoints it's already moving directly, so a sibling that's also in
+    /// the batch doesn't get shifted twice.
+    private func moveSiblingVias(
+        netId: UUID, excluding segIdx: Int,
+        from oldPos: Point, to newPos: Point,
+        skipping: Set<RouteWaypointAddress> = []
+    ) {
         guard let rIdx = document.circuit.physical.routes.firstIndex(where: { $0.netId == netId })
         else { return }
         for sIdx in document.circuit.physical.routes[rIdx].segments.indices where sIdx != segIdx {
             let waypoints = document.circuit.physical.routes[rIdx].segments[sIdx].waypoints
             for (wIdx, wp) in waypoints.enumerated() where wp.kind == .via {
-                if abs(wp.position.x - oldPos.x) < 0.05 && abs(wp.position.y - oldPos.y) < 0.05 {
-                    document.circuit.physical.routes[rIdx].segments[sIdx].waypoints[wIdx].position = newPos
-                }
+                guard abs(wp.position.x - oldPos.x) < 0.05,
+                      abs(wp.position.y - oldPos.y) < 0.05
+                else { continue }
+                let key = RouteWaypointAddress(
+                    netId: netId, segmentIndex: sIdx, waypointIndex: wIdx
+                )
+                if skipping.contains(key) { continue }
+                document.circuit.physical.routes[rIdx].segments[sIdx].waypoints[wIdx].position = newPos
             }
         }
     }
@@ -518,9 +647,9 @@ struct PhysicalCanvasView: View {
     ///     point on the existing polyline so the new vertex is initially
     ///     colinear; drag a handle to introduce the bend.
     private func handleRightClick(at pt: CGPoint) {
-        if case let .routeSegment(netId, segIdx) = selection,
-           let waypointIdx = selectedSegmentWaypointHit(at: pt, netId: netId, segIdx: segIdx) {
-            deleteWaypoint(netId: netId, segIdx: segIdx, waypointIndex: waypointIdx)
+        if let seg = selection.routeSegment,
+           let waypointIdx = selectedSegmentWaypointHit(at: pt, netId: seg.netId, segIdx: seg.segmentIndex) {
+            deleteWaypoint(netId: seg.netId, segIdx: seg.segmentIndex, waypointIndex: waypointIdx)
             return
         }
         insertWaypointFromRightClick(at: pt)
@@ -586,6 +715,27 @@ struct PhysicalCanvasView: View {
         selection = .routeSegment(netId: hit.netId, segmentIndex: hit.segIdx)
     }
 
+    /// Bulk-delete every selected placement (and detach any routes that
+    /// reach it), or the selected route segment. Route segments are
+    /// single-selection so this branches on whichever side is non-empty.
+    private func deleteCurrentSelection() {
+        if !selection.placements.isEmpty {
+            for id in selection.placements {
+                document.circuit.physical.placements.removeAll { $0.componentId == id }
+            }
+        }
+        if let seg = selection.routeSegment,
+           let i = document.circuit.physical.routes.firstIndex(where: { $0.netId == seg.netId }) {
+            if seg.segmentIndex < document.circuit.physical.routes[i].segments.count {
+                document.circuit.physical.routes[i].segments.remove(at: seg.segmentIndex)
+            }
+            if document.circuit.physical.routes[i].segments.isEmpty {
+                document.circuit.physical.routes.remove(at: i)
+            }
+        }
+        selection = .none
+    }
+
     private func projectPoint(_ p: CGPoint, ontoSegmentFrom a: CGPoint, to b: CGPoint) -> CGPoint {
         let dx = b.x - a.x
         let dy = b.y - a.y
@@ -593,6 +743,119 @@ struct PhysicalCanvasView: View {
         guard lenSq > 0 else { return a }
         let t = max(0, min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq))
         return CGPoint(x: a.x + CGFloat(t) * dx, y: a.y + CGFloat(t) * dy)
+    }
+
+    // MARK: - Marquee-selected waypoint markers
+
+    /// Small accent dots at every `selection.waypoints` entry, useful when
+    /// the user has marquee-selected interior route bends. Follows the live
+    /// drag delta so the dots track with the polyline during a Cmd-drag.
+    @ViewBuilder private var selectedWaypointMarkers: some View {
+        let drag = draggingPlacement
+        Canvas { ctx, _ in
+            for addr in selection.waypoints {
+                guard let route = document.circuit.physical.routes.first(where: { $0.netId == addr.netId }),
+                      addr.segmentIndex < route.segments.count
+                else { continue }
+                let segment = route.segments[addr.segmentIndex]
+                guard visible.contains(segment.layer),
+                      addr.waypointIndex < segment.waypoints.count
+                else { continue }
+                var pos = segment.waypoints[addr.waypointIndex].position
+                if let d = drag, d.attached.contains(addr) {
+                    pos = Point(
+                        x: pos.x + d.translation.width / transform.ptsPerMm,
+                        y: pos.y + d.translation.height / transform.ptsPerMm
+                    )
+                }
+                let screen = transform.toScreen(pos)
+                let r: CGFloat = 5
+                let rect = CGRect(x: screen.x - r, y: screen.y - r, width: r * 2, height: r * 2)
+                ctx.fill(Path(ellipseIn: rect), with: .color(Color.accentColor.opacity(0.85)))
+                ctx.stroke(Path(ellipseIn: rect),
+                           with: .color(.white), lineWidth: 1.2)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    // MARK: - Marquee
+
+    @ViewBuilder private var marqueeOverlay: some View {
+        if let m = marquee {
+            Rectangle()
+                .fill(Color.accentColor.opacity(0.12))
+                .overlay(
+                    Rectangle()
+                        .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.0, dash: [4, 3]))
+                )
+                .frame(width: m.rect.width, height: m.rect.height)
+                .position(x: m.rect.midX, y: m.rect.midY)
+                .allowsHitTesting(false)
+        }
+    }
+
+    private var marqueeGesture: some Gesture {
+        DragGesture(minimumDistance: 4, coordinateSpace: .local)
+            .onChanged { value in
+                marquee = MarqueeRect(
+                    startScreen: value.startLocation,
+                    currentScreen: value.location
+                )
+            }
+            .onEnded { value in
+                defer { marquee = nil }
+                let rect = MarqueeRect(
+                    startScreen: value.startLocation,
+                    currentScreen: value.location
+                ).rect
+                // Tiny rectangles (sub-grid) are likely fumbled clicks — treat
+                // as a no-op rather than wiping the selection silently.
+                guard rect.width > 2 || rect.height > 2 else { return }
+                applyMarquee(screenRect: rect, additive: NSEvent.modifierFlags.contains(.command))
+            }
+    }
+
+    /// Selects every placement whose anchor falls inside the marquee rect,
+    /// AND every route waypoint inside the rect. The waypoint catch is what
+    /// lets the user grab a subcircuit's interior bends so the routes don't
+    /// deform when the whole selection is dragged. `additive` (Cmd held at
+    /// gesture end) ORs into the existing selection; otherwise the marquee
+    /// replaces it.
+    private func applyMarquee(screenRect: CGRect, additive: Bool) {
+        let worldMin = transform.toWorld(CGPoint(x: screenRect.minX, y: screenRect.minY))
+        let worldMax = transform.toWorld(CGPoint(x: screenRect.maxX, y: screenRect.maxY))
+        let lo = Point(x: min(worldMin.x, worldMax.x), y: min(worldMin.y, worldMax.y))
+        let hi = Point(x: max(worldMin.x, worldMax.x), y: max(worldMin.y, worldMax.y))
+
+        var placementHits: Set<UUID> = []
+        for placement in document.circuit.physical.placements {
+            guard visible.contains(placement.layer) else { continue }
+            let p = placement.position
+            if p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y {
+                placementHits.insert(placement.componentId)
+            }
+        }
+        var waypointHits: Set<RouteWaypointAddress> = []
+        for route in document.circuit.physical.routes {
+            for (sIdx, segment) in route.segments.enumerated() {
+                guard visible.contains(segment.layer) else { continue }
+                for (wIdx, wp) in segment.waypoints.enumerated() {
+                    let p = wp.position
+                    if p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y {
+                        waypointHits.insert(RouteWaypointAddress(
+                            netId: route.netId, segmentIndex: sIdx, waypointIndex: wIdx
+                        ))
+                    }
+                }
+            }
+        }
+
+        var next = additive ? selection : PhysicalSelection.none
+        next.routeSegment = nil  // marquee select doesn't pair with vertex-edit mode
+        next.placements.formUnion(placementHits)
+        next.waypoints.formUnion(waypointHits)
+        selection = next
     }
 
     // MARK: - Interaction
@@ -605,7 +868,10 @@ struct PhysicalCanvasView: View {
             // here by computing point-to-polyline distance.
             if let hit = routeSegmentHit(at: pt) {
                 selection = .routeSegment(netId: hit.netId, segmentIndex: hit.segmentIndex)
-            } else {
+            } else if !NSEvent.modifierFlags.contains(.command) {
+                // Cmd-tap on empty area preserves selection (so the user can
+                // Cmd-tap placements to extend a multi-selection without
+                // accidentally clearing it). Plain background tap deselects.
                 selection = .none
             }
         case .routing(let netId, var wps, let layer, let startsAtVia):
@@ -669,7 +935,7 @@ struct PhysicalCanvasView: View {
             let ref = PinRef(componentId: componentId, pinKey: pinKey)
             guard let net = document.circuit.logic.nets.first(where: { $0.pins.contains(ref) }) else {
                 // Pin not on any net — no route to start. Select the placement instead.
-                selection = .placement(componentId: componentId)
+                selection = .placement(componentId)
                 return
             }
             // Auto-pick the route layer from the pin so the channel actually connects.
@@ -768,44 +1034,38 @@ struct PhysicalCanvasView: View {
     }
 
     private func deleteSelection() {
-        switch selection {
-        case .placement(let id):
-            document.circuit.physical.placements.removeAll { $0.componentId == id }
-        case .routeSegment(let netId, let segIdx):
-            guard let i = document.circuit.physical.routes.firstIndex(where: { $0.netId == netId })
-            else { break }
-            if segIdx < document.circuit.physical.routes[i].segments.count {
-                document.circuit.physical.routes[i].segments.remove(at: segIdx)
-            }
-            if document.circuit.physical.routes[i].segments.isEmpty {
-                document.circuit.physical.routes.remove(at: i)
-            }
-        case .none:
-            break
-        }
-        selection = .none
+        deleteCurrentSelection()
     }
 
+    /// R rotates each selected placement by 90° in place. Multi-selection
+    /// rotates every member independently around its own anchor (rather
+    /// than rotating the bounding box around its centroid), which matches
+    /// what users typically want when they multi-select to "fix orientation
+    /// on a row of parts."
     private func rotateSelection() {
-        guard case let .placement(id) = selection,
-              let i = document.circuit.physical.placements.firstIndex(where: { $0.componentId == id })
-        else { return }
-        let next: Rotation
-        switch document.circuit.physical.placements[i].rotation {
-        case .r0: next = .r90
-        case .r90: next = .r180
-        case .r180: next = .r270
-        case .r270: next = .r0
+        guard !selection.placements.isEmpty else { return }
+        for id in selection.placements {
+            guard let i = document.circuit.physical.placements.firstIndex(where: { $0.componentId == id })
+            else { continue }
+            let next: Rotation
+            switch document.circuit.physical.placements[i].rotation {
+            case .r0: next = .r90
+            case .r90: next = .r180
+            case .r180: next = .r270
+            case .r270: next = .r0
+            }
+            document.circuit.physical.placements[i].rotation = next
         }
-        document.circuit.physical.placements[i].rotation = next
     }
 
     private func flipLayerSelection() {
-        guard case let .placement(id) = selection,
-              let i = document.circuit.physical.placements.firstIndex(where: { $0.componentId == id })
-        else { return }
-        let cur = document.circuit.physical.placements[i].layer
-        document.circuit.physical.placements[i].layer = cur == .top ? .bottom : .top
+        guard !selection.placements.isEmpty else { return }
+        for id in selection.placements {
+            guard let i = document.circuit.physical.placements.firstIndex(where: { $0.componentId == id })
+            else { continue }
+            let cur = document.circuit.physical.placements[i].layer
+            document.circuit.physical.placements[i].layer = cur == .top ? .bottom : .top
+        }
     }
 
     // MARK: - Helpers
@@ -964,7 +1224,7 @@ struct ParkingDropDelegate: DropDelegate {
                 else { return }
                 let world = tx.snap(tx.toWorld(dropPoint), grid: gridMm)
                 createOrMovePlacement(id: id, to: world)
-                selection = .placement(componentId: id)
+                selection = .placement(id)
             }
         }
         return true

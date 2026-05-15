@@ -34,7 +34,13 @@ struct RoutesOverlay: View {
 /// segment within that net's route, which waypoint within that segment. Used
 /// to drive partial overrides in route rendering (placement drag rubber-band)
 /// without copying full waypoint lists around.
-struct RouteWaypointAddress: Hashable {
+///
+/// `nonisolated` because the project's default actor isolation is `MainActor`
+/// (see `SWIFT_DEFAULT_ACTOR_ISOLATION`). This is a pure value type stored in
+/// `Set<RouteWaypointAddress>` and looked up via Hashable from contexts that
+/// may not be on the main actor — without the marker, Swift 6 mode rejects
+/// the conformance.
+nonisolated struct RouteWaypointAddress: Hashable, Sendable {
     let netId: UUID
     let segmentIndex: Int
     let waypointIndex: Int
@@ -92,8 +98,8 @@ extension RoutesOverlay {
     }
 
     private func selectionMatches(netId: UUID, segmentIndex: Int) -> Bool {
-        if case let .routeSegment(n, i) = selection { return n == netId && i == segmentIndex }
-        return false
+        guard let s = selection.routeSegment else { return false }
+        return s.netId == netId && s.segmentIndex == segmentIndex
     }
 
     private func layerColor(_ layer: Layer) -> Color {

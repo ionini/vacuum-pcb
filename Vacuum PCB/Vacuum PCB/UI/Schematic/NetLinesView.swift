@@ -15,7 +15,7 @@ struct NetLinesView: View {
     var body: some View {
         Canvas { ctx, _ in
             for net in document.logic.nets {
-                let isSelected = selection.netId == net.id
+                let isSelected = selection.contains(net: net.id)
                 for edge in NetEdgeBuilder.edges(for: net, in: document) {
                     var path = Path()
                     path.move(to: edge.a.point)

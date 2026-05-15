@@ -20,33 +20,30 @@ struct InspectorStrip: View {
     }
 
     @ViewBuilder private var content: some View {
-        switch selection {
-        case .component(let id):
-            if let component = component(id) {
-                componentInspector(component)
-            }
-        case .net(let id):
-            if let net = net(id) {
-                netInspector(net)
-            }
-        case .pin, .none:
+        // Component-side controls only make sense for exactly one selected
+        // component (S/M/L picker, port direction). The same goes for net
+        // label editing. In multi-selection we just show the count below in
+        // the hint.
+        if let only = selection.singleComponent, let c = component(only) {
+            componentInspector(c)
+        } else if let netId = selection.net, let n = net(netId) {
+            netInspector(n)
+        } else {
             EmptyView()
         }
     }
 
     private var hint: some View {
-        let text: String = {
-            switch selection {
-            case .none:
-                return "Click a palette button to add. Click pin → pin to connect. ⌫ to delete."
-            case .component:
-                return "Double-click label to rename. Drag to move. ⌫ to delete."
-            case .net:
-                return "⌫ to delete. Click pin pair to extend or break."
-            case .pin:
-                return "Click another pin to connect."
-            }
-        }()
+        let text: String
+        if selection.isEmpty {
+            text = "Click a palette button to add. Drag empty canvas to box-select. ⌫ to delete."
+        } else if selection.net != nil {
+            text = "⌫ to delete this net. Click pin pair to extend or break it."
+        } else if selection.singleComponent != nil {
+            text = "Double-click label to rename. Drag to move. ⌘-click to multi-select. ⌫ to delete."
+        } else {
+            text = "\(selection.components.count) components selected. Drag any to move them together. ⌫ to delete."
+        }
         return Text(text)
             .font(.caption)
             .foregroundStyle(.secondary)
