@@ -157,6 +157,7 @@ struct PhysicalCanvasView: View {
                 RightClickCatcher { pt in handleRightClick(at: pt) }
                     .allowsHitTesting(true)
             }
+            .coordinateSpace(name: "canvas")
             .clipped()
             .background(Color(NSColor.controlBackgroundColor))
             .onContinuousHover { phase in
@@ -267,7 +268,7 @@ struct PhysicalCanvasView: View {
             ForEach(document.circuit.physical.placements, id: \.componentId) { placement in
                 if visible.contains(Layer(plate: placement.layer, depth: placement.depth)),
                    let component = component(for: placement.componentId) {
-                    let pos = transform.toScreen(placement.position)
+                    let pos = hitCenter(for: placement, component: component)
                     let size = hitSize(for: component)
                     Rectangle()
                         .fill(Color.clear)
@@ -282,12 +283,30 @@ struct PhysicalCanvasView: View {
                         // can still commit the route.
                         .allowsHitTesting(!routingState.inProgress)
                         .gesture(placementDragGesture(placement))
-                        .onTapGesture {
-                            handlePlacementTap(componentId: placement.componentId)
+                        .onTapGesture(coordinateSpace: .named("canvas")) { pt in
+                            handlePlacementTap(componentId: placement.componentId, at: pt)
                         }
                 }
             }
         }
+    }
+
+    /// World→screen centre of the placement's bounding rect. Differs from
+    /// `placement.position` when the footprint isn't centred on its anchor
+    /// (sub-parts are corner-anchored, primitives are centre-anchored), so
+    /// using the bounding-rect midpoint keeps the hit zone over the visible
+    /// body for both conventions.
+    private func hitCenter(for placement: Placement, component: Component) -> CGPoint {
+        let b = component.footprint(manufacturing).boundingRect
+        let lx = b.minX + b.size.width / 2
+        let ly = b.minY + b.size.height / 2
+        let r = placement.rotation.radians
+        let cosR = cos(r), sinR = sin(r)
+        let world = Point(
+            x: placement.position.x + lx * cosR - ly * sinR,
+            y: placement.position.y + lx * sinR + ly * cosR
+        )
+        return transform.toScreen(world)
     }
 
     /// Screen-space offset to apply to all parts of a placement (body, hit
@@ -298,7 +317,18 @@ struct PhysicalCanvasView: View {
         return d.translation
     }
 
-    private func handlePlacementTap(componentId: UUID) {
+    private func handlePlacementTap(componentId: UUID, at pt: CGPoint) {
+        // A click that's also over a visible route segment goes to the route.
+        // Sub-part hit zones can be 40+ mm wide and routinely sit on top of
+        // routes traversing the body; without this, those routes are
+        // unreachable. Cmd-click is preserved for multi-select on placements
+        // — only plain clicks defer to the route.
+        if !NSEvent.modifierFlags.contains(.command),
+           let hit = routeSegmentHit(at: pt) {
+            selection = .routeSegment(netId: hit.netId, segmentIndex: hit.segmentIndex)
+            routingState = .idle
+            return
+        }
         if NSEvent.modifierFlags.contains(.command) {
             // Cmd-click toggles in/out of the multi-selection without
             // disturbing whatever else is selected. Route segment goes away
