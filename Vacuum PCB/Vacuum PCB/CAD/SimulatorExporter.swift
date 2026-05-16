@@ -140,7 +140,7 @@ enum SimulatorExporter {
         // same plate at different depths).
         // Reuse PlateBuilder's pin-snap helper so the fluid volume tracks
         // the same channel-extension behaviour as the printed cutters.
-        let pinsPerPlate = PlateBuilder.collectPinPositions(
+        let pinsPerLayer = PlateBuilder.collectPinPositions(
             doc: doc, m: m, componentsById: componentsById
         )
         let pinSnapTol = m.dimpleDiameter / 2 + 0.5
@@ -152,7 +152,7 @@ enum SimulatorExporter {
                 let midZ = m.midZ(for: segment.layer)
                 let positions = PlateBuilder.extendedWaypointPositions(
                     for: segment,
-                    pinsOnPlate: pinsPerPlate[segment.layer.plate] ?? [],
+                    pinsOnLayer: pinsPerLayer[segment.layer] ?? [],
                     tolerance: pinSnapTol
                 )
                 fluidParts.append(channelMesh(
