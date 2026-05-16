@@ -1,7 +1,11 @@
 import Foundation
 
 struct CircuitDocument: Codable, Hashable {
-    static let currentSchemaVersion = 1
+    /// Bumped to 2 when sub-part placements switched from centre-anchor to
+    /// corner-anchor (Placement.position now stores the library outline's
+    /// top-left corner in parent-world rather than the centre). Old files
+    /// are migrated transparently in `decoded(from:)`.
+    static let currentSchemaVersion = 2
 
     var schemaVersion: Int
     var manufacturing: ManufacturingConstants
@@ -54,13 +58,13 @@ extension CircuitDocument {
             else { continue }
 
             let outline = part.document.physical.boardOutline
-            let cx = outline.minX + outline.size.width / 2
-            let cy = outline.minY + outline.size.height / 2
+            let ox = outline.minX
+            let oy = outline.minY
             let r = placement.rotation.radians
             let cosR = cos(r), sinR = sin(r)
 
             func toWorld(_ p: Point) -> Point {
-                let dx = p.x - cx, dy = p.y - cy
+                let dx = p.x - ox, dy = p.y - oy
                 return Point(
                     x: placement.position.x + dx * cosR - dy * sinR,
                     y: placement.position.y + dx * sinR + dy * cosR
@@ -137,6 +141,46 @@ extension CircuitDocument {
     }
 
     static func decoded(from data: Data) throws -> CircuitDocument {
-        try jsonDecoder.decode(CircuitDocument.self, from: data)
+        var doc = try jsonDecoder.decode(CircuitDocument.self, from: data)
+        migrateInPlace(&doc)
+        return doc
+    }
+
+    /// Forward-migrates a freshly decoded document. Keeps pin world positions
+    /// (and therefore every route endpoint) invariant — geometry on screen
+    /// after load is identical to what was written.
+    private static func migrateInPlace(_ doc: inout CircuitDocument) {
+        if doc.schemaVersion < 2 {
+            migrateSubpartAnchorsCenterToCorner(&doc)
+        }
+        doc.schemaVersion = currentSchemaVersion
+    }
+
+    /// v1 → v2: sub-part `Placement.position` previously stored the library
+    /// outline's centre in parent-world; v2 stores its top-left corner. Shift
+    /// each subpart placement by the rotated half-extent so world geometry
+    /// stays put. Children whose library file isn't loaded yet are left alone
+    /// — the same flag will trigger again next launch once the library is
+    /// available (worst case: a permanently-missing part is treated as v2,
+    /// which is harmless because the placeholder doesn't reference pins).
+    private static func migrateSubpartAnchorsCenterToCorner(_ doc: inout CircuitDocument) {
+        for i in doc.physical.placements.indices {
+            let placement = doc.physical.placements[i]
+            guard let comp = doc.logic.components.first(where: { $0.id == placement.componentId }),
+                  comp.kind == .subpart,
+                  let part = comp.partRef.flatMap({ PartsLibrary.shared.part(named: $0) })
+            else { continue }
+            let outline = part.document.physical.boardOutline
+            let dx = outline.size.width / 2
+            let dy = outline.size.height / 2
+            let r = placement.rotation.radians
+            let cosR = cos(r), sinR = sin(r)
+            let shiftX = dx * cosR - dy * sinR
+            let shiftY = dx * sinR + dy * cosR
+            doc.physical.placements[i].position = Point(
+                x: placement.position.x - shiftX,
+                y: placement.position.y - shiftY
+            )
+        }
     }
 }

@@ -221,9 +221,13 @@ extension Component {
     }
 
     /// Builds a Footprint for a `.subpart` instance from its library file.
-    /// Anchor sits at the centre of the library's `boardOutline` — meaning
-    /// the parent-side `Placement.position` represents where the centre of
-    /// the sub-part lands on the parent board.
+    /// Anchor sits at the library's `boardOutline.origin` (top-left corner)
+    /// — meaning the parent-side `Placement.position` represents where that
+    /// corner lands on the parent board. Anchoring at the corner (rather
+    /// than the centre) keeps pin offsets equal to the child file's port
+    /// coordinates, so a grid-snapped parent placement gives grid-aligned
+    /// pin positions for any child whose ports sit on the grid — even
+    /// children with odd outline width/height.
     ///
     /// Returns nil when the library file isn't loaded (missing-part case).
     /// Callers should treat that as "render placeholder".
@@ -232,19 +236,16 @@ extension Component {
               let part = PartsLibrary.shared.part(named: filename)
         else { return nil }
         let outline = part.document.physical.boardOutline
-        let cx = outline.minX + outline.size.width / 2
-        let cy = outline.minY + outline.size.height / 2
+        let ox = outline.minX
+        let oy = outline.minY
         let pins = part.pins.map { p in
             FootprintPin(
                 key: p.portId.uuidString,
-                offset: Point(x: p.physicalAnchor.x - cx, y: p.physicalAnchor.y - cy),
+                offset: Point(x: p.physicalAnchor.x - ox, y: p.physicalAnchor.y - oy),
                 relativeLayer: .same
             )
         }
-        let rect = Rect(
-            origin: Point(x: -outline.size.width / 2, y: -outline.size.height / 2),
-            size: outline.size
-        )
+        let rect = Rect(origin: .zero, size: outline.size)
         return Footprint(kind: .subpart, pins: pins, exclusionRect: rect, boundingRect: rect)
     }
 }

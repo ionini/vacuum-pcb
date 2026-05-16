@@ -234,18 +234,16 @@ struct SubpartExpandedView: View {
     }
 
     /// Maps a point in library-local mm coordinates into parent mm
-    /// coordinates by translating so the library's `boardOutline` centre
-    /// sits at `placement.position`, then rotating about that centre by
-    /// `placement.rotation`.
+    /// coordinates by translating so the library's `boardOutline` top-left
+    /// corner sits at `placement.position`, then rotating about that corner
+    /// by `placement.rotation`. Corner-anchored to match `subpartFootprint()`.
     private func transformWorld(_ libraryPoint: Point) -> Point {
         let outline = component.partRef
             .flatMap { PartsLibrary.shared.part(named: $0) }?
             .document.physical.boardOutline
             ?? Rect(origin: .zero, size: Size(width: 0, height: 0))
-        let cx = outline.minX + outline.size.width / 2
-        let cy = outline.minY + outline.size.height / 2
-        let dx = libraryPoint.x - cx
-        let dy = libraryPoint.y - cy
+        let dx = libraryPoint.x - outline.minX
+        let dy = libraryPoint.y - outline.minY
         let r = placement.rotation.radians
         let cosR = cos(r), sinR = sin(r)
         return Point(
