@@ -283,21 +283,40 @@ enum PlateBuilder {
 
     // MARK: - Dimples
 
+    /// Dome-shaped dimple cavity: a sphere whose centre sits
+    /// `dimpleSphereOffset` mm into the silicone gap from the plate's
+    /// silicone-facing surface. The cap that intrudes into the plate is the
+    /// cavity — widest at the surface, tapering inward. Intersected with a
+    /// half-space cube so the cutter is bounded at the plate surface; otherwise
+    /// the rest of the sphere would render through the silicone gap in the
+    /// channels-only view.
     private static func dimpleMesh(
         at center: Point, layer: Plate, m: ManufacturingConstants,
         topInnerZ: Double, bottomInnerZ: Double
     ) -> Mesh {
         let radius = m.dimpleDiameter / 2
+        let offset = m.dimpleSphereOffset
         let eps = 0.05
-        let h = m.dimpleDepth + eps
         let cz: Double
+        let clipLo: Double
+        let clipHi: Double
         switch layer {
-        case .top:    cz = topInnerZ - eps + h / 2     // spans innerZ-eps … innerZ+depth
-        case .bottom: cz = bottomInnerZ + eps - h / 2  // spans innerZ-depth … innerZ+eps
+        case .top:
+            cz = topInnerZ - offset
+            clipLo = topInnerZ - eps               // overshoot surface by eps for clean CSG
+            clipHi = topInnerZ + radius + 1        // safely above the cap's deepest point
+        case .bottom:
+            cz = bottomInnerZ + offset
+            clipLo = bottomInnerZ - radius - 1
+            clipHi = bottomInnerZ + eps
         }
-        return Mesh.cylinder(radius: radius, height: h, slices: 32)
-            .rotated(by: Euclid.Rotation.pitch(.halfPi))
+        let sphere = Mesh.sphere(radius: radius, slices: 32)
             .translated(by: Vector(center.x, center.y, cz))
+        let clipper = Mesh.cube(
+            center: Vector(center.x, center.y, (clipLo + clipHi) / 2),
+            size: Vector(2 * radius + 1, 2 * radius + 1, clipHi - clipLo)
+        )
+        return sphere.intersection(clipper)
     }
 
     // MARK: - Resistor serpentine

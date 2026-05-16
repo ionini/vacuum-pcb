@@ -19,10 +19,20 @@ struct ManufacturingConstants: Codable, Hashable {
     var siliconeThickness: Double
 
     /// Diameter of the transistor dimple — the cup the silicone deflects into.
+    /// Drives the radius of the dome-shaped cavity (revolved spherical cap).
     var dimpleDiameter: Double
 
-    /// Depth the dimple is recessed into the silicone-facing surface of its plate.
+    /// Legacy flat-cylinder dimple depth. Retained for codable backwards
+    /// compatibility; the dome geometry derives depth from `dimpleDiameter`
+    /// and `dimpleSphereOffset` instead.
     var dimpleDepth: Double
+
+    /// Distance from the plate's silicone-facing surface to the centre of the
+    /// dome's defining sphere, measured into the plate body. Matches the
+    /// Fusion 360 source sketch: revolving the disk's larger cap (the part on
+    /// the cavity side of the surface line) around the vertical axis. Depth
+    /// of the cavity into the plate is `dimpleDiameter/2 + dimpleSphereOffset`.
+    var dimpleSphereOffset: Double
 
     /// Snap-grid pitch used by the physical editor (mm). Not consumed by the CAD
     /// pipeline; lives here so it travels with the document.
@@ -52,6 +62,7 @@ struct ManufacturingConstants: Codable, Hashable {
         siliconeThickness: 0.5,
         dimpleDiameter: 5.0,
         dimpleDepth: 1.0,
+        dimpleSphereOffset: 1.0,
         gridPitch: 1.0,
         minChannelSpacing: 1.5,
         resistorChannelDiameter: 0.5,
@@ -63,12 +74,14 @@ struct ManufacturingConstants: Codable, Hashable {
     // get the default for any field they didn't write.
     private enum CodingKeys: String, CodingKey {
         case plateThickness, channelDiameter, portBoreDiameter, siliconeThickness
-        case dimpleDiameter, dimpleDepth, gridPitch, minChannelSpacing
+        case dimpleDiameter, dimpleDepth, dimpleSphereOffset
+        case gridPitch, minChannelSpacing
         case resistorChannelDiameter, interLayerWall
     }
 
     init(plateThickness: Double, channelDiameter: Double, portBoreDiameter: Double,
          siliconeThickness: Double, dimpleDiameter: Double, dimpleDepth: Double,
+         dimpleSphereOffset: Double,
          gridPitch: Double, minChannelSpacing: Double, resistorChannelDiameter: Double,
          interLayerWall: Double) {
         self.plateThickness = plateThickness
@@ -77,6 +90,7 @@ struct ManufacturingConstants: Codable, Hashable {
         self.siliconeThickness = siliconeThickness
         self.dimpleDiameter = dimpleDiameter
         self.dimpleDepth = dimpleDepth
+        self.dimpleSphereOffset = dimpleSphereOffset
         self.gridPitch = gridPitch
         self.minChannelSpacing = minChannelSpacing
         self.resistorChannelDiameter = resistorChannelDiameter
@@ -98,6 +112,8 @@ struct ManufacturingConstants: Codable, Hashable {
         siliconeThickness = try c.decode(Double.self, forKey: .siliconeThickness)
         dimpleDiameter = try c.decode(Double.self, forKey: .dimpleDiameter)
         dimpleDepth = try c.decode(Double.self, forKey: .dimpleDepth)
+        dimpleSphereOffset = try c.decodeIfPresent(Double.self,
+                                                   forKey: .dimpleSphereOffset) ?? 1.0
         gridPitch = try c.decode(Double.self, forKey: .gridPitch)
         minChannelSpacing = try c.decode(Double.self, forKey: .minChannelSpacing)
         resistorChannelDiameter = try c.decodeIfPresent(Double.self,

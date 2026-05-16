@@ -116,6 +116,7 @@ struct ManufacturingSettingsView: View {
             siliconeThickness: max(0.05, m.siliconeThickness),
             dimpleDiameter: max(0.1, m.dimpleDiameter),
             dimpleDepth: max(0.05, m.dimpleDepth),
+            dimpleSphereOffset: max(0.0, m.dimpleSphereOffset),
             gridPitch: max(0.05, m.gridPitch),
             minChannelSpacing: max(0.05, m.minChannelSpacing),
             resistorChannelDiameter: max(0.05, m.resistorChannelDiameter),

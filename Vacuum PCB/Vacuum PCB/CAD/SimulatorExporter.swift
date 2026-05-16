@@ -317,22 +317,38 @@ enum SimulatorExporter {
         }
     }
 
-    /// Gate sense volume: the dimple cavity. Hemispherical-ish cylinder
-    /// recessed into the silicone-facing surface of the placement's plate.
+    /// Gate sense volume: the dome cavity. Sphere centred `dimpleSphereOffset`
+    /// mm into the silicone gap; intersected with the plate's half-space so
+    /// the sense volume is just the cap on the plate side. Mirrors the cutter
+    /// PlateBuilder uses.
     private static func gateBody(
         placement: Placement, m: ManufacturingConstants,
         topInnerZ: Double, bottomInnerZ: Double
     ) -> Mesh {
         let radius = m.dimpleDiameter / 2
-        let depth = m.dimpleDepth
+        let offset = m.dimpleSphereOffset
+        let px = placement.position.x
+        let py = placement.position.y
         let cz: Double
+        let clipLo: Double
+        let clipHi: Double
         switch placement.layer {
-        case .top:    cz = topInnerZ + depth / 2          // recessed upward
-        case .bottom: cz = bottomInnerZ - depth / 2       // recessed downward
+        case .top:
+            cz = topInnerZ - offset
+            clipLo = topInnerZ
+            clipHi = topInnerZ + radius + 1
+        case .bottom:
+            cz = bottomInnerZ + offset
+            clipLo = bottomInnerZ - radius - 1
+            clipHi = bottomInnerZ
         }
-        return Mesh.cylinder(radius: radius, height: depth, slices: 32)
-            .rotated(by: Euclid.Rotation.pitch(.halfPi))
-            .translated(by: Vector(placement.position.x, placement.position.y, cz))
+        let sphere = Mesh.sphere(radius: radius, slices: 32)
+            .translated(by: Vector(px, py, cz))
+        let clipper = Mesh.cube(
+            center: Vector(px, py, (clipLo + clipHi) / 2),
+            size: Vector(2 * radius + 1, 2 * radius + 1, clipHi - clipLo)
+        )
+        return sphere.intersection(clipper)
     }
 
     /// Closed-by-default slab that bridges the two source/drain drop bores
