@@ -186,23 +186,28 @@ struct SubpartExpandedView: View {
     private func boundaryMarkers(part: PartsLibrary.Part) -> some View {
         ZStack {
             ForEach(part.pins, id: \.portId) { pin in
-                let world = transformWorld(pin.physicalAnchor)
-                let screen = transform.toScreen(world)
-                ZStack {
-                    Circle()
-                        .fill(Color.teal.opacity(0.85))
-                        .frame(width: 7, height: 7)
-                        .overlay(Circle().stroke(Color.primary.opacity(0.6), lineWidth: 0.5))
-                    Text(pin.label)
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.primary)
-                        .padding(.horizontal, 2)
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 2))
-                        .fixedSize()
-                        .offset(labelOffset(for: pin.side))
+                // Hide pins on a hidden plate — same rule that filters
+                // primitive port placements, so showing T0 alone leaves
+                // only the top-plate boundary pins visible.
+                if visible.contains(Layer(plate: pin.plate, depth: 0)) {
+                    let world = transformWorld(pin.physicalAnchor)
+                    let screen = transform.toScreen(world)
+                    ZStack {
+                        Circle()
+                            .fill(LayerPalette.color(for: Layer(plate: pin.plate, depth: 0)).opacity(0.85))
+                            .frame(width: 7, height: 7)
+                            .overlay(Circle().stroke(Color.primary.opacity(0.6), lineWidth: 0.5))
+                        Text(pin.label)
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(.primary)
+                            .padding(.horizontal, 2)
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 2))
+                            .fixedSize()
+                            .offset(labelOffset(for: pin.side))
+                    }
+                    .position(screen)
+                    .allowsHitTesting(false)
                 }
-                .position(screen)
-                .allowsHitTesting(false)
             }
         }
     }

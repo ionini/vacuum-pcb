@@ -505,12 +505,18 @@ struct PhysicalCanvasView: View {
             ForEach(document.circuit.physical.placements, id: \.componentId) { placement in
                 if let component = component(for: placement.componentId) {
                     ForEach(component.footprint(manufacturing).pins, id: \.key) { pin in
-                        let pinLayer = placement.resolvedLayer(of: pin, on: component)
-                        // Sub-part boundary pins are layer-agnostic markers
-                        // (per v1 spec) — always show them. Primitive pins
-                        // still respect layer visibility.
-                        let showRegardlessOfLayer = component.kind == .subpart
-                        if showRegardlessOfLayer || visible.contains(pinLayer) {
+                        // Subpart boundary pins live on the library file's
+                        // plate (depth 0) regardless of the instance's
+                        // placement.layer — that field is metadata-only for
+                        // subparts. Primitives resolve through the standard
+                        // relative-layer rule.
+                        let pinLayer: Layer = {
+                            if let bp = component.subpartBoundaryPin(key: pin.key) {
+                                return Layer(plate: bp.plate, depth: 0)
+                            }
+                            return placement.resolvedLayer(of: pin, on: component)
+                        }()
+                        if visible.contains(pinLayer) {
                             let world = placement.worldPosition(of: pin)
                             let screen = transform.toScreen(world)
                             PhysicalPinHandle(

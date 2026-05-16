@@ -188,6 +188,18 @@ extension Component {
         return kind.pinKeys
     }
 
+    /// Looks up the `BoundaryPin` matching one of this sub-part's pin keys.
+    /// Useful for callers that need the pin's library plate (visibility
+    /// filtering) or its friendly label without going through the footprint
+    /// system. Returns nil for primitives and missing parts.
+    func subpartBoundaryPin(key: String) -> BoundaryPin? {
+        guard kind == .subpart,
+              let filename = partRef,
+              let part = PartsLibrary.shared.part(named: filename)
+        else { return nil }
+        return part.pins.first(where: { $0.portId.uuidString == key })
+    }
+
     /// Builds a Footprint for a `.subpart` instance from its library file.
     /// Anchor sits at the centre of the library's `boardOutline` — meaning
     /// the parent-side `Placement.position` represents where the centre of
