@@ -46,6 +46,11 @@ enum SimulatorExporter {
     private struct Body { let name: String; let mesh: Mesh }
 
     private static func buildBodies(for doc: CircuitDocument) -> [Body] {
+        // Subpart instances are expanded the same way as the print pipeline
+        // (see `PlateBuilder.build`) so the simulator export sees the full
+        // primitive netlist — every gate/blocker/resistor contributes a
+        // body even when it came in via a library file.
+        let doc = doc.flattened()
         let m = doc.manufacturing
         let outline = doc.physical.boardOutline
 

@@ -23,6 +23,12 @@ enum PlateBuilder {
     }
 
     static func build(_ doc: CircuitDocument) -> Output {
+        // Subpart instances are expanded into their library file's
+        // primitives before any CSG runs — the plate sees the flattened
+        // design, identical to what the user would get if they'd hand-
+        // duplicated every gate / resistor / route from XOR.vpcb into the
+        // parent doc.
+        let doc = doc.flattened()
         let m = doc.manufacturing
         let outline = doc.physical.boardOutline
 
