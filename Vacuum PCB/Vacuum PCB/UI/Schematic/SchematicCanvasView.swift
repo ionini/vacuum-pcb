@@ -44,7 +44,7 @@ struct SchematicCanvasView: View {
 
             NetLinesView(document: document.circuit, selection: selection)
 
-            ForEach(document.circuit.logic.components) { component in
+            ForEach(document.circuit.logic.components.filter { $0.kind != .screw }) { component in
                 let pos = document.circuit.schematic.position(for: component.id)
                     ?? Point(x: 200, y: 200)
                 ComponentNodeView(

@@ -202,6 +202,10 @@ struct ComponentNodeView: View {
             case .atmVent:      return "Atm vent"
             default:            return nil
             }
+        case .screw:
+            // Screws never reach the schematic-side pin tooltip path
+            // (filtered out of the canvas) — guarded for switch exhaustiveness.
+            return nil
         }
     }
 

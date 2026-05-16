@@ -141,6 +141,11 @@ enum SimulatorExporter {
                 // Subpart internals aren't yet flattened into the simulator
                 // export — view-only on the physical canvas for v1.
                 break
+
+            case .screw:
+                // Screws are mechanical-only; they don't contribute to the
+                // fluid volume the simulator integrates.
+                break
             }
         }
 

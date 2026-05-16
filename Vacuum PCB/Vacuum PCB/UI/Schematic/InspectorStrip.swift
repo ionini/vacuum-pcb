@@ -141,6 +141,7 @@ extension ComponentKind {
         case .atmVent:       return "Atm Vent"
         case .port:          return "Port"
         case .subpart:       return "Subpart"
+        case .screw:         return "Screw"
         }
     }
 }

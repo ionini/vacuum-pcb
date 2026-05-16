@@ -130,6 +130,25 @@ extension ComponentKind {
                 exclusionRect: Rect(origin: .zero, size: Size(width: 0, height: 0)),
                 boundingRect: Rect(origin: .zero, size: Size(width: 0, height: 0))
             )
+
+        case .screw:
+            // Screws are mechanical-only: no fluid pins. Exclusion = head
+            // countersink radius so the auto-router avoids running channels
+            // under the head cavity. Bounding rect adds a hair of slack so
+            // the parking-lot / canvas hit target stays grabbable.
+            let headRadius = ScrewGeometry.headDiameter / 2
+            let half = headRadius + 0.2
+            return Footprint(
+                kind: .screw, pins: [],
+                exclusionRect: Rect(
+                    origin: Point(x: -headRadius, y: -headRadius),
+                    size: Size(width: 2 * headRadius, height: 2 * headRadius)
+                ),
+                boundingRect: Rect(
+                    origin: Point(x: -half, y: -half),
+                    size: Size(width: 2 * half, height: 2 * half)
+                )
+            )
         }
     }
 
@@ -150,6 +169,7 @@ extension ComponentKind {
         case .resistor:     return ["1", "2"]
         case .vacuumSource, .atmVent, .port: return ["p"]
         case .subpart:      return []
+        case .screw:        return []
         }
     }
 }

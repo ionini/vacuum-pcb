@@ -40,6 +40,11 @@ struct ComponentSymbolMetrics {
             // Subpart metrics are library-driven — go through
             // `metrics(for: Component)` to get a real layout.
             return ComponentSymbolMetrics(size: CGSize(width: 100, height: 80), pinOffsets: [:])
+        case .screw:
+            // Screws are mechanical only; never rendered on the schematic.
+            // Return a small placeholder so any defensive call site still
+            // gets a valid metrics object.
+            return ComponentSymbolMetrics(size: CGSize(width: 24, height: 24), pinOffsets: [:])
         }
     }
 
@@ -145,6 +150,7 @@ struct ComponentSymbolView: View {
         case .vacuumSource, .atmVent, .port:
                           AnyShape(RoundedRectangle(cornerRadius: 4))
         case .subpart:    AnyShape(RoundedRectangle(cornerRadius: 6))
+        case .screw:      AnyShape(Circle())
         }
     }
 
@@ -187,6 +193,7 @@ struct ComponentSymbolView: View {
         case .atmVent:       return Color.green.opacity(0.18)
         case .port:          return Color.purple.opacity(0.18)
         case .subpart:       return Color.teal.opacity(0.18)
+        case .screw:         return Color.gray.opacity(0.25)
         }
     }
 

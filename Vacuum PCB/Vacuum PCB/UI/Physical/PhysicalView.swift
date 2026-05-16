@@ -120,6 +120,15 @@ struct PhysicalView: View {
 
             layerCountEditor
 
+            Divider().frame(height: 18)
+
+            Button(action: addScrew) {
+                Label("Screw", systemImage: "circle.grid.cross")
+                    .font(.caption)
+            }
+            .controlSize(.small)
+            .help("Add an M2 screw hole at the centre of the board (drag to position)")
+
             Spacer()
 
             if let routingError {
@@ -441,6 +450,27 @@ struct PhysicalView: View {
                 document.circuit.physical.routes.append(Route(netId: entry.netId, segments: [entry.segment]))
             }
         }
+    }
+
+    /// Creates a new screw component + placement at the centre of the board
+    /// and selects it. The user drags it from there. Screws have no pins,
+    /// don't participate in the netlist, and are filtered out of the
+    /// schematic canvas — they exist only on the physical view.
+    private func addScrew() {
+        let label = document.circuit.logic.nextLabel(for: .screw)
+        let id = UUID()
+        document.circuit.logic.components.append(
+            Component(id: id, kind: .screw, label: label)
+        )
+        let outline = document.circuit.physical.boardOutline
+        let centre = Point(
+            x: outline.origin.x + outline.size.width / 2,
+            y: outline.origin.y + outline.size.height / 2
+        )
+        document.circuit.physical.placements.append(
+            Placement(componentId: id, position: centre, rotation: .r0, layer: .top, depth: 0)
+        )
+        selection = .placement(id)
     }
 
     private func boardSizeBinding(_ keyPath: WritableKeyPath<Size, Double>) -> Binding<Double> {

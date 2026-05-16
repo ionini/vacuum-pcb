@@ -10,6 +10,11 @@ enum ComponentKind: String, Codable, CaseIterable {
     /// parts library. The instance reads its pin layout and internal geometry
     /// from `partRef` on each open — by-reference, not embedded.
     case subpart
+    /// Mechanical fastener punched through both plates: countersink head
+    /// cavity on the top, clearance bore through to the bottom, hex-nut
+    /// pocket on the underside. No pins; doesn't participate in the
+    /// netlist. Placed and dragged on the physical canvas only.
+    case screw
 }
 
 enum ResistorSize: String, Codable, CaseIterable {
@@ -97,6 +102,8 @@ extension LogicGraph {
             }
         case .subpart:
             prefix = "U"; allowUnnumbered = false
+        case .screw:
+            prefix = "S"; allowUnnumbered = false
         }
         if allowUnnumbered, !used.contains(prefix) {
             return prefix

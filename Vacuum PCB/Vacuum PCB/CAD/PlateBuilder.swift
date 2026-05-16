@@ -144,6 +144,15 @@ enum PlateBuilder {
                 // in v1 — the user sees them in the physical canvas only.
                 // 3D preview and export ignore subpart placements.
                 break
+
+            case .screw:
+                let (topMeshes, bottomMeshes) = ScrewGeometry.cutters(
+                    at: placement.position, rotation: placement.rotation,
+                    topInnerZ: topInnerZ, topThickness: topThickness,
+                    bottomInnerZ: bottomInnerZ, bottomThickness: bottomThickness
+                )
+                topCutters.append(contentsOf: topMeshes)
+                bottomCutters.append(contentsOf: bottomMeshes)
             }
         }
 

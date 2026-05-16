@@ -31,6 +31,8 @@ struct PlacementBodyView: View {
                     // (dotted outline + transformed internals); the per-
                     // placement body view doesn't draw anything here.
                     break
+                case .screw:
+                    drawScrew(in: &ctx)
                 }
 
                 if isSelected {
@@ -141,6 +143,40 @@ struct PlacementBodyView: View {
         let dotR = manufacturing.channelDiameter / 2 * transform.ptsPerMm
         let dotRect = CGRect(x: -dotR, y: -dotR, width: 2 * dotR, height: 2 * dotR)
         ctx.fill(Path(ellipseIn: dotRect), with: .color(color))
+    }
+
+    private func drawScrew(in ctx: inout GraphicsContext) {
+        // Three concentric features matching the CAD cutters: outer ring =
+        // head countersink (5.1 mm), middle dashed circle = clearance hole,
+        // hex outline indicates the nut pocket orientation on the bottom.
+        let headR = ScrewGeometry.headDiameter / 2 * transform.ptsPerMm
+        let throughR = ScrewGeometry.throughDiameter / 2 * transform.ptsPerMm
+        let hexCircumR = (ScrewGeometry.hexAcrossFlats / sqrt(3.0)) * transform.ptsPerMm
+
+        let headRect = CGRect(x: -headR, y: -headR, width: 2 * headR, height: 2 * headR)
+        ctx.fill(Path(ellipseIn: headRect), with: .color(Color.gray.opacity(0.18)))
+        ctx.stroke(Path(ellipseIn: headRect), with: .color(.gray), lineWidth: 1.2)
+
+        let throughRect = CGRect(x: -throughR, y: -throughR, width: 2 * throughR, height: 2 * throughR)
+        ctx.fill(Path(ellipseIn: throughRect), with: .color(Color.primary.opacity(0.55)))
+        ctx.stroke(Path(ellipseIn: throughRect), with: .color(Color.primary.opacity(0.7)), lineWidth: 0.8)
+
+        // Hex outline: starts at 30° so two flats sit perpendicular to the
+        // local X axis (same convention as the CAD prism).
+        var hex = Path()
+        for i in 0..<6 {
+            let a = .pi / 6 + Double(i) * .pi / 3
+            let x = hexCircumR * cos(a)
+            let y = hexCircumR * sin(a)
+            if i == 0 { hex.move(to: CGPoint(x: x, y: y)) }
+            else      { hex.addLine(to: CGPoint(x: x, y: y)) }
+        }
+        hex.closeSubpath()
+        ctx.stroke(
+            hex,
+            with: .color(Color.primary.opacity(0.55)),
+            style: StrokeStyle(lineWidth: 0.8, dash: [3, 2])
+        )
     }
 
     private func drawSelectionRing(in ctx: inout GraphicsContext) {
