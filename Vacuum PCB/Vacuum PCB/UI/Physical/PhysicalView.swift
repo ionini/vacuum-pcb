@@ -273,14 +273,21 @@ struct PhysicalView: View {
                 viaCount += seg.waypoints.filter { $0.kind == .via }.count
             }
         }
-        // Resistor placements pinned to a removed depth.
+        // Placements pinned to a removed depth — resistors and edge-bore
+        // components (ports/vents/vacuum sources) can both sit at depth>0,
+        // so all four kinds need migrating back to depth 0 when their
+        // layer disappears. Transistors are already pinned to depth 0.
         var resistorMigrations: [UUID] = []
         for placement in document.circuit.physical.placements
         where placement.layer == plate && removedSet.contains(Layer(plate: plate, depth: placement.depth))
         {
-            if let component = document.circuit.logic.components.first(where: { $0.id == placement.componentId }),
-               component.kind == .resistor {
-                resistorMigrations.append(placement.componentId)
+            if let component = document.circuit.logic.components.first(where: { $0.id == placement.componentId }) {
+                switch component.kind {
+                case .resistor, .port, .vacuumSource, .atmVent:
+                    resistorMigrations.append(placement.componentId)
+                default:
+                    break
+                }
             }
         }
         if segsToRemove.isEmpty && resistorMigrations.isEmpty {

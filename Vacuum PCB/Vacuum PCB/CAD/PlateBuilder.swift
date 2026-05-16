@@ -574,7 +574,16 @@ enum PlateBuilder {
     ) -> Mesh {
         let routeR = m.portBoreDiameter / 2
         let taperRad = m.portBoreTaperDegrees * .pi / 180
-        let bz = placement.layer == .top ? topMidZ : bottomMidZ
+        // Port bores follow `placement.depth` like resistors do, since they're
+        // just holes drilled into the plate. Falls back to the depth-0 mid-Z
+        // the rest of the pipeline already passed in when the placement is on
+        // depth 0 (the common case), but reads from `midZ` for deeper layers.
+        let bz: Double
+        if placement.depth == 0 {
+            bz = placement.layer == .top ? topMidZ : bottomMidZ
+        } else {
+            bz = m.midZ(for: Layer(plate: placement.layer, depth: placement.depth))
+        }
         let p = placement.position
         let eps = 0.5
 

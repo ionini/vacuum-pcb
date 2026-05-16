@@ -135,7 +135,9 @@ struct PlacementBodyView: View {
         tri.addLine(to: CGPoint(x: -r * 0.5, y:  r * 0.7))
         tri.addLine(to: CGPoint(x: -r * 0.5, y: -r * 0.7))
         tri.closeSubpath()
-        let color = plateColor(placement.layer)
+        // Match resistor behaviour: edge-bore ports/vents/vacuum sources can
+        // sit on any channel layer, so colour by full layer (plate + depth).
+        let color = LayerPalette.color(for: Layer(plate: placement.layer, depth: placement.depth))
         ctx.fill(tri, with: .color(color.opacity(0.30)))
         ctx.stroke(tri, with: .color(color), lineWidth: 1.0)
 

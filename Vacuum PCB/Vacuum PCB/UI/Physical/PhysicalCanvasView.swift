@@ -1196,10 +1196,12 @@ struct PhysicalCanvasView: View {
     private func flipLayerSelection() {
         guard !selection.placements.isEmpty else { return }
         // Build the cycle order once — T0, T1, …, Tn-1, B0, B1, …, Bm-1.
-        // Resistors step one position along this cycle on each F press, so
-        // F walks them through every channel layer the board has. Non-tube
-        // components (transistors, ports) keep the legacy "flip plate"
-        // behaviour since their geometry is pinned to depth 0.
+        // Pure-hole components (resistors are tubes; ports/vents/vacuum
+        // sources are edge bores) step one position along this cycle on
+        // each F press, so F walks them through every channel layer the
+        // board has. Transistors keep the "flip plate" behaviour because
+        // their dimple/dome geometry is pinned to the silicone-facing
+        // depth-0 layer.
         let cycle = document.circuit.physical.layers(in: .top)
             + document.circuit.physical.layers(in: .bottom)
         for id in selection.placements {
@@ -1207,7 +1209,13 @@ struct PhysicalCanvasView: View {
             else { continue }
             let placement = document.circuit.physical.placements[i]
             let component = document.circuit.logic.components.first(where: { $0.id == id })
-            if component?.kind == .resistor, !cycle.isEmpty {
+            let cyclesLayers: Bool = {
+                switch component?.kind {
+                case .resistor, .port, .vacuumSource, .atmVent: return true
+                default: return false
+                }
+            }()
+            if cyclesLayers, !cycle.isEmpty {
                 let current = Layer(plate: placement.layer, depth: placement.depth)
                 let idx = cycle.firstIndex(of: current) ?? 0
                 let next = cycle[(idx + 1) % cycle.count]
