@@ -55,6 +55,7 @@ struct ComponentNodeView: View {
                 let offset = metrics.pinOffset(key)
                 PinHandleView(
                     pinKey: pinDisplayLabel(key),
+                    pinType: pinTypeLabel(key),
                     isFirstOfDrawingNet: isFirstPin(key),
                     onTap: { handlePinTap(key) }
                 )
@@ -165,6 +166,43 @@ struct ComponentNodeView: View {
             return pin.label
         }
         return key
+    }
+
+    /// Short description of what the pin is for, used in the hover chip.
+    /// Returns nil when the type would be redundant with the key (e.g. a
+    /// resistor terminal already named "1" / "2").
+    private func pinTypeLabel(_ key: String) -> String? {
+        switch component.kind {
+        case .transistor:
+            switch key {
+            case "gate": return "Gate"
+            case "a", "b": return "Source/Drain"
+            default: return nil
+            }
+        case .resistor: return nil
+        case .vacuumSource: return "Vacuum rail"
+        case .atmVent: return "Atm vent"
+        case .port:
+            switch component.portDirection {
+            case .input:  return "Input port"
+            case .output: return "Output port"
+            case nil:     return "Port"
+            }
+        case .subpart:
+            guard let filename = component.partRef,
+                  let part = PartsLibrary.shared.part(named: filename),
+                  let pin = part.pins.first(where: { $0.portId.uuidString == key })
+            else { return nil }
+            switch pin.kind {
+            case .port:
+                return pin.label.uppercased().hasPrefix("IN")  ? "Input port"
+                     : pin.label.uppercased().hasPrefix("OUT") ? "Output port"
+                     : "Port"
+            case .vacuumSource: return "Vacuum rail"
+            case .atmVent:      return "Atm vent"
+            default:            return nil
+            }
+        }
     }
 
     private func isFirstPin(_ key: String) -> Bool {
