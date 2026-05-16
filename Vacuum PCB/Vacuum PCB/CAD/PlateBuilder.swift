@@ -43,9 +43,11 @@ enum PlateBuilder {
         let bottomThickness = m.plateThickness(forLayerCount: doc.physical.bottomLayers)
 
         var top = plateBase(outline: outline, thickness: topThickness,
-                            innerZ: topInnerZ, side: .top)
+                            innerZ: topInnerZ, side: .top,
+                            edgeChamfer: m.plateCornerFillet)
         var bottom = plateBase(outline: outline, thickness: bottomThickness,
-                               innerZ: bottomInnerZ, side: .bottom)
+                               innerZ: bottomInnerZ, side: .bottom,
+                               edgeChamfer: m.plateCornerFillet)
 
         // Depth-0 midline z's, used by drop bores / dimples / port bores
         // (all of which anchor to the silicone-facing channel layer).
@@ -213,15 +215,118 @@ enum PlateBuilder {
     // MARK: - Plate base
 
     private static func plateBase(
-        outline: Rect, thickness: Double, innerZ: Double, side: Plate
+        outline: Rect, thickness: Double, innerZ: Double, side: Plate,
+        edgeChamfer: Double
     ) -> Mesh {
+        // Clamp the corner fillet so a wild settings entry can't collapse
+        // the plate to a degenerate shape — the radius can't exceed half
+        // the plate's smallest in-plane dimension (else neighbouring arcs
+        // would intersect at the centre).
+        let maxClamp = min(outline.size.width / 2 * 0.99,
+                           outline.size.height / 2 * 0.99)
+        let r = max(0, min(edgeChamfer, maxClamp))
+
         let cx = outline.origin.x + outline.size.width / 2
         let cy = outline.origin.y + outline.size.height / 2
-        let cz = side == .top ? innerZ + thickness / 2 : innerZ - thickness / 2
-        return Mesh.cube(
-            center: Vector(cx, cy, cz),
-            size: Vector(outline.size.width, outline.size.height, thickness)
+
+        if r <= 0 {
+            // Sharp-cornered plain slab. Identical to legacy behaviour so
+            // existing docs round-trip pixel-for-pixel.
+            let cz = side == .top ? innerZ + thickness / 2
+                                  : innerZ - thickness / 2
+            return Mesh.cube(
+                center: Vector(cx, cy, cz),
+                size: Vector(outline.size.width, outline.size.height, thickness)
+            )
+        }
+        return roundedCornerPlate(
+            outline: outline, thickness: thickness,
+            innerZ: innerZ, side: side, cornerRadius: r
         )
+    }
+
+    /// Builds a plate whose four vertical corner edges are rounded — the
+    /// outline viewed from above is a rounded rectangle. The fillet runs the
+    /// full plate height; both the silicone-facing face and the outer face
+    /// share the same rounded-rect profile. Curved walls are approximated
+    /// with `segmentsPerCorner` flat strips per quarter-arc.
+    private static func roundedCornerPlate(
+        outline: Rect, thickness: Double, innerZ: Double, side: Plate, cornerRadius r: Double
+    ) -> Mesh {
+        let segmentsPerCorner = 8
+
+        let outerZ: Double
+        switch side {
+        case .top:    outerZ = innerZ + thickness
+        case .bottom: outerZ = innerZ - thickness
+        }
+
+        // Rounded-rect outline, walked CCW (viewed from +Z). Each corner's
+        // quarter-arc contributes `segmentsPerCorner + 1` points; adjacent
+        // corners' endpoints sit on opposite ends of a straight edge, so
+        // the straight runs along the rectangle's sides fall out implicitly
+        // as polygon edges between successive corner-arc vertices.
+        //
+        // Per-corner parameters (centerX, centerY, startAngle); each arc
+        // sweeps CCW by π/2 over the corner.
+        //   BR: centre (maxX-r, minY+r), starts at -π/2 (south)
+        //   TR: centre (maxX-r, maxY-r), starts at  0     (east)
+        //   TL: centre (minX+r, maxY-r), starts at  π/2  (north)
+        //   BL: centre (minX+r, minY+r), starts at  π    (west)
+        let corners: [(cx: Double, cy: Double, start: Double)] = [
+            (outline.maxX - r, outline.minY + r, -Double.pi / 2),
+            (outline.maxX - r, outline.maxY - r, 0),
+            (outline.minX + r, outline.maxY - r, Double.pi / 2),
+            (outline.minX + r, outline.minY + r, Double.pi),
+        ]
+        var outlineXY: [(x: Double, y: Double)] = []
+        for corner in corners {
+            for i in 0...segmentsPerCorner {
+                let t: Double = Double(i) / Double(segmentsPerCorner)
+                let angle: Double = corner.start + t * Double.pi / 2
+                let x: Double = corner.cx + r * cos(angle)
+                let y: Double = corner.cy + r * sin(angle)
+                outlineXY.append((x, y))
+            }
+        }
+
+        let silicone = outlineXY.map { Vector($0.x, $0.y, innerZ) }
+        let outer    = outlineXY.map { Vector($0.x, $0.y, outerZ) }
+        let n = outlineXY.count
+
+        // Helper: build a polygon from vertices, discarding nils so a
+        // numerical fluke doesn't crash the whole build.
+        func poly(_ pts: [Vector]) -> Polygon? {
+            Polygon(pts.map { Vertex($0) })
+        }
+
+        var polygons: [Polygon] = []
+
+        // Caps. Silicone face points away from the plate body (top plate's
+        // silicone face is -Z, bottom plate's silicone face is +Z); outer
+        // face points the opposite direction. Reverse winding accordingly.
+        switch side {
+        case .top:
+            if let s = poly(Array(silicone.reversed())) { polygons.append(s) }
+            if let o = poly(outer) { polygons.append(o) }
+        case .bottom:
+            if let s = poly(silicone) { polygons.append(s) }
+            if let o = poly(Array(outer.reversed())) { polygons.append(o) }
+        }
+
+        // Side walls — one quad per pair of adjacent outline vertices.
+        // Wind quads so the outward normal points away from the plate axis.
+        for i in 0..<n {
+            let j = (i + 1) % n
+            let quad: [Vector]
+            switch side {
+            case .top:    quad = [silicone[i], silicone[j], outer[j], outer[i]]
+            case .bottom: quad = [outer[i], outer[j], silicone[j], silicone[i]]
+            }
+            if let p = poly(quad) { polygons.append(p) }
+        }
+
+        return Mesh(polygons)
     }
 
     // MARK: - Pin-snap extension

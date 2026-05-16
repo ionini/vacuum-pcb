@@ -34,7 +34,8 @@ struct ManufacturingSettingsView: View {
                 row("Plate thickness (single-layer)", $draftMfg.plateThickness)
                 row("Silicone thickness",             $draftMfg.siliconeThickness)
                 row("Inter-layer wall",               $draftMfg.interLayerWall)
-                Text("Multi-layer plates: plate thickness above is the depth-0 plate height. Each extra channel layer adds channelDiameter + inter-layer wall to that plate's height.")
+                row("Corner fillet radius",           $draftMfg.plateCornerFillet)
+                Text("Multi-layer plates: plate thickness above is the depth-0 plate height. Each extra channel layer adds channelDiameter + inter-layer wall to that plate's height. Corner fillet rounds the four vertical edges of each plate (viewed from above) — softens the print so the printer doesn't have to resolve a perfect 90° corner. Runs full plate height; silicone-facing faces stay rectangular. Set 0 for square corners.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
 
@@ -212,7 +213,8 @@ struct ManufacturingSettingsView: View {
             gridPitch: max(0.05, m.gridPitch),
             minChannelSpacing: max(0.05, m.minChannelSpacing),
             resistorChannelDiameter: max(0.05, m.resistorChannelDiameter),
-            interLayerWall: max(0.1, m.interLayerWall)
+            interLayerWall: max(0.1, m.interLayerWall),
+            plateCornerFillet: max(0.0, m.plateCornerFillet)
         )
     }
 

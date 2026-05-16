@@ -88,6 +88,13 @@ struct ManufacturingConstants: Codable, Hashable {
     /// `channelDiameter + interLayerWall`.
     var interLayerWall: Double
 
+    /// Fillet radius applied to the four vertical corner edges of each
+    /// plate — softens the corners viewed from above so the printer doesn't
+    /// have to resolve a perfect 90° corner. Runs full plate height; the
+    /// top and bottom faces both become rounded rectangles of this radius.
+    /// Set to 0 for square corners (default).
+    var plateCornerFillet: Double
+
     static let defaults = ManufacturingConstants(
         plateThickness: 5.0,
         channelDiameter: 1.5,
@@ -104,7 +111,8 @@ struct ManufacturingConstants: Codable, Hashable {
         gridPitch: 1.0,
         minChannelSpacing: 1.5,
         resistorChannelDiameter: 0.5,
-        interLayerWall: 0.6
+        interLayerWall: 0.6,
+        plateCornerFillet: 0
     )
 
     // Codable hand-rolled so older .vpcb files (written before
@@ -117,6 +125,7 @@ struct ManufacturingConstants: Codable, Hashable {
         case padsDiameter, padsSeparation, padsOffset, padsFilletRadius
         case gridPitch, minChannelSpacing
         case resistorChannelDiameter, interLayerWall
+        case plateCornerFillet
     }
 
     init(plateThickness: Double, channelDiameter: Double,
@@ -126,7 +135,7 @@ struct ManufacturingConstants: Codable, Hashable {
          padsDiameter: Double, padsSeparation: Double, padsOffset: Double,
          padsFilletRadius: Double,
          gridPitch: Double, minChannelSpacing: Double, resistorChannelDiameter: Double,
-         interLayerWall: Double) {
+         interLayerWall: Double, plateCornerFillet: Double) {
         self.plateThickness = plateThickness
         self.channelDiameter = channelDiameter
         self.portBoreDiameter = portBoreDiameter
@@ -143,6 +152,7 @@ struct ManufacturingConstants: Codable, Hashable {
         self.minChannelSpacing = minChannelSpacing
         self.resistorChannelDiameter = resistorChannelDiameter
         self.interLayerWall = interLayerWall
+        self.plateCornerFillet = plateCornerFillet
     }
 
     /// Outer length of the resistor footprint (pin-to-pin distance). Constant
@@ -178,6 +188,8 @@ struct ManufacturingConstants: Codable, Hashable {
                                                        forKey: .resistorChannelDiameter) ?? 0.5
         interLayerWall = try c.decodeIfPresent(Double.self,
                                               forKey: .interLayerWall) ?? 0.6
+        plateCornerFillet = try c.decodeIfPresent(Double.self,
+                                                forKey: .plateCornerFillet) ?? 0
     }
 
     /// Effective thickness of a plate with `layerCount` channel layers. The
