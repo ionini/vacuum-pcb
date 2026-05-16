@@ -70,7 +70,7 @@ enum SimulatorExporter {
             guard let component = componentsById[placement.componentId] else { continue }
             switch component.kind {
             case .transistor:
-                let footprint = component.footprint
+                let footprint = component.footprint(m)
                 // Drop bores at each transistor pin contribute to the fluid
                 // volume so the channels reach the silicone face.
                 for pin in footprint.pins {
@@ -83,6 +83,12 @@ enum SimulatorExporter {
                         topMidZ: topMidZ, bottomMidZ: bottomMidZ
                     ))
                 }
+                // Source/drain pad cavities — extra volume on the opposite
+                // plate's silicone face that the drop bores land into.
+                fluidParts.append(padsCavityMesh(
+                    placement: placement, m: m,
+                    topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ
+                ))
                 // Gate_<label>: the dimple cavity itself, where vacuum is
                 // sensed. Lives on the placement layer at the silicone face.
                 let gateMesh = gateBody(
@@ -349,6 +355,44 @@ enum SimulatorExporter {
             size: Vector(2 * radius + 1, 2 * radius + 1, clipHi - clipLo)
         )
         return sphere.intersection(clipper)
+    }
+
+    /// Source/drain pad cavity for one transistor, returned as the fluid
+    /// volume added to the FluidVolume union. Mirrors PlateBuilder's cutter:
+    /// sphere of diameter `padsDiameter` centred at the gate on the opposite
+    /// plate's silicone face, ∩ plate body, − central strip of width
+    /// `padsSeparation`. Rotated by the placement, then translated to world.
+    private static func padsCavityMesh(
+        placement: Placement, m: ManufacturingConstants,
+        topInnerZ: Double, bottomInnerZ: Double
+    ) -> Mesh {
+        let radius = m.padsDiameter / 2
+        let sep = m.padsSeparation
+        let eps = 0.05
+        let oppositePlate = placement.layer.opposite
+        let oppositeInnerZ = oppositePlate == .top ? topInnerZ : bottomInnerZ
+
+        let sphere = Mesh.sphere(radius: radius, slices: 32)
+        let pad = radius + 0.5
+        let bodyHalfHeight = radius + 0.5
+        let bodyCubeCenterZ = oppositePlate == .top
+            ? bodyHalfHeight - eps
+            : -bodyHalfHeight + eps
+        let bodyCube = Mesh.cube(
+            center: Vector(0, 0, bodyCubeCenterZ),
+            size: Vector(2 * pad, 2 * pad, 2 * bodyHalfHeight)
+        )
+        let stripCube = Mesh.cube(
+            center: .zero,
+            size: Vector(sep, 2 * pad, 2 * bodyHalfHeight + 1)
+        )
+        let cavityLocal = sphere.intersection(bodyCube).subtracting(stripCube)
+        let rotated = cavityLocal.rotated(
+            by: Euclid.Rotation.roll(.radians(placement.rotation.radians))
+        )
+        return rotated.translated(by: Vector(
+            placement.position.x, placement.position.y, oppositeInnerZ
+        ))
     }
 
     /// Closed-by-default slab that bridges the two source/drain drop bores

@@ -47,7 +47,7 @@ enum Ratsnest {
         for pinRef in net.pins {
             guard let placement = doc.physical.placements.first(where: { $0.componentId == pinRef.componentId }),
                   let component = doc.logic.components.first(where: { $0.id == pinRef.componentId }),
-                  let fpPin = component.footprint.pin(pinRef.pinKey)
+                  let fpPin = component.footprint(doc.manufacturing).pin(pinRef.pinKey)
             else { continue }
             placedPins.append(PlacedPin(
                 ref: pinRef,

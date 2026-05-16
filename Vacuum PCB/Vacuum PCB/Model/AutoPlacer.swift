@@ -33,7 +33,7 @@ enum AutoPlacer {
         for placement in doc.physical.placements {
             guard let component = doc.logic.components.first(where: { $0.id == placement.componentId })
             else { continue }
-            let b = component.footprint.boundingRect
+            let b = component.footprint(doc.manufacturing).boundingRect
             radii[placement.componentId] = max(b.size.width, b.size.height) / 2
         }
 
@@ -49,7 +49,7 @@ enum AutoPlacer {
             for pinRef in net.pins {
                 guard positions[pinRef.componentId] != nil,
                       let component = doc.logic.components.first(where: { $0.id == pinRef.componentId }),
-                      let fp = component.footprint.pin(pinRef.pinKey)
+                      let fp = component.footprint(doc.manufacturing).pin(pinRef.pinKey)
                 else { continue }
                 pins.append(PinAnchor(
                     componentId: pinRef.componentId,

@@ -194,7 +194,7 @@ enum AutoRouter {
         for ref in net.pins {
             guard let placement = doc.physical.placements.first(where: { $0.componentId == ref.componentId }),
                   let component = doc.logic.components.first(where: { $0.id == ref.componentId }),
-                  let fp = component.footprint.pin(ref.pinKey)
+                  let fp = component.footprint(doc.manufacturing).pin(ref.pinKey)
             else { continue }
             out.append(PlacedPin(
                 position: placement.worldPosition(of: fp),
@@ -354,7 +354,7 @@ enum AutoRouter {
         for placement in doc.physical.placements {
             guard let component = doc.logic.components.first(where: { $0.id == placement.componentId })
             else { continue }
-            for fpPin in component.footprint.pins {
+            for fpPin in component.footprint(doc.manufacturing).pins {
                 let world = placement.worldPosition(of: fpPin)
                 let plate = placement.resolvedPlate(of: fpPin)
                 let grid = plate == .top ? top : bottom
@@ -377,7 +377,7 @@ enum AutoRouter {
         for placement in doc.physical.placements {
             guard let component = doc.logic.components.first(where: { $0.id == placement.componentId })
             else { continue }
-            let rect = component.footprint.exclusionRect
+            let rect = component.footprint(doc.manufacturing).exclusionRect
             let r = placement.rotation.radians
             let cs = cos(r), sn = sin(r)
             let cornersLocal = [

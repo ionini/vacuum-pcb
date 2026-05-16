@@ -45,9 +45,19 @@ struct ManufacturingSettingsView: View {
                 row("Min channel spacing (DRC)", $draftMfg.minChannelSpacing)
             }
 
-            group("Transistor dimple") {
-                row("Dimple diameter", $draftMfg.dimpleDiameter)
-                row("Dimple depth",    $draftMfg.dimpleDepth)
+            group("Transistor gate") {
+                row("Dome diameter",        $draftMfg.dimpleDiameter)
+                row("Dome sphere offset",   $draftMfg.dimpleSphereOffset)
+                Text("Dome is a sphere of the diameter above, centred this far into the silicone gap from the plate face.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+
+            group("Transistor source/drain pads") {
+                row("Pads diameter",       $draftMfg.padsDiameter)
+                row("Pads separation",     $draftMfg.padsSeparation)
+                row("Tube offset (centre)", $draftMfg.padsOffset)
+                Text("Two cap-shaped cavities on the opposite plate, split by a strip of this width along the source-drain axis. Tube offset is the distance from the gate centre to each drop-bore tube.")
+                    .font(.caption2).foregroundStyle(.secondary)
             }
 
             group("Editor") {
@@ -117,6 +127,9 @@ struct ManufacturingSettingsView: View {
             dimpleDiameter: max(0.1, m.dimpleDiameter),
             dimpleDepth: max(0.05, m.dimpleDepth),
             dimpleSphereOffset: max(0.0, m.dimpleSphereOffset),
+            padsDiameter: max(0.1, m.padsDiameter),
+            padsSeparation: max(0.0, m.padsSeparation),
+            padsOffset: max(0.0, m.padsOffset),
             gridPitch: max(0.05, m.gridPitch),
             minChannelSpacing: max(0.05, m.minChannelSpacing),
             resistorChannelDiameter: max(0.05, m.resistorChannelDiameter),
@@ -145,11 +158,25 @@ struct ManufacturingSettingsView: View {
         HStack(spacing: 8) {
             Text(label).font(.caption)
             Spacer(minLength: 4)
-            TextField("", value: value, format: .number.precision(.fractionLength(0...3)))
+            // NumberFormatter (vs. the newer .number FormatStyle) parses
+            // partial decimal input more reliably — e.g. SwiftUI's FormatStyle
+            // path was rejecting "0.5" entered into a field whose current
+            // value formatted as "1" with fractionLength(0...3).
+            TextField("", value: value, formatter: Self.mmFormatter)
                 .textFieldStyle(.roundedBorder)
                 .multilineTextAlignment(.trailing)
                 .frame(width: 64)
             Text("mm").font(.caption2).foregroundStyle(.tertiary)
         }
     }
+
+    private static let mmFormatter: NumberFormatter = {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        f.allowsFloats = true
+        f.minimumFractionDigits = 0
+        f.maximumFractionDigits = 3
+        f.usesGroupingSeparator = false
+        return f
+    }()
 }

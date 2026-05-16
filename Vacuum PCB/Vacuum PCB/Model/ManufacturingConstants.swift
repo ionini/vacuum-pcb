@@ -34,6 +34,23 @@ struct ManufacturingConstants: Codable, Hashable {
     /// of the cavity into the plate is `dimpleDiameter/2 + dimpleSphereOffset`.
     var dimpleSphereOffset: Double
 
+    /// Diameter of the source/drain pad sphere. The pads are two halves of a
+    /// sphere centred at the gate on the opposite plate's silicone face,
+    /// split by the central strip. Should be < the gate dome's face-opening
+    /// diameter so the pads fit inside the gate footprint.
+    var padsDiameter: Double
+
+    /// Width of the central strip separating the two source/drain pads along
+    /// the source-drain (local X) axis. Each pad occupies the region
+    /// `|local x| > padsSeparation/2` inside the pad sphere.
+    var padsSeparation: Double
+
+    /// Distance from the gate centre to each source/drain tube (drop bore)
+    /// along the source-drain (local X) axis. Replaces the previously
+    /// hardcoded 1.5 mm halfPitch in the transistor footprint, so the routed
+    /// pin positions, DRC, placement bounds and CAD geometry all track it.
+    var padsOffset: Double
+
     /// Snap-grid pitch used by the physical editor (mm). Not consumed by the CAD
     /// pipeline; lives here so it travels with the document.
     var gridPitch: Double
@@ -63,6 +80,9 @@ struct ManufacturingConstants: Codable, Hashable {
         dimpleDiameter: 5.0,
         dimpleDepth: 1.0,
         dimpleSphereOffset: 1.0,
+        padsDiameter: 4.0,
+        padsSeparation: 1.0,
+        padsOffset: 1.5,
         gridPitch: 1.0,
         minChannelSpacing: 1.5,
         resistorChannelDiameter: 0.5,
@@ -75,6 +95,7 @@ struct ManufacturingConstants: Codable, Hashable {
     private enum CodingKeys: String, CodingKey {
         case plateThickness, channelDiameter, portBoreDiameter, siliconeThickness
         case dimpleDiameter, dimpleDepth, dimpleSphereOffset
+        case padsDiameter, padsSeparation, padsOffset
         case gridPitch, minChannelSpacing
         case resistorChannelDiameter, interLayerWall
     }
@@ -82,6 +103,7 @@ struct ManufacturingConstants: Codable, Hashable {
     init(plateThickness: Double, channelDiameter: Double, portBoreDiameter: Double,
          siliconeThickness: Double, dimpleDiameter: Double, dimpleDepth: Double,
          dimpleSphereOffset: Double,
+         padsDiameter: Double, padsSeparation: Double, padsOffset: Double,
          gridPitch: Double, minChannelSpacing: Double, resistorChannelDiameter: Double,
          interLayerWall: Double) {
         self.plateThickness = plateThickness
@@ -91,6 +113,9 @@ struct ManufacturingConstants: Codable, Hashable {
         self.dimpleDiameter = dimpleDiameter
         self.dimpleDepth = dimpleDepth
         self.dimpleSphereOffset = dimpleSphereOffset
+        self.padsDiameter = padsDiameter
+        self.padsSeparation = padsSeparation
+        self.padsOffset = padsOffset
         self.gridPitch = gridPitch
         self.minChannelSpacing = minChannelSpacing
         self.resistorChannelDiameter = resistorChannelDiameter
@@ -114,6 +139,12 @@ struct ManufacturingConstants: Codable, Hashable {
         dimpleDepth = try c.decode(Double.self, forKey: .dimpleDepth)
         dimpleSphereOffset = try c.decodeIfPresent(Double.self,
                                                    forKey: .dimpleSphereOffset) ?? 1.0
+        padsDiameter = try c.decodeIfPresent(Double.self,
+                                             forKey: .padsDiameter) ?? 4.0
+        padsSeparation = try c.decodeIfPresent(Double.self,
+                                               forKey: .padsSeparation) ?? 1.0
+        padsOffset = try c.decodeIfPresent(Double.self,
+                                           forKey: .padsOffset) ?? 1.5
         gridPitch = try c.decode(Double.self, forKey: .gridPitch)
         minChannelSpacing = try c.decode(Double.self, forKey: .minChannelSpacing)
         resistorChannelDiameter = try c.decodeIfPresent(Double.self,

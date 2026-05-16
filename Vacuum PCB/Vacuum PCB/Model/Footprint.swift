@@ -44,14 +44,20 @@ struct Footprint {
 }
 
 extension ComponentKind {
-    /// Resolves the footprint of this kind. `size` is required only for `.resistor`.
-    func footprint(resistorSize: ResistorSize? = nil) -> Footprint {
+    /// Resolves the footprint of this kind. Manufacturing constants drive
+    /// transistor pin offsets and the gate dome's footprint extent.
+    /// `resistorSize` is required only for `.resistor`.
+    func footprint(resistorSize: ResistorSize? = nil,
+                   manufacturing m: ManufacturingConstants = .defaults) -> Footprint {
         switch self {
         case .transistor:
-            let halfPitch = 1.5
-            let dimpleRadius = 2.5
+            let halfPitch = m.padsOffset
+            let dimpleRadius = m.dimpleDiameter / 2
             let margin = 0.5
-            let half = dimpleRadius + margin
+            // Bounding/exclusion box must contain both the gate dome footprint
+            // and the source/drain pin offsets, since either can be the
+            // wider extent depending on configuration.
+            let half = max(dimpleRadius + margin, halfPitch + margin)
             return Footprint(
                 kind: .transistor,
                 pins: [
@@ -126,7 +132,17 @@ extension ComponentKind {
 }
 
 extension Component {
-    /// Resolves the footprint for this component, taking resistor size into account.
+    /// Resolves the footprint for this component using the document's
+    /// manufacturing constants. Transistor pin offsets and the gate dome's
+    /// bounding box track the manufacturing config; resistor and port
+    /// footprints don't depend on it.
+    func footprint(_ m: ManufacturingConstants) -> Footprint {
+        kind.footprint(resistorSize: resistorSize, manufacturing: m)
+    }
+
+    /// Default-constants fallback for call sites that don't have a circuit
+    /// document handy. Don't use in code that has to match the actual CAD
+    /// geometry — it'll be wrong as soon as the user changes the manufacturing.
     var footprint: Footprint {
         kind.footprint(resistorSize: resistorSize)
     }

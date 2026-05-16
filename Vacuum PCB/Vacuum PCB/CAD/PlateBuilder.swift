@@ -80,9 +80,19 @@ enum PlateBuilder {
                 appendCutter(dimple, plate: placement.layer,
                              top: &topCutters, bottom: &bottomCutters)
 
+                // Source/drain pad cavities on the opposite plate's silicone
+                // face. Both pads come out of a single sphere with the middle
+                // strip carved out; the drop bores land inside the cavity.
+                let pads = padsCavityMesh(
+                    placement: placement, m: m,
+                    topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ
+                )
+                appendCutter(pads, plate: placement.layer.opposite,
+                             top: &topCutters, bottom: &bottomCutters)
+
                 // Drop bore at each transistor pin, connecting channel midline to the
                 // silicone face on whichever plate the pin sits on.
-                let footprint = component.footprint
+                let footprint = component.footprint(m)
                 for pin in footprint.pins {
                     let pinPlate = placement.resolvedPlate(of: pin)
                     let pinWorld = placement.worldPosition(of: pin)
@@ -317,6 +327,65 @@ enum PlateBuilder {
             size: Vector(2 * radius + 1, 2 * radius + 1, clipHi - clipLo)
         )
         return sphere.intersection(clipper)
+    }
+
+    // MARK: - Source/drain pads
+
+    /// Source/drain pad cavities for one transistor placement, returned as a
+    /// single cutter mesh to be subtracted from the opposite plate. Built in
+    /// the placement's local frame and then rotated/translated to world:
+    ///
+    /// 1. Sphere of diameter `padsDiameter` centred at the gate on the
+    ///    opposite plate's silicone face.
+    /// 2. Intersected with the plate-body half-space (so the half on the
+    ///    silicone-gap side doesn't leak across into the other plate's view).
+    /// 3. With the central strip of width `padsSeparation` along local X
+    ///    subtracted — that's the silicone septum between source and drain.
+    ///
+    /// The drop bores at the pin offsets land inside these cavities, joining
+    /// them to the channel midline below.
+    private static func padsCavityMesh(
+        placement: Placement, m: ManufacturingConstants,
+        topInnerZ: Double, bottomInnerZ: Double
+    ) -> Mesh {
+        let radius = m.padsDiameter / 2
+        let sep = m.padsSeparation
+        let eps = 0.05
+        let oppositePlate = placement.layer.opposite
+        let oppositeInnerZ = oppositePlate == .top ? topInnerZ : bottomInnerZ
+
+        // Local frame: sphere centred at origin on the silicone face (z = 0).
+        // Plate body extends in +Z (pads on top plate) or -Z (pads on bottom).
+        let sphere = Mesh.sphere(radius: radius, slices: 32)
+
+        // Half-space cube spanning the plate-body side with eps overshoot at
+        // the face, generous in XY/Z to fully contain the cap.
+        let pad = radius + 0.5
+        let bodyHalfHeight = radius + 0.5
+        let bodyCubeCenterZ = oppositePlate == .top
+            ? bodyHalfHeight - eps
+            : -bodyHalfHeight + eps
+        let bodyCube = Mesh.cube(
+            center: Vector(0, 0, bodyCubeCenterZ),
+            size: Vector(2 * pad, 2 * pad, 2 * bodyHalfHeight)
+        )
+
+        // Strip cube carved out of the cap to separate the two pads. Width is
+        // padsSeparation along local X; height/depth generous so the strip
+        // cleanly cuts through the sphere.
+        let stripCube = Mesh.cube(
+            center: .zero,
+            size: Vector(sep, 2 * pad, 2 * bodyHalfHeight + 1)
+        )
+
+        let cavityLocal = sphere.intersection(bodyCube).subtracting(stripCube)
+
+        let rotated = cavityLocal.rotated(
+            by: Euclid.Rotation.roll(.radians(placement.rotation.radians))
+        )
+        return rotated.translated(by: Vector(
+            placement.position.x, placement.position.y, oppositeInnerZ
+        ))
     }
 
     // MARK: - Resistor serpentine

@@ -58,7 +58,7 @@ struct PlacementBodyView: View {
     /// rotating r90/r270 swaps width and height but the longer side has
     /// already been accounted for.
     private func labelOffset() -> CGFloat {
-        let bounds = component.footprint.boundingRect
+        let bounds = component.footprint(manufacturing).boundingRect
         let half = max(bounds.size.width, bounds.size.height) / 2
         return CGFloat(half) * transform.ptsPerMm + 10
     }
