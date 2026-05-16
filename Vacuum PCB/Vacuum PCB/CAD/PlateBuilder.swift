@@ -400,54 +400,39 @@ enum PlateBuilder {
 
     // MARK: - Source/drain pads
 
-    /// Source/drain pad cavities for one transistor placement, returned as a
-    /// single cutter mesh to be subtracted from the opposite plate. Built in
-    /// the placement's local frame and then rotated/translated to world:
+    /// Source/drain pad cavities for one transistor placement. The pads come
+    /// from lathing a filleted 2D profile (a "D" shape with a rounded corner
+    /// where the spherical surface meets the flat face) around the source-
+    /// drain axis, then mirroring for the other pad and clipping to the
+    /// plate body so the cavity stays inside one plate.
     ///
-    /// 1. Sphere of diameter `padsDiameter` centred at the gate on the
-    ///    opposite plate's silicone face.
-    /// 2. Intersected with the plate-body half-space (so the half on the
-    ///    silicone-gap side doesn't leak across into the other plate's view).
-    /// 3. With the central strip of width `padsSeparation` along local X
-    ///    subtracted — that's the silicone septum between source and drain.
-    ///
-    /// The drop bores at the pin offsets land inside these cavities, joining
-    /// them to the channel midline below.
+    /// With `padsFilletRadius = 0` (or out of valid range) the profile has
+    /// a sharp corner and the geometry matches the previous sphere-minus-
+    /// strip construction.
     private static func padsCavityMesh(
         placement: Placement, m: ManufacturingConstants,
         topInnerZ: Double, bottomInnerZ: Double
     ) -> Mesh {
         let radius = m.padsDiameter / 2
         let sep = m.padsSeparation
+        let fillet = m.padsFilletRadius
         let eps = 0.05
         let oppositePlate = placement.layer.opposite
         let oppositeInnerZ = oppositePlate == .top ? topInnerZ : bottomInnerZ
 
-        // Local frame: sphere centred at origin on the silicone face (z = 0).
-        // Plate body extends in +Z (pads on top plate) or -Z (pads on bottom).
-        let sphere = Mesh.sphere(radius: radius, slices: 32)
+        let bothPads = filletedPadsSolid(R: radius, sep: sep, fillet: fillet)
 
-        // Half-space cube spanning the plate-body side with eps overshoot at
-        // the face, generous in XY/Z to fully contain the cap.
-        let pad = radius + 0.5
+        // Clip to the plate body half-space so the half on the silicone-gap
+        // side doesn't leak into the other plate's view.
         let bodyHalfHeight = radius + 0.5
         let bodyCubeCenterZ = oppositePlate == .top
             ? bodyHalfHeight - eps
             : -bodyHalfHeight + eps
         let bodyCube = Mesh.cube(
             center: Vector(0, 0, bodyCubeCenterZ),
-            size: Vector(2 * pad, 2 * pad, 2 * bodyHalfHeight)
+            size: Vector(2 * (radius + 0.5), 2 * (radius + 0.5), 2 * bodyHalfHeight)
         )
-
-        // Strip cube carved out of the cap to separate the two pads. Width is
-        // padsSeparation along local X; height/depth generous so the strip
-        // cleanly cuts through the sphere.
-        let stripCube = Mesh.cube(
-            center: .zero,
-            size: Vector(sep, 2 * pad, 2 * bodyHalfHeight + 1)
-        )
-
-        let cavityLocal = sphere.intersection(bodyCube).subtracting(stripCube)
+        let cavityLocal = bothPads.intersection(bodyCube)
 
         let rotated = cavityLocal.rotated(
             by: Euclid.Rotation.roll(.radians(placement.rotation.radians))
@@ -455,6 +440,79 @@ enum PlateBuilder {
         return rotated.translated(by: Vector(
             placement.position.x, placement.position.y, oppositeInnerZ
         ))
+    }
+
+    /// Builds the two pad solids (filleted spherical caps) symmetric across
+    /// the gate centre along the source-drain (local X) axis, joined into a
+    /// single mesh. Built in lathe space (revolve around lathe Y axis) and
+    /// then rotated so Y → local X.
+    static func filletedPadsSolid(R: Double, sep: Double, fillet: Double) -> Mesh {
+        let maxFillet = (R - sep / 2) / 2 - 0.001
+        let f = max(0, min(fillet, maxFillet))
+        let validFillet = f > 0
+
+        // Fillet centre at (yc, sep/2 + f) in (radial, axial). With f = 0
+        // this degenerates to the sharp corner at (yc, sep/2).
+        let yc: Double
+        let xt: Double
+        let yt: Double
+        if validFillet {
+            yc = ((R - f) * (R - f) - (sep / 2 + f) * (sep / 2 + f)).squareRoot()
+            xt = R * (sep / 2 + f) / (R - f)
+            yt = R * yc / (R - f)
+        } else {
+            yc = (R * R - (sep / 2) * (sep / 2)).squareRoot()
+            xt = sep / 2
+            yt = yc
+        }
+
+        // Profile in lathe frame: X = radial distance from axis, Y = axial
+        // (becomes local X after the final rotation). Path is open and starts
+        // and ends on the axis (X = 0) so the lathe closes it into a solid.
+        var pts: [Vector] = []
+        pts.append(Vector(0, sep / 2, 0))         // axis at base
+        pts.append(Vector(yc, sep / 2, 0))        // outer edge of flat face
+
+        if validFillet {
+            // Fillet arc samples, from (yc, sep/2) at angle −π/2 around
+            // fillet centre, sweeping to (yt, xt) where the arc meets the
+            // sphere tangentially.
+            let nFillet = 12
+            let a0 = -Double.pi / 2                   // base of fillet on flat face
+            let aEnd = atan2(sep / 2 + f, yc)         // tangent to sphere
+            for i in 1...nFillet {
+                let t = Double(i) / Double(nFillet)
+                let angle = a0 + t * (aEnd - a0)
+                let rx = yc + f * cos(angle)
+                let ry = (sep / 2 + f) + f * sin(angle)
+                pts.append(Vector(rx, ry, 0))
+            }
+        }
+
+        // Sphere arc samples from (yt, xt) up to the pole (0, R). Lathe-frame
+        // angle: atan2(axial, radial) so angle 0 = equator (R, 0), π/2 = pole.
+        let nSphere = 20
+        let sA0 = atan2(xt, yt)
+        let sA1 = Double.pi / 2
+        for i in 1...nSphere {
+            let t = Double(i) / Double(nSphere)
+            let angle = sA0 + t * (sA1 - sA0)
+            pts.append(Vector(R * cos(angle), R * sin(angle), 0))
+        }
+
+        let path = Path(pts.map { PathPoint.point($0) })
+        let rightPadLathe = Mesh.lathe(path, slices: 32)
+
+        // Left pad = right pad reflected through the lathe origin along the
+        // axial direction. roll(.pi) around Z flips (x, y) → (−x, −y); the
+        // pad is symmetric in the radial direction so this just mirrors the
+        // axial side.
+        let leftPadLathe = rightPadLathe.rotated(by: Euclid.Rotation.roll(.pi))
+        let bothLathe = rightPadLathe.union(leftPadLathe)
+
+        // Lathe Y axis → local X axis. roll(−π/2) maps (x, y, z) → (y, −x, z),
+        // so the axial direction now points along local +X / −X.
+        return bothLathe.rotated(by: Euclid.Rotation.roll(-.halfPi))
     }
 
     // MARK: - Resistor serpentine

@@ -53,10 +53,11 @@ struct ManufacturingSettingsView: View {
             }
 
             group("Transistor source/drain pads") {
-                row("Pads diameter",       $draftMfg.padsDiameter)
-                row("Pads separation",     $draftMfg.padsSeparation)
+                row("Pads diameter",        $draftMfg.padsDiameter)
+                row("Pads separation",      $draftMfg.padsSeparation)
                 row("Tube offset (centre)", $draftMfg.padsOffset)
-                Text("Two cap-shaped cavities on the opposite plate, split by a strip of this width along the source-drain axis. Tube offset is the distance from the gate centre to each drop-bore tube.")
+                row("Edge fillet radius",   $draftMfg.padsFilletRadius)
+                Text("Two cap-shaped cavities on the opposite plate, split by a strip of this width along the source-drain axis. Tube offset is the distance from the gate centre to each drop-bore tube. Fillet radius rounds the sharp edge between the spherical surface and the flat face (set 0 for a sharp corner).")
                     .font(.caption2).foregroundStyle(.secondary)
             }
 
@@ -130,6 +131,7 @@ struct ManufacturingSettingsView: View {
             padsDiameter: max(0.1, m.padsDiameter),
             padsSeparation: max(0.0, m.padsSeparation),
             padsOffset: max(0.0, m.padsOffset),
+            padsFilletRadius: max(0.0, m.padsFilletRadius),
             gridPitch: max(0.05, m.gridPitch),
             minChannelSpacing: max(0.05, m.minChannelSpacing),
             resistorChannelDiameter: max(0.05, m.resistorChannelDiameter),

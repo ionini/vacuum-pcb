@@ -369,36 +369,30 @@ enum SimulatorExporter {
         return sphere.intersection(clipper)
     }
 
-    /// Source/drain pad cavity for one transistor, returned as the fluid
-    /// volume added to the FluidVolume union. Mirrors PlateBuilder's cutter:
-    /// sphere of diameter `padsDiameter` centred at the gate on the opposite
-    /// plate's silicone face, ∩ plate body, − central strip of width
-    /// `padsSeparation`. Rotated by the placement, then translated to world.
+    /// Source/drain pad cavity for one transistor's fluid volume. Mirrors
+    /// PlateBuilder's cutter: lathed filleted pad pair, clipped to the
+    /// opposite plate's body, rotated and translated to world.
     private static func padsCavityMesh(
         placement: Placement, m: ManufacturingConstants,
         topInnerZ: Double, bottomInnerZ: Double
     ) -> Mesh {
         let radius = m.padsDiameter / 2
         let sep = m.padsSeparation
+        let fillet = m.padsFilletRadius
         let eps = 0.05
         let oppositePlate = placement.layer.opposite
         let oppositeInnerZ = oppositePlate == .top ? topInnerZ : bottomInnerZ
 
-        let sphere = Mesh.sphere(radius: radius, slices: 32)
-        let pad = radius + 0.5
+        let bothPads = PlateBuilder.filletedPadsSolid(R: radius, sep: sep, fillet: fillet)
         let bodyHalfHeight = radius + 0.5
         let bodyCubeCenterZ = oppositePlate == .top
             ? bodyHalfHeight - eps
             : -bodyHalfHeight + eps
         let bodyCube = Mesh.cube(
             center: Vector(0, 0, bodyCubeCenterZ),
-            size: Vector(2 * pad, 2 * pad, 2 * bodyHalfHeight)
+            size: Vector(2 * (radius + 0.5), 2 * (radius + 0.5), 2 * bodyHalfHeight)
         )
-        let stripCube = Mesh.cube(
-            center: .zero,
-            size: Vector(sep, 2 * pad, 2 * bodyHalfHeight + 1)
-        )
-        let cavityLocal = sphere.intersection(bodyCube).subtracting(stripCube)
+        let cavityLocal = bothPads.intersection(bodyCube)
         let rotated = cavityLocal.rotated(
             by: Euclid.Rotation.roll(.radians(placement.rotation.radians))
         )

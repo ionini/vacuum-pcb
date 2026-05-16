@@ -51,6 +51,14 @@ struct ManufacturingConstants: Codable, Hashable {
     /// pin positions, DRC, placement bounds and CAD geometry all track it.
     var padsOffset: Double
 
+    /// Fillet radius applied to the sharp edge between each pad's spherical
+    /// surface and its flat face (the chord shared with the central strip).
+    /// Set to 0 to leave the edge sharp. Bounded by `(padsDiameter/2 -
+    /// padsSeparation/2) / 2`; values outside that range fall back to the
+    /// sharp construction. Matches the R0.50 fillet in the Fusion source
+    /// sketch — softens the print so the corner isn't a stress riser.
+    var padsFilletRadius: Double
+
     /// Snap-grid pitch used by the physical editor (mm). Not consumed by the CAD
     /// pipeline; lives here so it travels with the document.
     var gridPitch: Double
@@ -83,6 +91,7 @@ struct ManufacturingConstants: Codable, Hashable {
         padsDiameter: 4.0,
         padsSeparation: 1.0,
         padsOffset: 1.5,
+        padsFilletRadius: 0.5,
         gridPitch: 1.0,
         minChannelSpacing: 1.5,
         resistorChannelDiameter: 0.5,
@@ -95,7 +104,7 @@ struct ManufacturingConstants: Codable, Hashable {
     private enum CodingKeys: String, CodingKey {
         case plateThickness, channelDiameter, portBoreDiameter, siliconeThickness
         case dimpleDiameter, dimpleDepth, dimpleSphereOffset
-        case padsDiameter, padsSeparation, padsOffset
+        case padsDiameter, padsSeparation, padsOffset, padsFilletRadius
         case gridPitch, minChannelSpacing
         case resistorChannelDiameter, interLayerWall
     }
@@ -104,6 +113,7 @@ struct ManufacturingConstants: Codable, Hashable {
          siliconeThickness: Double, dimpleDiameter: Double, dimpleDepth: Double,
          dimpleSphereOffset: Double,
          padsDiameter: Double, padsSeparation: Double, padsOffset: Double,
+         padsFilletRadius: Double,
          gridPitch: Double, minChannelSpacing: Double, resistorChannelDiameter: Double,
          interLayerWall: Double) {
         self.plateThickness = plateThickness
@@ -116,6 +126,7 @@ struct ManufacturingConstants: Codable, Hashable {
         self.padsDiameter = padsDiameter
         self.padsSeparation = padsSeparation
         self.padsOffset = padsOffset
+        self.padsFilletRadius = padsFilletRadius
         self.gridPitch = gridPitch
         self.minChannelSpacing = minChannelSpacing
         self.resistorChannelDiameter = resistorChannelDiameter
@@ -145,6 +156,8 @@ struct ManufacturingConstants: Codable, Hashable {
                                                forKey: .padsSeparation) ?? 1.0
         padsOffset = try c.decodeIfPresent(Double.self,
                                            forKey: .padsOffset) ?? 1.5
+        padsFilletRadius = try c.decodeIfPresent(Double.self,
+                                                 forKey: .padsFilletRadius) ?? 0.5
         gridPitch = try c.decode(Double.self, forKey: .gridPitch)
         minChannelSpacing = try c.decode(Double.self, forKey: .minChannelSpacing)
         resistorChannelDiameter = try c.decodeIfPresent(Double.self,
