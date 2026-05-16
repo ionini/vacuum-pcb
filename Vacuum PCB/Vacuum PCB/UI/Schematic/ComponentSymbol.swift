@@ -45,6 +45,13 @@ struct ComponentSymbolMetrics {
             // Return a small placeholder so any defensive call site still
             // gets a valid metrics object.
             return ComponentSymbolMetrics(size: CGSize(width: 24, height: 24), pinOffsets: [:])
+        case .led:
+            // Slightly bigger than the transistor so the LED stands out on
+            // the schematic. Single pin on the left edge.
+            return ComponentSymbolMetrics(
+                size: CGSize(width: 90, height: 90),
+                pinOffsets: ["p": CGPoint(x: -45, y: 0)]
+            )
         }
     }
 
@@ -151,6 +158,7 @@ struct ComponentSymbolView: View {
                           AnyShape(RoundedRectangle(cornerRadius: 4))
         case .subpart:    AnyShape(RoundedRectangle(cornerRadius: 6))
         case .screw:      AnyShape(Circle())
+        case .led:        AnyShape(Circle())
         }
     }
 
@@ -178,6 +186,9 @@ struct ComponentSymbolView: View {
                 Text(component.partRef.map(displayName(forFilename:)) ?? "missing part")
                     .font(.system(size: 9)).foregroundStyle(.secondary)
             }
+            if component.kind == .led {
+                Text("LED").font(.system(size: 9)).foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -194,6 +205,7 @@ struct ComponentSymbolView: View {
         case .port:          return Color.purple.opacity(0.18)
         case .subpart:       return Color.teal.opacity(0.18)
         case .screw:         return Color.gray.opacity(0.25)
+        case .led:           return Color.yellow.opacity(0.30)
         }
     }
 

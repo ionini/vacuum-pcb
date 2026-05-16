@@ -19,6 +19,7 @@ struct ComponentPaletteView: View {
 
                 paletteButton(label: "Q", subtitle: "Transistor", kind: .transistor)
                 paletteButton(label: "R", subtitle: "Resistor",   kind: .resistor)
+                paletteButton(label: "D", subtitle: "LED",        kind: .led)
                 paletteButton(label: "VAC", subtitle: "Vacuum",   kind: .vacuumSource)
                 paletteButton(label: "ATM", subtitle: "Vent",     kind: .atmVent)
                 paletteButton(label: "IN", subtitle: "Input",     kind: .port, dir: .input)

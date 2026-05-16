@@ -112,6 +112,9 @@ struct ParkingLotView: View {
         case .screw:
             Circle().fill(Color.gray.opacity(0.45))
                 .overlay(Circle().stroke(.gray, lineWidth: 1))
+        case .led:
+            Circle().fill(Color.yellow.opacity(0.45))
+                .overlay(Circle().stroke(.yellow, lineWidth: 1))
         }
     }
 }

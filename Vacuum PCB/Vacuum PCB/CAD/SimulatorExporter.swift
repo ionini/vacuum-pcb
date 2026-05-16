@@ -146,6 +146,23 @@ enum SimulatorExporter {
                 // Screws are mechanical-only; they don't contribute to the
                 // fluid volume the simulator integrates.
                 break
+
+            case .led:
+                // LEDs are passive indicators — the fluid network just gains
+                // a drop bore at the pin so the channel reaches the dimple.
+                // The dimple chamber itself isn't modeled as a separate body
+                // (no on/off switching like a transistor blocker).
+                let footprint = component.footprint(m)
+                for pin in footprint.pins {
+                    let pinPlate = placement.resolvedPlate(of: pin)
+                    let pinWorld = placement.worldPosition(of: pin)
+                    fluidParts.append(dropBoreMesh(
+                        at: pinWorld, onPlate: pinPlate,
+                        radius: m.channelDiameter / 2,
+                        topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ,
+                        topMidZ: topMidZ, bottomMidZ: bottomMidZ
+                    ))
+                }
             }
         }
 

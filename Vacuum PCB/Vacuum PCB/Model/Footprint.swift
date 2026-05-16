@@ -131,6 +131,29 @@ extension ComponentKind {
                 boundingRect: Rect(origin: .zero, size: Size(width: 0, height: 0))
             )
 
+        case .led:
+            // Single fluid pin at the centre (the dimple's gate equivalent).
+            // Footprint extent has to clear the viewing hole on the opposite
+            // plate too, which is 1 mm wider in diameter than the dimple.
+            let dimpleRadius = m.ledDimpleDiameter / 2
+            let viewRadius = dimpleRadius + 0.5
+            let margin = 0.5
+            let half = viewRadius + margin
+            return Footprint(
+                kind: .led,
+                pins: [
+                    FootprintPin(key: "p", offset: .zero, relativeLayer: .same),
+                ],
+                exclusionRect: Rect(
+                    origin: Point(x: -half, y: -half),
+                    size: Size(width: 2 * half, height: 2 * half)
+                ),
+                boundingRect: Rect(
+                    origin: Point(x: -half, y: -half),
+                    size: Size(width: 2 * half, height: 2 * half)
+                )
+            )
+
         case .screw:
             // Screws are mechanical-only: no fluid pins. Exclusion = head
             // countersink radius so the auto-router avoids running channels
@@ -170,6 +193,7 @@ extension ComponentKind {
         case .vacuumSource, .atmVent, .port: return ["p"]
         case .subpart:      return []
         case .screw:        return []
+        case .led:          return ["p"]
         }
     }
 }
@@ -286,7 +310,7 @@ extension Placement {
         switch component.kind {
         case .resistor, .port, .vacuumSource, .atmVent:
             useDepth = depth
-        case .transistor, .subpart, .screw:
+        case .transistor, .subpart, .screw, .led:
             useDepth = 0
         }
         return Layer(plate: plate, depth: useDepth)

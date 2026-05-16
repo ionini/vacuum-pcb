@@ -1402,9 +1402,12 @@ struct ParkingDropDelegate: DropDelegate {
         if let i = document.circuit.physical.placements.firstIndex(where: { $0.componentId == id }) {
             document.circuit.physical.placements[i].position = world
         } else {
-            // Default layer: bottom for transistor (dimple convention), top for others.
+            // Default layer: bottom for dimple-bearing kinds (transistor,
+            // LED) so the viewing/source/drain features land on the top
+            // plate; top for everything else.
             let component = document.circuit.logic.components.first(where: { $0.id == id })
-            let defaultPlate: Plate = (component?.kind == .transistor) ? .bottom : .top
+            let dimpleKinds: Set<ComponentKind> = [.transistor, .led]
+            let defaultPlate: Plate = (component.map { dimpleKinds.contains($0.kind) } ?? false) ? .bottom : .top
             document.circuit.physical.placements.append(
                 Placement(componentId: id, position: world, rotation: .r0, layer: defaultPlate)
             )

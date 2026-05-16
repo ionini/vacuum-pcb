@@ -33,6 +33,8 @@ struct PlacementBodyView: View {
                     break
                 case .screw:
                     drawScrew(in: &ctx)
+                case .led:
+                    drawLED(in: &ctx)
                 }
 
                 if isSelected {
@@ -179,6 +181,31 @@ struct PlacementBodyView: View {
             with: .color(Color.primary.opacity(0.55)),
             style: StrokeStyle(lineWidth: 0.8, dash: [3, 2])
         )
+    }
+
+    private func drawLED(in ctx: inout GraphicsContext) {
+        // Dimple on the placement layer + viewing-hole ring on the opposite
+        // plate. Drawn from the inside out so the viewing-hole ring is on top.
+        let dimpleR = manufacturing.ledDimpleDiameter / 2 * transform.ptsPerMm
+        let dimpleColor = plateColor(placement.layer)
+        let dimpleRect = CGRect(x: -dimpleR, y: -dimpleR, width: 2 * dimpleR, height: 2 * dimpleR)
+        ctx.fill(Path(ellipseIn: dimpleRect), with: .color(dimpleColor.opacity(0.30)))
+        ctx.stroke(Path(ellipseIn: dimpleRect), with: .color(dimpleColor), lineWidth: 1.2)
+
+        // Viewing hole (opposite plate) — dashed ring 0.5 mm wider in radius.
+        let viewR = (manufacturing.ledDimpleDiameter / 2 + 0.5) * transform.ptsPerMm
+        let viewColor = plateColor(placement.layer.opposite)
+        let viewRect = CGRect(x: -viewR, y: -viewR, width: 2 * viewR, height: 2 * viewR)
+        ctx.stroke(
+            Path(ellipseIn: viewRect),
+            with: .color(viewColor),
+            style: StrokeStyle(lineWidth: 1.0, dash: [4, 3])
+        )
+
+        // Pin dot at the centre.
+        let dotR = manufacturing.channelDiameter / 2 * transform.ptsPerMm
+        let dotRect = CGRect(x: -dotR, y: -dotR, width: 2 * dotR, height: 2 * dotR)
+        ctx.fill(Path(ellipseIn: dotRect), with: .color(dimpleColor))
     }
 
     private func drawSelectionRing(in ctx: inout GraphicsContext) {

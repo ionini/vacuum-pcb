@@ -142,6 +142,7 @@ extension ComponentKind {
         case .port:          return "Port"
         case .subpart:       return "Subpart"
         case .screw:         return "Screw"
+        case .led:           return "LED"
         }
     }
 }

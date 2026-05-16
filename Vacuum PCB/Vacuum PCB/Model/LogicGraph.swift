@@ -15,6 +15,13 @@ enum ComponentKind: String, Codable, CaseIterable {
     /// pocket on the underside. No pins; doesn't participate in the
     /// netlist. Placed and dragged on the physical canvas only.
     case screw
+    /// Visual indicator. Same dimple-on-the-placement-layer construction
+    /// as a transistor's gate (without source/drain pads), plus a
+    /// cylindrical viewing hole through the opposite plate so the
+    /// silicone deflection is visible from outside. One fluid pin; when
+    /// the net is at vacuum the silicone gets sucked into the dimple
+    /// (LED "on"); at atmosphere it sits flat (LED "off").
+    case led
 }
 
 enum ResistorSize: String, Codable, CaseIterable {
@@ -104,6 +111,8 @@ extension LogicGraph {
             prefix = "U"; allowUnnumbered = false
         case .screw:
             prefix = "S"; allowUnnumbered = false
+        case .led:
+            prefix = "D"; allowUnnumbered = false
         }
         if allowUnnumbered, !used.contains(prefix) {
             return prefix

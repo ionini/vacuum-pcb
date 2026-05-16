@@ -95,6 +95,20 @@ struct ManufacturingConstants: Codable, Hashable {
     /// Set to 0 for square corners (default).
     var plateCornerFillet: Double
 
+    /// Diameter of the LED dimple — the cup the silicone deflects into for
+    /// the visual-indicator primitive. Same dome construction as the
+    /// transistor gate, with its own size so LEDs can be tuned for
+    /// visibility independent of switching geometry.
+    var ledDimpleDiameter: Double
+
+    /// Distance from the plate's silicone-facing surface to the centre of
+    /// the LED dome's defining sphere, measured into the plate body. Raw
+    /// depth value — not computed from diameter, matching how the
+    /// schematic is drawn. The cavity depth is
+    /// `ledDimpleDiameter/2 + ledDimpleDepth` (same formula as
+    /// `dimpleSphereOffset` for transistors).
+    var ledDimpleDepth: Double
+
     static let defaults = ManufacturingConstants(
         plateThickness: 5.0,
         channelDiameter: 1.5,
@@ -112,7 +126,9 @@ struct ManufacturingConstants: Codable, Hashable {
         minChannelSpacing: 1.5,
         resistorChannelDiameter: 0.5,
         interLayerWall: 0.6,
-        plateCornerFillet: 0
+        plateCornerFillet: 0,
+        ledDimpleDiameter: 6.0,
+        ledDimpleDepth: 1.0
     )
 
     // Codable hand-rolled so older .vpcb files (written before
@@ -126,6 +142,7 @@ struct ManufacturingConstants: Codable, Hashable {
         case gridPitch, minChannelSpacing
         case resistorChannelDiameter, interLayerWall
         case plateCornerFillet
+        case ledDimpleDiameter, ledDimpleDepth
     }
 
     init(plateThickness: Double, channelDiameter: Double,
@@ -135,7 +152,8 @@ struct ManufacturingConstants: Codable, Hashable {
          padsDiameter: Double, padsSeparation: Double, padsOffset: Double,
          padsFilletRadius: Double,
          gridPitch: Double, minChannelSpacing: Double, resistorChannelDiameter: Double,
-         interLayerWall: Double, plateCornerFillet: Double) {
+         interLayerWall: Double, plateCornerFillet: Double,
+         ledDimpleDiameter: Double, ledDimpleDepth: Double) {
         self.plateThickness = plateThickness
         self.channelDiameter = channelDiameter
         self.portBoreDiameter = portBoreDiameter
@@ -153,6 +171,8 @@ struct ManufacturingConstants: Codable, Hashable {
         self.resistorChannelDiameter = resistorChannelDiameter
         self.interLayerWall = interLayerWall
         self.plateCornerFillet = plateCornerFillet
+        self.ledDimpleDiameter = ledDimpleDiameter
+        self.ledDimpleDepth = ledDimpleDepth
     }
 
     /// Outer length of the resistor footprint (pin-to-pin distance). Constant
@@ -190,6 +210,10 @@ struct ManufacturingConstants: Codable, Hashable {
                                               forKey: .interLayerWall) ?? 0.6
         plateCornerFillet = try c.decodeIfPresent(Double.self,
                                                 forKey: .plateCornerFillet) ?? 0
+        ledDimpleDiameter = try c.decodeIfPresent(Double.self,
+                                                  forKey: .ledDimpleDiameter) ?? 6.0
+        ledDimpleDepth = try c.decodeIfPresent(Double.self,
+                                               forKey: .ledDimpleDepth) ?? 1.0
     }
 
     /// Effective thickness of a plate with `layerCount` channel layers. The

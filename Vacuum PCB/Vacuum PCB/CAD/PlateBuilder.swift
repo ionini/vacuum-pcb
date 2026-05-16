@@ -147,6 +147,48 @@ enum PlateBuilder {
                 // 3D preview and export ignore subpart placements.
                 break
 
+            case .led:
+                // Dimple on the placement layer — same dome construction as
+                // a transistor's gate, but with the LED's own diameter and
+                // raw depth (sphere centre `ledDimpleDepth` mm into the
+                // plate body, *not* derived from diameter).
+                let ledDimple = ledDimpleMesh(
+                    at: placement.position, layer: placement.layer, m: m,
+                    topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ
+                )
+                appendCutter(ledDimple, plate: placement.layer,
+                             top: &topCutters, bottom: &bottomCutters)
+
+                // Viewing hole — cylinder through the *opposite* plate, 1 mm
+                // wider than the dimple, so the deflected silicone is
+                // visible from outside.
+                let oppositePlate = placement.layer.opposite
+                let oppositeThickness = oppositePlate == .top ? topThickness : bottomThickness
+                let viewHole = ledViewHoleMesh(
+                    at: placement.position, onPlate: oppositePlate,
+                    diameter: m.ledDimpleDiameter + 1.0,
+                    topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ,
+                    topThickness: topThickness, bottomThickness: bottomThickness
+                )
+                appendCutter(viewHole, plate: oppositePlate,
+                             top: &topCutters, bottom: &bottomCutters)
+                _ = oppositeThickness
+
+                // Drop bore connecting the (single) fluid pin's channel
+                // midline to the dimple chamber on the placement layer.
+                let ledFootprint = component.footprint(m)
+                for pin in ledFootprint.pins {
+                    let pinPlate = placement.resolvedPlate(of: pin)
+                    let pinWorld = placement.worldPosition(of: pin)
+                    let drop = dropBoreMesh(
+                        at: pinWorld, onPlate: pinPlate, radius: m.channelDiameter / 2,
+                        topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ,
+                        topMidZ: topMidZ, bottomMidZ: bottomMidZ
+                    )
+                    appendCutter(drop, plate: pinPlate,
+                                 top: &topCutters, bottom: &bottomCutters)
+                }
+
             case .screw:
                 let (topMeshes, bottomMeshes) = ScrewGeometry.cutters(
                     at: placement.position, rotation: placement.rotation,
@@ -525,6 +567,68 @@ enum PlateBuilder {
             size: Vector(2 * radius + 1, 2 * radius + 1, clipHi - clipLo)
         )
         return sphere.intersection(clipper)
+    }
+
+    // MARK: - LED features
+
+    /// LED dimple cavity. Identical construction to the transistor dimple
+    /// (spherical cap intruding into the plate from the silicone-facing
+    /// surface) but parameterised by `ledDimpleDiameter` and `ledDimpleDepth`
+    /// — both raw values entered by the user, no derivation.
+    private static func ledDimpleMesh(
+        at center: Point, layer: Plate, m: ManufacturingConstants,
+        topInnerZ: Double, bottomInnerZ: Double
+    ) -> Mesh {
+        let radius = m.ledDimpleDiameter / 2
+        let offset = m.ledDimpleDepth
+        let eps = 0.05
+        let cz: Double
+        let clipLo: Double
+        let clipHi: Double
+        switch layer {
+        case .top:
+            cz = topInnerZ - offset
+            clipLo = topInnerZ - eps
+            clipHi = topInnerZ + radius + 1
+        case .bottom:
+            cz = bottomInnerZ + offset
+            clipLo = bottomInnerZ - radius - 1
+            clipHi = bottomInnerZ + eps
+        }
+        let sphere = Mesh.sphere(radius: radius, slices: 32)
+            .translated(by: Vector(center.x, center.y, cz))
+        let clipper = Mesh.cube(
+            center: Vector(center.x, center.y, (clipLo + clipHi) / 2),
+            size: Vector(2 * radius + 1, 2 * radius + 1, clipHi - clipLo)
+        )
+        return sphere.intersection(clipper)
+    }
+
+    /// LED viewing hole — a cylinder punched all the way through `plate`
+    /// (silicone face to outer face) at the dimple's XY, with the requested
+    /// diameter. Overshoots both faces by a small epsilon so the CSG cut is
+    /// clean rather than tangent.
+    private static func ledViewHoleMesh(
+        at center: Point, onPlate plate: Plate, diameter: Double,
+        topInnerZ: Double, bottomInnerZ: Double,
+        topThickness: Double, bottomThickness: Double
+    ) -> Mesh {
+        let radius = diameter / 2
+        let eps = 0.1
+        let zLo: Double, zHi: Double
+        switch plate {
+        case .top:
+            zLo = topInnerZ - eps
+            zHi = topInnerZ + topThickness + eps
+        case .bottom:
+            zLo = bottomInnerZ - bottomThickness - eps
+            zHi = bottomInnerZ + eps
+        }
+        let len = zHi - zLo
+        let cz = (zLo + zHi) / 2
+        return Mesh.cylinder(radius: radius, height: len, slices: 32)
+            .rotated(by: Euclid.Rotation.pitch(.halfPi))
+            .translated(by: Vector(center.x, center.y, cz))
     }
 
     // MARK: - Source/drain pads

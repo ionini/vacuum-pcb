@@ -56,6 +56,13 @@ struct ManufacturingSettingsView: View {
                     .font(.caption2).foregroundStyle(.secondary)
             }
 
+            group("LED indicator") {
+                row("Dimple diameter", $draftMfg.ledDimpleDiameter)
+                row("Dimple depth",    $draftMfg.ledDimpleDepth)
+                Text("LED dome is a sphere of the diameter above, centred this far into the silicone gap from the plate face (raw value, not derived). The opposite plate gets a cylindrical viewing hole 1 mm wider than the dimple, all the way through, so the silicone deflection is visible.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+
             group("Transistor source/drain pads") {
                 row("Pads diameter",        $draftMfg.padsDiameter)
                 row("Pads separation",      $draftMfg.padsSeparation)
@@ -214,7 +221,9 @@ struct ManufacturingSettingsView: View {
             minChannelSpacing: max(0.05, m.minChannelSpacing),
             resistorChannelDiameter: max(0.05, m.resistorChannelDiameter),
             interLayerWall: max(0.1, m.interLayerWall),
-            plateCornerFillet: max(0.0, m.plateCornerFillet)
+            plateCornerFillet: max(0.0, m.plateCornerFillet),
+            ledDimpleDiameter: max(0.1, m.ledDimpleDiameter),
+            ledDimpleDepth: max(0.0, m.ledDimpleDepth)
         )
     }
 

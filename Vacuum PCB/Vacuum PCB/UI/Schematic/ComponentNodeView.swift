@@ -206,6 +206,8 @@ struct ComponentNodeView: View {
             // Screws never reach the schematic-side pin tooltip path
             // (filtered out of the canvas) — guarded for switch exhaustiveness.
             return nil
+        case .led:
+            return "Indicator"
         }
     }
 
