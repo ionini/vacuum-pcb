@@ -111,9 +111,11 @@ struct DocumentView: View {
     }
 
     @ViewBuilder private var previewView: some View {
-        if isBuilding {
-            ProgressView("Building plates…")
-        } else if let built {
+        if let built {
+            // Keep Scene3DView mounted across rebuilds so its SCNView (and
+            // therefore the user's orbit / zoom state) survives. The progress
+            // indicator overlays on top instead of replacing the view — the
+            // previous geometry stays visible until the new one is ready.
             ZStack(alignment: .top) {
                 Scene3DView(
                     top: built.topPlate,
@@ -124,7 +126,15 @@ struct DocumentView: View {
                     displayMode: previewMode
                 )
                 previewModePicker
+                if isBuilding {
+                    ProgressView("Building plates…")
+                        .padding(12)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                        .padding(.top, 56)
+                }
             }
+        } else if isBuilding {
+            ProgressView("Building plates…")
         } else {
             ContentUnavailableView(
                 "No geometry built",
