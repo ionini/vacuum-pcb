@@ -438,7 +438,7 @@ struct PhysicalView: View {
             return Text("\(selection.placements.count) placements selected. ⌘-drag to move with routes · R rotate · F flip layer · ⌫ delete.")
         case .routing(let netId, let wps, let layer, _):
             let netLabel = document.circuit.logic.nets.first(where: { $0.id == netId })?.label ?? "?"
-            return Text("Routing net \(netLabel) on \(layer.uiLabel) · \(wps.count) waypoints · V to drop a via, click a pin on this net to commit, ESC to cancel.")
+            return Text("Routing net \(netLabel) on \(layer.uiLabel) · \(wps.count) waypoints · V via \(layer.plate.opposite.uiPrefix)0 · digit N via \(layer.plate.uiPrefix)N · click pin to commit · ESC cancel.")
         }
     }
 }

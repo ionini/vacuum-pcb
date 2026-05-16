@@ -74,4 +74,18 @@ enum KeyCodes {
     static let r: UInt16             = 15
     static let f: UInt16             = 3
     static let v: UInt16             = 9
+
+    /// Top-row number keys (not the numpad). Index by digit 0…9.
+    static let digit: [UInt16] = [
+        29, // 0
+        18, // 1
+        19, // 2
+        20, // 3
+        21, // 4
+        23, // 5
+        22, // 6
+        26, // 7
+        28, // 8
+        25  // 9
+    ]
 }

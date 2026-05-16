@@ -75,6 +75,27 @@ struct PhysicalCanvasView: View {
     private var manufacturing: ManufacturingConstants { document.circuit.manufacturing }
     private var grid: Double { manufacturing.gridPitch }
 
+    /// Keyboard handlers for the routing toolset. V = cross-silicone via
+    /// (T0 ↔ B0 only). Digit 0…9 = same-plate vertical via to that depth on
+    /// the current routing plate. Both share the underlying via-drop logic.
+    private var viaKeyHandlers: [UInt16: () -> Void] {
+        var h: [UInt16: () -> Void] = [
+            KeyCodes.delete: { deleteSelection() },
+            KeyCodes.forwardDelete: { deleteSelection() },
+            KeyCodes.escape: {
+                routingState = .idle
+                selection = .none
+            },
+            KeyCodes.r: { rotateSelection() },
+            KeyCodes.f: { flipLayerSelection() },
+            KeyCodes.v: { dropCrossSiliconeVia() },
+        ]
+        for (digit, code) in KeyCodes.digit.enumerated() {
+            h[code] = { dropSamePlateVia(toDepth: digit) }
+        }
+        return h
+    }
+
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .topLeading) {
@@ -127,17 +148,7 @@ struct PhysicalCanvasView: View {
                 // NSEvent-monitor key catcher. Replaces the hidden-Button
                 // approach which would silently lose its shortcut when
                 // focus drifted to a non-canvas view.
-                KeyEventCatcher(handlers: [
-                    KeyCodes.delete: { deleteSelection() },
-                    KeyCodes.forwardDelete: { deleteSelection() },
-                    KeyCodes.escape: {
-                        routingState = .idle
-                        selection = .none
-                    },
-                    KeyCodes.r: { rotateSelection() },
-                    KeyCodes.f: { flipLayerSelection() },
-                    KeyCodes.v: { dropViaAtCursor() },
-                ])
+                KeyEventCatcher(handlers: viaKeyHandlers)
 
                 // Right-click catcher overlays the whole canvas. SwiftUI on
                 // macOS doesn't surface secondary-button taps natively, so a
@@ -1009,19 +1020,36 @@ struct PhysicalCanvasView: View {
         }
     }
 
-    /// Place a via at the snapped cursor position while mid-route. Commits
-    /// the in-progress segment with the via as its terminating waypoint, then
-    /// restarts routing from the same XY on the *other* layer (same net), with
-    /// startsAtVia=true so the next commit emits the matching via on the new
-    /// segment's first waypoint.
-    private func dropViaAtCursor() {
+    /// V — drops a cross-silicone via at the cursor, switching to the
+    /// opposite plate at depth 0. This is the only kind of via that actually
+    /// punches through the silicone sheet sandwiched between the two plates.
+    private func dropCrossSiliconeVia() {
+        guard case let .routing(_, _, layer, _) = routingState else { return }
+        dropVia(toLayer: Layer(plate: layer.plate.opposite, depth: 0))
+    }
+
+    /// Digit 0…9 — drops a same-plate vertical via at the cursor, switching
+    /// to the chosen depth on the *current* plate. No-op when already on
+    /// that depth, or when the chosen depth doesn't exist on the current
+    /// plate (i.e. it's ≥ the plate's layer count).
+    private func dropSamePlateVia(toDepth depth: Int) {
+        guard case let .routing(_, _, layer, _) = routingState else { return }
+        guard depth != layer.depth else { return }
+        let plateLayerCount = document.circuit.physical.layerCount(for: layer.plate)
+        guard depth >= 0, depth < plateLayerCount else { return }
+        dropVia(toLayer: Layer(plate: layer.plate, depth: depth))
+    }
+
+    /// Underlying via mechanics: commit the in-progress segment with a `.via`
+    /// terminator at the cursor, then restart routing from the same XY on
+    /// `target` with `startsAtVia = true` so the next commit emits the
+    /// matching via on the new segment's first waypoint.
+    private func dropVia(toLayer target: Layer) {
         guard case let .routing(netId, wps, layer, startsAtVia) = routingState else { return }
+        guard target != layer else { return }
         let cursorWorld = transform.snap(transform.toWorld(mouseLocation), grid: grid)
         guard let last = wps.last else { return }
 
-        // Build the polyline that ends at the via, joining with an auto-elbow
-        // the same way a normal pin commit does. The first waypoint may itself
-        // be a via if this segment was started by a previous V press.
         var finalPath: [Waypoint] = []
         for (i, p) in wps.enumerated() {
             let kind: WaypointKind = (i == 0 && startsAtVia) ? .via : .point
@@ -1040,14 +1068,8 @@ struct PhysicalCanvasView: View {
             document.circuit.physical.routes.append(Route(netId: netId, segments: [segment]))
         }
 
-        // Continue routing from the via on the other plate (depth 0). The
-        // user can change to a deeper layer via the routing-layer picker if
-        // they want a same-plate vertical via to a non-default depth — for
-        // now V always lands on the opposite plate, mirroring the legacy
-        // silicone-crossing via behaviour.
-        let nextLayer = Layer(plate: layer.plate.opposite, depth: 0)
-        routingLayer = nextLayer
-        routingState = .routing(netId: netId, waypoints: [cursorWorld], layer: nextLayer, startsAtVia: true)
+        routingLayer = target
+        routingState = .routing(netId: netId, waypoints: [cursorWorld], layer: target, startsAtVia: true)
     }
 
     private func appendRouteSegment(netId: UUID, points: [Point], layer: Layer, startsAtVia: Bool) {

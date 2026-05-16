@@ -42,6 +42,9 @@ enum Plate: String, Codable, CaseIterable, Hashable {
     case top, bottom
 
     var opposite: Plate { self == .top ? .bottom : .top }
+
+    /// Single-letter prefix used in compact layer labels ("T", "B").
+    var uiPrefix: String { self == .top ? "T" : "B" }
 }
 
 /// Identifies one channel layer in the assembly. `plate` picks which plate
