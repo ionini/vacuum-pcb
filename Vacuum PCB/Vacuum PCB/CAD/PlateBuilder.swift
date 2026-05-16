@@ -49,14 +49,27 @@ enum PlateBuilder {
         var topCutters: [Mesh] = []
         var bottomCutters: [Mesh] = []
 
+        // Resolve current pin world positions per plate before channels run,
+        // so the channel-build loop can extend any segment whose endpoint
+        // waypoint was drawn at an old pin location (the user shifted
+        // `padsOffset` afterwards). Without this the horizontal route stays
+        // where it was while the drop bore has moved outward.
+        let componentsById = Dictionary(uniqueKeysWithValues: doc.logic.components.map { ($0.id, $0) })
+        let pinsPerPlate = collectPinPositions(doc: doc, m: m, componentsById: componentsById)
+        let pinSnapTol = m.dimpleDiameter / 2 + 0.5
+
         // 1. Channels — round bores swept along Manhattan polylines at the
         // layer's midline. Layer carries both the plate and the depth, so
         // multi-layer routing falls out automatically.
         for route in doc.physical.routes {
             for segment in route.segments {
                 let midZ = m.midZ(for: segment.layer)
+                let positions = extendedWaypointPositions(
+                    for: segment, pinsOnPlate: pinsPerPlate[segment.layer.plate] ?? [],
+                    tolerance: pinSnapTol
+                )
                 let channel = channelMesh(
-                    waypoints: segment.waypoints.map(\.position),
+                    waypoints: positions,
                     radius: m.channelDiameter / 2,
                     midZ: midZ
                 )
@@ -67,7 +80,6 @@ enum PlateBuilder {
 
         // 2. Component features. All components anchor at depth 0; geometry
         // unchanged from single-layer.
-        let componentsById = Dictionary(uniqueKeysWithValues: doc.logic.components.map { ($0.id, $0) })
 
         for placement in doc.physical.placements {
             guard let component = componentsById[placement.componentId] else { continue }
@@ -189,6 +201,63 @@ enum PlateBuilder {
             center: Vector(cx, cy, cz),
             size: Vector(outline.size.width, outline.size.height, thickness)
         )
+    }
+
+    // MARK: - Pin-snap extension
+
+    /// Per-plate map of every component pin's current world position.
+    /// Used by the channel build to extend a segment whose endpoint was
+    /// drawn at a now-stale pin location (e.g. before `padsOffset` moved).
+    static func collectPinPositions(
+        doc: CircuitDocument, m: ManufacturingConstants,
+        componentsById: [UUID: Component]
+    ) -> [Plate: [Point]] {
+        var out: [Plate: [Point]] = [.top: [], .bottom: []]
+        for placement in doc.physical.placements {
+            guard let component = componentsById[placement.componentId] else { continue }
+            for pin in component.footprint(m).pins {
+                let plate = placement.resolvedPlate(of: pin)
+                out[plate, default: []].append(placement.worldPosition(of: pin))
+            }
+        }
+        return out
+    }
+
+    /// Returns the segment's waypoint positions, with the first and/or last
+    /// extended to the nearest pin on the same plate when the stored endpoint
+    /// sits within `tolerance` mm of one (and isn't already exactly on it).
+    /// The extra entry adds one more sphere + cylinder at the pin so the
+    /// channel reaches the drop bore.
+    static func extendedWaypointPositions(
+        for segment: Segment, pinsOnPlate: [Point], tolerance: Double
+    ) -> [Point] {
+        var positions = segment.waypoints.map(\.position)
+        guard !pinsOnPlate.isEmpty, !positions.isEmpty else { return positions }
+        let snapEps = 0.01
+
+        if let pin = nearestPoint(to: positions[0], in: pinsOnPlate, maxDist: tolerance),
+           hypot(pin.x - positions[0].x, pin.y - positions[0].y) > snapEps {
+            positions.insert(pin, at: 0)
+        }
+        if positions.count >= 2,
+           let last = positions.last,
+           let pin = nearestPoint(to: last, in: pinsOnPlate, maxDist: tolerance),
+           hypot(pin.x - last.x, pin.y - last.y) > snapEps {
+            positions.append(pin)
+        }
+        return positions
+    }
+
+    private static func nearestPoint(
+        to p: Point, in candidates: [Point], maxDist: Double
+    ) -> Point? {
+        var best: Point?
+        var bestD = maxDist
+        for q in candidates {
+            let d = hypot(q.x - p.x, q.y - p.y)
+            if d < bestD { bestD = d; best = q }
+        }
+        return best
     }
 
     // MARK: - Channels

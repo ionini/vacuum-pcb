@@ -138,13 +138,25 @@ enum SimulatorExporter {
         // Via tubes are collected separately so we can compute their full z
         // span from both twins (twins may be on different plates or on the
         // same plate at different depths).
+        // Reuse PlateBuilder's pin-snap helper so the fluid volume tracks
+        // the same channel-extension behaviour as the printed cutters.
+        let pinsPerPlate = PlateBuilder.collectPinPositions(
+            doc: doc, m: m, componentsById: componentsById
+        )
+        let pinSnapTol = m.dimpleDiameter / 2 + 0.5
+
         struct ViaGroup { var position: Point; var layers: Set<Layer> }
         var viaGroups: [ViaGroup] = []
         for route in doc.physical.routes {
             for segment in route.segments {
                 let midZ = m.midZ(for: segment.layer)
+                let positions = PlateBuilder.extendedWaypointPositions(
+                    for: segment,
+                    pinsOnPlate: pinsPerPlate[segment.layer.plate] ?? [],
+                    tolerance: pinSnapTol
+                )
                 fluidParts.append(channelMesh(
-                    waypoints: segment.waypoints.map(\.position),
+                    waypoints: positions,
                     radius: m.channelDiameter / 2,
                     midZ: midZ
                 ))
