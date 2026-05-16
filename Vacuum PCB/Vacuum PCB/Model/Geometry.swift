@@ -90,11 +90,7 @@ struct Layer: Hashable, Codable, Sendable {
 
     /// Compact label used in pickers and DRC summaries — "T0", "B1", etc.
     var uiLabel: String {
-        "\(plate.uiPrefix)\(depth)"
+        let prefix = plate == .top ? "T" : "B"
+        return "\(prefix)\(depth)"
     }
-}
-
-extension Plate {
-    /// Single-letter prefix used in compact layer labels ("T", "B").
-    var uiPrefix: String { self == .top ? "T" : "B" }
 }

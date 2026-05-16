@@ -74,21 +74,22 @@ struct PhysicalView: View {
 
             Divider().frame(height: 18)
 
-            // When idle, this picks the starting layer for the next route.
-            // While mid-route, it picks the *target* layer for the next V via
-            // — i.e. set it to T1 before pressing V to drop a same-plate
-            // vertical via from T0 to T1. We deliberately do NOT mutate the
-            // in-progress segment's layer on change here: switching layers
-            // mid-route is only valid through a via, so just changing the
-            // colour would leave the document in an inconsistent state.
-            Picker("Route / via layer", selection: $routingLayer) {
+            Picker("Routing layer", selection: $routingLayer) {
                 ForEach(allLayers, id: \.self) { layer in
-                    Text(layer.uiLabel).tag(layer)
+                    Text("Route \(layer.uiLabel)").tag(layer)
                 }
             }
             .pickerStyle(.menu)
-            .frame(minWidth: 80)
+            .frame(minWidth: 110)
             .labelsHidden()
+            .onChange(of: routingLayer) { _, newLayer in
+                // If we're mid-route, update the layer of the in-progress polyline
+                // so the user sees the change immediately.
+                if case let .routing(netId, wps, _, startsAtVia) = routingState {
+                    routingState = .routing(netId: netId, waypoints: wps, layer: newLayer,
+                                            startsAtVia: startsAtVia)
+                }
+            }
             .onChange(of: document.circuit.physical.topLayers) { _, _ in
                 ensureRoutingLayerValid()
             }
@@ -437,10 +438,7 @@ struct PhysicalView: View {
             return Text("\(selection.placements.count) placements selected. ⌘-drag to move with routes · R rotate · F flip layer · ⌫ delete.")
         case .routing(let netId, let wps, let layer, _):
             let netLabel = document.circuit.logic.nets.first(where: { $0.id == netId })?.label ?? "?"
-            let viaHint = routingLayer == layer
-                ? "V → via to \(layer.plate.opposite.uiPrefix)0"
-                : "V → via to \(routingLayer.uiLabel)"
-            return Text("Routing net \(netLabel) on \(layer.uiLabel) · \(wps.count) waypoints · \(viaHint) · click pin to commit · ESC cancel.")
+            return Text("Routing net \(netLabel) on \(layer.uiLabel) · \(wps.count) waypoints · V to drop a via, click a pin on this net to commit, ESC to cancel.")
         }
     }
 }
