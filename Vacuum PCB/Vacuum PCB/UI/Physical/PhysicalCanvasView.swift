@@ -1040,12 +1040,15 @@ struct PhysicalCanvasView: View {
             document.circuit.physical.routes.append(Route(netId: netId, segments: [segment]))
         }
 
-        // Continue routing from the via on the other plate (depth 0). The
-        // user can change to a deeper layer via the routing-layer picker if
-        // they want a same-plate vertical via to a non-default depth — for
-        // now V always lands on the opposite plate, mirroring the legacy
-        // silicone-crossing via behaviour.
-        let nextLayer = Layer(plate: layer.plate.opposite, depth: 0)
+        // Continue routing on whatever target the bottom-strip layer picker
+        // is currently set to. The picker is the single source of truth for
+        // "where this via goes": set it to T1 before pressing V to drop a
+        // same-plate vertical via from T0 to T1; leave it on the route's
+        // starting layer to fall back to the legacy "opposite plate, depth
+        // 0" silicone-crossing via.
+        let nextLayer: Layer = routingLayer == layer
+            ? Layer(plate: layer.plate.opposite, depth: 0)
+            : routingLayer
         routingLayer = nextLayer
         routingState = .routing(netId: netId, waypoints: [cursorWorld], layer: nextLayer, startsAtVia: true)
     }
