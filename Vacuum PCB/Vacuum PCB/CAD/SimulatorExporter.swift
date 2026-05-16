@@ -265,38 +265,12 @@ enum SimulatorExporter {
         placement: Placement, outline: Rect, m: ManufacturingConstants,
         topMidZ: Double, bottomMidZ: Double
     ) -> Mesh {
-        let radius = m.portBoreDiameter / 2
-        let bz = placement.layer == .top ? topMidZ : bottomMidZ
-        let p = placement.position
-        let eps = 0.5
-        switch placement.rotation {
-        case .r0:
-            let edge = outline.maxX + eps
-            let length = edge - p.x
-            let cx = (edge + p.x) / 2
-            return Mesh.cylinder(radius: radius, height: length, slices: 24)
-                .rotated(by: Euclid.Rotation.roll(.halfPi))
-                .translated(by: Vector(cx, p.y, bz))
-        case .r180:
-            let edge = outline.minX - eps
-            let length = p.x - edge
-            let cx = (edge + p.x) / 2
-            return Mesh.cylinder(radius: radius, height: length, slices: 24)
-                .rotated(by: Euclid.Rotation.roll(.halfPi))
-                .translated(by: Vector(cx, p.y, bz))
-        case .r90:
-            let edge = outline.maxY + eps
-            let length = edge - p.y
-            let cy = (edge + p.y) / 2
-            return Mesh.cylinder(radius: radius, height: length, slices: 24)
-                .translated(by: Vector(p.x, cy, bz))
-        case .r270:
-            let edge = outline.minY - eps
-            let length = p.y - edge
-            let cy = (edge + p.y) / 2
-            return Mesh.cylinder(radius: radius, height: length, slices: 24)
-                .translated(by: Vector(p.x, cy, bz))
-        }
+        // Same tapered bore shape PlateBuilder uses to cut the plate, so the
+        // fluid volume matches the printed cavity.
+        PlateBuilder.portBoreMesh(
+            placement: placement, outline: outline, m: m,
+            topMidZ: topMidZ, bottomMidZ: bottomMidZ
+        )
     }
 
     /// 1 mm cylinder extending past the board edge in the port's exit

@@ -42,18 +42,21 @@ enum Ratsnest {
             let ref: PinRef
             let position: Point
             let kind: ComponentKind
+            let layer: Layer
         }
         var placedPins: [PlacedPin] = []
+        var netPinsByLayer: [Layer: [Point]] = [:]
         for pinRef in net.pins {
             guard let placement = doc.physical.placements.first(where: { $0.componentId == pinRef.componentId }),
                   let component = doc.logic.components.first(where: { $0.id == pinRef.componentId }),
                   let fpPin = component.footprint(doc.manufacturing).pin(pinRef.pinKey)
             else { continue }
+            let world = placement.worldPosition(of: fpPin)
+            let layer = placement.resolvedLayer(of: fpPin, on: component)
             placedPins.append(PlacedPin(
-                ref: pinRef,
-                position: placement.worldPosition(of: fpPin),
-                kind: component.kind
+                ref: pinRef, position: world, kind: component.kind, layer: layer
             ))
+            netPinsByLayer[layer, default: []].append(world)
         }
         guard placedPins.count >= 2 else { return [] }
 
@@ -83,10 +86,19 @@ enum Ratsnest {
         }
 
         let pinNodes = placedPins.map { nodeIndex(for: $0.position) }
+        // Pin-snap tolerance matches the CAD pipeline so a small drift between
+        // a route end and its pin (e.g. from changing padsOffset) still counts
+        // as connected — no phantom missing-edge line in the ratsnest.
+        let pinSnapTol = doc.manufacturing.dimpleDiameter / 2 + 0.5
         for route in doc.physical.routes where route.netId == net.id {
             for segment in route.segments {
-                guard segment.waypoints.count >= 2 else { continue }
-                let indices = segment.waypoints.map { nodeIndex(for: $0.position) }
+                let positions = PlateBuilder.extendedWaypointPositions(
+                    for: segment,
+                    pinsOnLayer: netPinsByLayer[segment.layer] ?? [],
+                    tolerance: pinSnapTol
+                )
+                guard positions.count >= 2 else { continue }
+                let indices = positions.map { nodeIndex(for: $0) }
                 for i in 0..<(indices.count - 1) {
                     union(indices[i], indices[i + 1])
                 }

@@ -542,43 +542,64 @@ enum PlateBuilder {
 
     // MARK: - Edge ports
 
-    private static func portBoreMesh(
+    /// Edge port bore. Diameter at the route end is `portBoreDiameter`;
+    /// the bore widens outward at `portBoreTaperDegrees` along the path
+    /// to the board edge — the route end is the narrow opening, the edge
+    /// face is the wide opening. Built by lathing a trapezoidal profile
+    /// around the bore axis.
+    static func portBoreMesh(
         placement: Placement, outline: Rect, m: ManufacturingConstants,
         topMidZ: Double, bottomMidZ: Double
     ) -> Mesh {
-        let radius = m.portBoreDiameter / 2
+        let routeR = m.portBoreDiameter / 2
+        let taperRad = m.portBoreTaperDegrees * .pi / 180
         let bz = placement.layer == .top ? topMidZ : bottomMidZ
         let p = placement.position
-        let eps = 0.5  // overshoot past board edge so the bore breaks the surface cleanly
+        let eps = 0.5
 
+        // Length from the route end (placement) to the overshot edge, plus
+        // the rotation applied to a lathe mesh oriented along +Y. Euclid's
+        // `Rotation.roll(θ)` is internally a rotation by `-θ` (see
+        // Rotation.swift's quaternion init), so the +X mapping uses
+        // `roll(+π/2)` and the -X mapping uses `roll(-π/2)`.
+        let length: Double
+        let yawAroundZ: Double
         switch placement.rotation {
-        case .r0:    // exits +X edge
-            let edgeFar = outline.maxX + eps
-            let length = edgeFar - p.x
-            let cx = (edgeFar + p.x) / 2
-            return Mesh.cylinder(radius: radius, height: length, slices: 24)
-                .rotated(by: Euclid.Rotation.roll(.halfPi))
-                .translated(by: Vector(cx, p.y, bz))
-        case .r180:  // exits -X edge
-            let edgeFar = outline.minX - eps
-            let length = p.x - edgeFar
-            let cx = (edgeFar + p.x) / 2
-            return Mesh.cylinder(radius: radius, height: length, slices: 24)
-                .rotated(by: Euclid.Rotation.roll(.halfPi))
-                .translated(by: Vector(cx, p.y, bz))
-        case .r90:   // exits +Y edge
-            let edgeFar = outline.maxY + eps
-            let length = edgeFar - p.y
-            let cy = (edgeFar + p.y) / 2
-            return Mesh.cylinder(radius: radius, height: length, slices: 24)
-                .translated(by: Vector(p.x, cy, bz))
-        case .r270:  // exits -Y edge
-            let edgeFar = outline.minY - eps
-            let length = p.y - edgeFar
-            let cy = (edgeFar + p.y) / 2
-            return Mesh.cylinder(radius: radius, height: length, slices: 24)
-                .translated(by: Vector(p.x, cy, bz))
+        case .r0:                                            // exits +X edge
+            length = outline.maxX + eps - p.x
+            yawAroundZ =  .pi / 2                            // Y → +X
+        case .r180:                                          // exits -X edge
+            length = p.x - (outline.minX - eps)
+            yawAroundZ = -.pi / 2                            // Y → -X
+        case .r90:                                           // exits +Y edge
+            length = outline.maxY + eps - p.y
+            yawAroundZ = 0                                   // already along +Y
+        case .r270:                                          // exits -Y edge
+            length = p.y - (outline.minY - eps)
+            yawAroundZ = .pi                                 // Y → -Y
         }
+
+        // Edge radius widens as we move outward.
+        let edgeR = routeR + length * tan(taperRad)
+        let bore = taperedBoreSolid(routeEndR: routeR, edgeR: edgeR, length: length)
+            .rotated(by: Euclid.Rotation.roll(.radians(yawAroundZ)))
+            .translated(by: Vector(p.x, p.y, bz))
+        return bore
+    }
+
+    /// Trapezoidal lathe profile revolved into a frustum aligned along the
+    /// lathe Y axis. The route-end disk (radius `routeEndR`) sits at Y=0;
+    /// the edge-end disk (radius `edgeR`) sits at Y=`length`. Callers wrap
+    /// with the placement's yaw so Y maps to the bore's world-axis direction.
+    static func taperedBoreSolid(routeEndR: Double, edgeR: Double, length: Double) -> Mesh {
+        let pts: [Vector] = [
+            Vector(0, 0, 0),                  // pole at route end (Y=0)
+            Vector(routeEndR, 0, 0),          // route-end radius
+            Vector(edgeR, length, 0),         // edge radius
+            Vector(0, length, 0),             // pole at edge (Y=length)
+        ]
+        let path = Path(pts.map { PathPoint.point($0) })
+        return Mesh.lathe(path, slices: 24)
     }
 
     // MARK: - Transform helpers

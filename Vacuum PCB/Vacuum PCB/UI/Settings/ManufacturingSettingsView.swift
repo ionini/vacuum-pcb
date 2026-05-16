@@ -42,7 +42,10 @@ struct ManufacturingSettingsView: View {
                 row("Channel diameter",          $draftMfg.channelDiameter)
                 row("Resistor bore diameter",    $draftMfg.resistorChannelDiameter)
                 row("Port bore diameter",        $draftMfg.portBoreDiameter)
+                row("Port bore taper (°)",       $draftMfg.portBoreTaperDegrees)
                 row("Min channel spacing (DRC)", $draftMfg.minChannelSpacing)
+                Text("Port bore diameter is the narrow (route-side) end. The bore tapers outward at the given draft angle so it widens toward the board edge — 0° gives a straight cylinder.")
+                    .font(.caption2).foregroundStyle(.secondary)
             }
 
             group("Transistor gate") {
@@ -92,11 +95,84 @@ struct ManufacturingSettingsView: View {
 
     private func apply() {
         // Clamp on commit so a stray 0 in the field can't slip into the CSG.
-        document.circuit.manufacturing = sanitized(draftMfg)
+        let newMfg = sanitized(draftMfg)
+        let oldMfg = document.circuit.manufacturing
+        // Migrate any route endpoint sitting at an old pin position over to
+        // the new one, so changing padsOffset (or anything else that shifts
+        // a footprint pin) doesn't strand routes on stale coordinates.
+        if newMfg != oldMfg {
+            migrateRouteEndpoints(oldMfg: oldMfg, newMfg: newMfg)
+        }
+        document.circuit.manufacturing = newMfg
         document.circuit.physical.boardOutline.size = sanitizedSize(draftBoard)
         // Sync the draft back from the clamped values so the UI mirrors what
         // actually landed.
         syncFromDocument(force: true)
+    }
+
+    /// Walks every transistor placement, compares old vs. new pin world
+    /// positions, and rewrites any route segment's first/last `.point`
+    /// waypoint that's sitting on an old pin position to the new one. Via
+    /// waypoints are left alone — they have twins on the other side of the
+    /// silicone and don't terminate at component pins.
+    private func migrateRouteEndpoints(
+        oldMfg: ManufacturingConstants, newMfg: ManufacturingConstants
+    ) {
+        struct PinShift { let from: Point; let to: Point }
+        var shifts: [PinShift] = []
+        for placement in document.circuit.physical.placements {
+            guard let component = document.circuit.logic.components
+                    .first(where: { $0.id == placement.componentId })
+            else { continue }
+            let oldFp = component.footprint(oldMfg)
+            let newFp = component.footprint(newMfg)
+            for newPin in newFp.pins {
+                guard let oldPin = oldFp.pin(newPin.key) else { continue }
+                let oldWorld = placement.worldPosition(of: oldPin)
+                let newWorld = placement.worldPosition(of: newPin)
+                if hypot(oldWorld.x - newWorld.x, oldWorld.y - newWorld.y) > 0.001 {
+                    shifts.append(PinShift(from: oldWorld, to: newWorld))
+                }
+            }
+        }
+        guard !shifts.isEmpty else { return }
+
+        let snapEps = 0.05
+        func migrated(_ p: Point) -> Point {
+            for s in shifts
+            where abs(p.x - s.from.x) < snapEps && abs(p.y - s.from.y) < snapEps {
+                return s.to
+            }
+            return p
+        }
+
+        for rIdx in document.circuit.physical.routes.indices {
+            for sIdx in document.circuit.physical.routes[rIdx].segments.indices {
+                let count = document.circuit.physical.routes[rIdx]
+                    .segments[sIdx].waypoints.count
+                guard count > 0 else { continue }
+                let firstWP = document.circuit.physical.routes[rIdx]
+                    .segments[sIdx].waypoints[0]
+                if firstWP.kind != .via {
+                    let newPos = migrated(firstWP.position)
+                    if newPos != firstWP.position {
+                        document.circuit.physical.routes[rIdx]
+                            .segments[sIdx].waypoints[0].position = newPos
+                    }
+                }
+                if count > 1 {
+                    let lastWP = document.circuit.physical.routes[rIdx]
+                        .segments[sIdx].waypoints[count - 1]
+                    if lastWP.kind != .via {
+                        let newPos = migrated(lastWP.position)
+                        if newPos != lastWP.position {
+                            document.circuit.physical.routes[rIdx]
+                                .segments[sIdx].waypoints[count - 1].position = newPos
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private func revert() {
@@ -124,6 +200,7 @@ struct ManufacturingSettingsView: View {
             plateThickness: max(0.1, m.plateThickness),
             channelDiameter: max(0.05, m.channelDiameter),
             portBoreDiameter: max(0.05, m.portBoreDiameter),
+            portBoreTaperDegrees: max(0.0, min(45.0, m.portBoreTaperDegrees)),
             siliconeThickness: max(0.05, m.siliconeThickness),
             dimpleDiameter: max(0.1, m.dimpleDiameter),
             dimpleDepth: max(0.05, m.dimpleDepth),

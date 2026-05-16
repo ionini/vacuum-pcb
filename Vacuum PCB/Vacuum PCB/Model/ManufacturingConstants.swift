@@ -11,9 +11,17 @@ struct ManufacturingConstants: Codable, Hashable {
     /// which connect the channel midline to the silicone-facing surface.
     var channelDiameter: Double
 
-    /// Diameter of edge port bores (typically slightly wider than channels so a
-    /// blunt-tip needle press-fits with a small interference).
+    /// Diameter of edge port bores at the route end (the inner / narrowest
+    /// end). The bore tapers outward at `portBoreTaperDegrees` so the wide
+    /// end sits flush with the board edge — slip-fits a tapered needle tip
+    /// and lets the diameter relax over the print's perimeter.
     var portBoreDiameter: Double
+
+    /// Half-angle of the port bore's draft, in degrees, measured from the
+    /// bore axis. At distance `d` from the route end the radius is
+    /// `portBoreDiameter/2 + d * tan(portBoreTaperDegrees)`. Set to 0 for a
+    /// straight (cylindrical) bore.
+    var portBoreTaperDegrees: Double
 
     /// Thickness of the silicone sheet sandwiched between the two plates.
     var siliconeThickness: Double
@@ -83,7 +91,8 @@ struct ManufacturingConstants: Codable, Hashable {
     static let defaults = ManufacturingConstants(
         plateThickness: 5.0,
         channelDiameter: 1.5,
-        portBoreDiameter: 1.6,
+        portBoreDiameter: 1.7,
+        portBoreTaperDegrees: 1.0,
         siliconeThickness: 0.5,
         dimpleDiameter: 5.0,
         dimpleDepth: 1.0,
@@ -102,14 +111,16 @@ struct ManufacturingConstants: Codable, Hashable {
     // resistorChannelDiameter or interLayerWall existed) still decode — they
     // get the default for any field they didn't write.
     private enum CodingKeys: String, CodingKey {
-        case plateThickness, channelDiameter, portBoreDiameter, siliconeThickness
+        case plateThickness, channelDiameter, portBoreDiameter, portBoreTaperDegrees
+        case siliconeThickness
         case dimpleDiameter, dimpleDepth, dimpleSphereOffset
         case padsDiameter, padsSeparation, padsOffset, padsFilletRadius
         case gridPitch, minChannelSpacing
         case resistorChannelDiameter, interLayerWall
     }
 
-    init(plateThickness: Double, channelDiameter: Double, portBoreDiameter: Double,
+    init(plateThickness: Double, channelDiameter: Double,
+         portBoreDiameter: Double, portBoreTaperDegrees: Double,
          siliconeThickness: Double, dimpleDiameter: Double, dimpleDepth: Double,
          dimpleSphereOffset: Double,
          padsDiameter: Double, padsSeparation: Double, padsOffset: Double,
@@ -119,6 +130,7 @@ struct ManufacturingConstants: Codable, Hashable {
         self.plateThickness = plateThickness
         self.channelDiameter = channelDiameter
         self.portBoreDiameter = portBoreDiameter
+        self.portBoreTaperDegrees = portBoreTaperDegrees
         self.siliconeThickness = siliconeThickness
         self.dimpleDiameter = dimpleDiameter
         self.dimpleDepth = dimpleDepth
@@ -145,6 +157,8 @@ struct ManufacturingConstants: Codable, Hashable {
         plateThickness = try c.decode(Double.self, forKey: .plateThickness)
         channelDiameter = try c.decode(Double.self, forKey: .channelDiameter)
         portBoreDiameter = try c.decode(Double.self, forKey: .portBoreDiameter)
+        portBoreTaperDegrees = try c.decodeIfPresent(Double.self,
+                                                     forKey: .portBoreTaperDegrees) ?? 1.0
         siliconeThickness = try c.decode(Double.self, forKey: .siliconeThickness)
         dimpleDiameter = try c.decode(Double.self, forKey: .dimpleDiameter)
         dimpleDepth = try c.decode(Double.self, forKey: .dimpleDepth)

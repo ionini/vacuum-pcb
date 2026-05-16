@@ -128,6 +128,7 @@ enum DRC {
         // (we can't reason about its connectivity yet) and disqualifies the
         // pin from the union-find pass.
         var pinPositions: [PinRef: Point] = [:]
+        var netPinsByLayer: [Layer: [Point]] = [:]
         var issues: [Issue] = []
         for pinRef in net.pins {
             guard let placement = document.physical.placements.first(where: { $0.componentId == pinRef.componentId }),
@@ -137,7 +138,10 @@ enum DRC {
                 issues.append(Issue(netId: net.id, netLabel: net.label, kind: .unplacedPin(pinRef)))
                 continue
             }
-            pinPositions[pinRef] = placement.worldPosition(of: fpPin)
+            let world = placement.worldPosition(of: fpPin)
+            pinPositions[pinRef] = world
+            let layer = placement.resolvedLayer(of: fpPin, on: component)
+            netPinsByLayer[layer, default: []].append(world)
         }
         guard pinPositions.count >= 2 else { return issues }
 
@@ -187,9 +191,18 @@ enum DRC {
         for (pinRef, pos) in pinPositions {
             pinNodes[pinRef] = nodeIndex(for: pos)
         }
+        // Pin-snap tolerance: matches PlateBuilder.extendedWaypointPositions
+        // so a route end that drifts away from its pin (because padsOffset
+        // moved) still counts as connected here.
+        let pinSnapTol = document.manufacturing.dimpleDiameter / 2 + 0.5
         for segment in segments {
-            guard segment.waypoints.count >= 2 else { continue }
-            let indices = segment.waypoints.map { nodeIndex(for: $0.position) }
+            let positions = PlateBuilder.extendedWaypointPositions(
+                for: segment,
+                pinsOnLayer: netPinsByLayer[segment.layer] ?? [],
+                tolerance: pinSnapTol
+            )
+            guard positions.count >= 2 else { continue }
+            let indices = positions.map { nodeIndex(for: $0) }
             for i in 0..<(indices.count - 1) {
                 union(indices[i], indices[i + 1])
             }
