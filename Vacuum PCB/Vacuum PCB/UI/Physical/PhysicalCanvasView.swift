@@ -372,10 +372,23 @@ struct PhysicalCanvasView: View {
                     x: value.translation.width / transform.ptsPerMm,
                     y: value.translation.height / transform.ptsPerMm
                 )
-                let delta = Point(
-                    x: (raw.x / grid).rounded() * grid,
-                    y: (raw.y / grid).rounded() * grid
-                )
+                // Screws are mechanical-only — no pins, no routes snap to
+                // them — so when the drag set is *all* screws and Cmd is
+                // held at release, skip the grid snap. Cmd's usual meaning
+                // (drag with attached routes) is a no-op on screws anyway.
+                let allScrews = drag.originals.keys.allSatisfy { id in
+                    document.circuit.logic.components.first(where: { $0.id == id })?.kind == .screw
+                }
+                let cmdHeld = NSEvent.modifierFlags.contains(.command)
+                let delta: Point
+                if allScrews && cmdHeld {
+                    delta = raw
+                } else {
+                    delta = Point(
+                        x: (raw.x / grid).rounded() * grid,
+                        y: (raw.y / grid).rounded() * grid
+                    )
+                }
                 for (id, original) in drag.originals {
                     movePlacement(id, to: Point(x: original.x + delta.x, y: original.y + delta.y))
                 }
