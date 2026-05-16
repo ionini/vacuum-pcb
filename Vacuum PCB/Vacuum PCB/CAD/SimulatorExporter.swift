@@ -131,6 +131,11 @@ enum SimulatorExporter {
                         topMidZ: topMidZ, bottomMidZ: bottomMidZ
                     )
                 ))
+
+            case .subpart:
+                // Subpart internals aren't yet flattened into the simulator
+                // export — view-only on the physical canvas for v1.
+                break
             }
         }
 

@@ -6,6 +6,10 @@ enum ComponentKind: String, Codable, CaseIterable {
     case vacuumSource
     case atmVent
     case port
+    /// Instance of a reusable circuit defined in another `.vpcb` file in the
+    /// parts library. The instance reads its pin layout and internal geometry
+    /// from `partRef` on each open — by-reference, not embedded.
+    case subpart
 }
 
 enum ResistorSize: String, Codable, CaseIterable {
@@ -25,19 +29,25 @@ struct Component: Codable, Identifiable, Hashable {
     var label: String
     var resistorSize: ResistorSize?
     var portDirection: PortDirection?
+    /// Filename (relative to the user's parts folder) of the library .vpcb this
+    /// instance references. Only meaningful for `.subpart`. Filename-only is
+    /// deliberate: rename = relink.
+    var partRef: String?
 
     init(
         id: UUID = UUID(),
         kind: ComponentKind,
         label: String,
         resistorSize: ResistorSize? = nil,
-        portDirection: PortDirection? = nil
+        portDirection: PortDirection? = nil,
+        partRef: String? = nil
     ) {
         self.id = id
         self.kind = kind
         self.label = label
         self.resistorSize = resistorSize
         self.portDirection = portDirection
+        self.partRef = partRef
     }
 }
 
@@ -85,6 +95,8 @@ extension LogicGraph {
             case .output: prefix = "OUT"; allowUnnumbered = false
             case nil:     prefix = "P";   allowUnnumbered = false
             }
+        case .subpart:
+            prefix = "U"; allowUnnumbered = false
         }
         if allowUnnumbered, !used.contains(prefix) {
             return prefix

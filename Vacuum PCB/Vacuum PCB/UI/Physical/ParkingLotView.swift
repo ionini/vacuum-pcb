@@ -106,6 +106,9 @@ struct ParkingLotView: View {
         case .port:
             RoundedRectangle(cornerRadius: 3).fill(Color.purple.opacity(0.35))
                 .overlay(RoundedRectangle(cornerRadius: 3).stroke(.purple, lineWidth: 1))
+        case .subpart:
+            RoundedRectangle(cornerRadius: 3).fill(Color.teal.opacity(0.35))
+                .overlay(RoundedRectangle(cornerRadius: 3).stroke(.teal, lineWidth: 1))
         }
     }
 }

@@ -140,6 +140,7 @@ extension ComponentKind {
         case .vacuumSource:  return "Vacuum Source"
         case .atmVent:       return "Atm Vent"
         case .port:          return "Port"
+        case .subpart:       return "Subpart"
         }
     }
 }

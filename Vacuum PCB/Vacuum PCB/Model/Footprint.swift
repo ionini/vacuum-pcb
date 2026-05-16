@@ -118,15 +118,38 @@ extension ComponentKind {
                     size: Size(width: 2 * half, height: 2 * half)
                 )
             )
+
+        case .subpart:
+            // Subpart footprint is library-dependent; callers should go
+            // through `Component.footprint(_:)` so the part filename is in
+            // scope. This branch returns a minimal empty footprint for the
+            // few utility paths (e.g. cycling kinds) that don't have a
+            // component handy.
+            return Footprint(
+                kind: .subpart, pins: [],
+                exclusionRect: Rect(origin: .zero, size: Size(width: 0, height: 0)),
+                boundingRect: Rect(origin: .zero, size: Size(width: 0, height: 0))
+            )
         }
     }
 
-    /// Convenience: list of legal pin keys for this component kind.
+    /// Same signature as the original `footprint`, plus a named parameter so
+    /// call sites that have a `ManufacturingConstants` value can still resolve
+    /// the gate-dome / pad geometry. Subpart resolution still requires a
+    /// `Component` (filename lives there), so it goes through the
+    /// component-level overload below.
+    func footprint(manufacturing m: ManufacturingConstants) -> Footprint {
+        footprint(resistorSize: nil, manufacturing: m)
+    }
+
+    /// Convenience: list of legal pin keys for this component kind. Subparts
+    /// have library-derived pins — go through `Component.pinKeys` instead.
     var pinKeys: [String] {
         switch self {
         case .transistor:   return ["gate", "a", "b"]
         case .resistor:     return ["1", "2"]
         case .vacuumSource, .atmVent, .port: return ["p"]
+        case .subpart:      return []
         }
     }
 }
@@ -135,16 +158,62 @@ extension Component {
     /// Resolves the footprint for this component using the document's
     /// manufacturing constants. Transistor pin offsets and the gate dome's
     /// bounding box track the manufacturing config; resistor and port
-    /// footprints don't depend on it.
+    /// footprints don't depend on it. Subparts resolve their library file via
+    /// `PartsLibrary.shared` and synthesize a footprint from the library's
+    /// boundary pins.
     func footprint(_ m: ManufacturingConstants) -> Footprint {
-        kind.footprint(resistorSize: resistorSize, manufacturing: m)
+        if kind == .subpart {
+            return subpartFootprint() ?? kind.footprint(resistorSize: resistorSize, manufacturing: m)
+        }
+        return kind.footprint(resistorSize: resistorSize, manufacturing: m)
     }
 
     /// Default-constants fallback for call sites that don't have a circuit
     /// document handy. Don't use in code that has to match the actual CAD
     /// geometry — it'll be wrong as soon as the user changes the manufacturing.
     var footprint: Footprint {
-        kind.footprint(resistorSize: resistorSize)
+        if kind == .subpart {
+            return subpartFootprint() ?? kind.footprint(resistorSize: resistorSize)
+        }
+        return kind.footprint(resistorSize: resistorSize)
+    }
+
+    /// Subpart pin keys = the library file's boundary pin UUID strings, in
+    /// the order PartsLibrary returns them. Primitive kinds fall back to
+    /// `ComponentKind.pinKeys`.
+    var pinKeys: [String] {
+        if kind == .subpart, let part = partRef.flatMap({ PartsLibrary.shared.part(named: $0) }) {
+            return part.pins.map { $0.portId.uuidString }
+        }
+        return kind.pinKeys
+    }
+
+    /// Builds a Footprint for a `.subpart` instance from its library file.
+    /// Anchor sits at the centre of the library's `boardOutline` — meaning
+    /// the parent-side `Placement.position` represents where the centre of
+    /// the sub-part lands on the parent board.
+    ///
+    /// Returns nil when the library file isn't loaded (missing-part case).
+    /// Callers should treat that as "render placeholder".
+    func subpartFootprint() -> Footprint? {
+        guard let filename = partRef,
+              let part = PartsLibrary.shared.part(named: filename)
+        else { return nil }
+        let outline = part.document.physical.boardOutline
+        let cx = outline.minX + outline.size.width / 2
+        let cy = outline.minY + outline.size.height / 2
+        let pins = part.pins.map { p in
+            FootprintPin(
+                key: p.portId.uuidString,
+                offset: Point(x: p.physicalAnchor.x - cx, y: p.physicalAnchor.y - cy),
+                relativeLayer: .same
+            )
+        }
+        let rect = Rect(
+            origin: Point(x: -outline.size.width / 2, y: -outline.size.height / 2),
+            size: outline.size
+        )
+        return Footprint(kind: .subpart, pins: pins, exclusionRect: rect, boundingRect: rect)
     }
 }
 

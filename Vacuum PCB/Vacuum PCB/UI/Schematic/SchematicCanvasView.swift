@@ -129,7 +129,7 @@ struct SchematicCanvasView: View {
         var hits: Set<UUID> = []
         for component in document.circuit.logic.components {
             guard let center = document.circuit.schematic.position(for: component.id) else { continue }
-            let metrics = ComponentSymbolMetrics.metrics(for: component.kind)
+            let metrics = ComponentSymbolMetrics.metrics(for: component)
             // Use the component's bounding rect (centered on its schematic
             // position) as the hit area. Marquee that touches any pixel of
             // the symbol counts as hit.
@@ -164,7 +164,7 @@ struct SchematicCanvasView: View {
         guard let comp = document.circuit.logic.components.first(where: { $0.id == ref.componentId }),
               let center = document.circuit.schematic.position(for: ref.componentId)
         else { return nil }
-        let metrics = ComponentSymbolMetrics.metrics(for: comp.kind)
+        let metrics = ComponentSymbolMetrics.metrics(for: comp)
         let off = metrics.pinOffset(ref.pinKey)
         return CGPoint(x: center.x + off.x, y: center.y + off.y)
     }

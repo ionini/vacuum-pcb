@@ -19,7 +19,7 @@ struct ComponentNodeView: View {
     @State private var renameDraft: String = ""
 
     private var metrics: ComponentSymbolMetrics {
-        ComponentSymbolMetrics.metrics(for: component.kind)
+        ComponentSymbolMetrics.metrics(for: component)
     }
 
     private var isSelected: Bool {
@@ -51,10 +51,10 @@ struct ComponentNodeView: View {
                 .gesture(dragGesture)
 
             // Pin handles
-            ForEach(component.kind.pinKeys, id: \.self) { key in
+            ForEach(component.pinKeys, id: \.self) { key in
                 let offset = metrics.pinOffset(key)
                 PinHandleView(
-                    pinKey: key,
+                    pinKey: pinDisplayLabel(key),
                     isFirstOfDrawingNet: isFirstPin(key),
                     onTap: { handlePinTap(key) }
                 )
@@ -152,6 +152,20 @@ struct ComponentNodeView: View {
     }
 
     // MARK: - Pin tap
+
+    /// User-facing pin label. Primitive pin keys are already friendly
+    /// ("gate", "a", "1", "p"); subpart instance pin keys are port UUIDs, so
+    /// we resolve them back to the boundary component's label via the
+    /// library lookup.
+    private func pinDisplayLabel(_ key: String) -> String {
+        if component.kind == .subpart,
+           let filename = component.partRef,
+           let part = PartsLibrary.shared.part(named: filename),
+           let pin = part.pins.first(where: { $0.portId.uuidString == key }) {
+            return pin.label
+        }
+        return key
+    }
 
     private func isFirstPin(_ key: String) -> Bool {
         if case let .awaitingSecondPin(firstPin) = netDrawState {

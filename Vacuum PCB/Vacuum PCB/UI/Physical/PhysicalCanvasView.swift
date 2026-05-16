@@ -110,6 +110,7 @@ struct PhysicalCanvasView: View {
 
                 gridLines(in: geo.size)
                 boardOutline
+                subpartExpansions
 
                 RoutesOverlay(
                     document: document.circuit,
@@ -197,6 +198,30 @@ struct PhysicalCanvasView: View {
                 y += step
             }
             ctx.stroke(path, with: .color(gridColor), lineWidth: 0.5)
+        }
+        .allowsHitTesting(false)
+    }
+
+    /// Sub-part instances render below the routes/placement layers so the
+    /// dotted outline reads as a backdrop to the parent's own glyphs that
+    /// overlap it. Each instance manages its own visibility filtering of
+    /// internals by layer.
+    private var subpartExpansions: some View {
+        ZStack {
+            ForEach(document.circuit.physical.placements, id: \.componentId) { placement in
+                if let component = component(for: placement.componentId),
+                   component.kind == .subpart {
+                    SubpartExpandedView(
+                        component: component,
+                        placement: placement,
+                        parentManufacturing: manufacturing,
+                        transform: transform,
+                        visible: visible,
+                        isSelected: selection.contains(placement: placement.componentId)
+                    )
+                    .offset(dragOffset(for: placement.componentId))
+                }
+            }
         }
         .allowsHitTesting(false)
     }
@@ -481,11 +506,15 @@ struct PhysicalCanvasView: View {
                 if let component = component(for: placement.componentId) {
                     ForEach(component.footprint(manufacturing).pins, id: \.key) { pin in
                         let pinLayer = placement.resolvedLayer(of: pin, on: component)
-                        if visible.contains(pinLayer) {
+                        // Sub-part boundary pins are layer-agnostic markers
+                        // (per v1 spec) — always show them. Primitive pins
+                        // still respect layer visibility.
+                        let showRegardlessOfLayer = component.kind == .subpart
+                        if showRegardlessOfLayer || visible.contains(pinLayer) {
                             let world = placement.worldPosition(of: pin)
                             let screen = transform.toScreen(world)
                             PhysicalPinHandle(
-                                pinKey: pin.key,
+                                pinKey: pinDisplayLabel(component: component, key: pin.key),
                                 layer: pinLayer,
                                 isFirstOfRouting: isFirstRoutingPin(componentId: placement.componentId, key: pin.key)
                             ) {
@@ -498,6 +527,18 @@ struct PhysicalCanvasView: View {
                 }
             }
         }
+    }
+
+    /// Sub-part pin keys are port UUID strings; map them back to the
+    /// boundary component's friendly label for tooltip display. Primitive
+    /// pin keys ("gate", "a", "1", "p") pass through unchanged.
+    private func pinDisplayLabel(component: Component, key: String) -> String {
+        guard component.kind == .subpart,
+              let filename = component.partRef,
+              let part = PartsLibrary.shared.part(named: filename),
+              let pin = part.pins.first(where: { $0.portId.uuidString == key })
+        else { return key }
+        return pin.label
     }
 
     private func isFirstRoutingPin(componentId: UUID, key: String) -> Bool {

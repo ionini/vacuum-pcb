@@ -7,10 +7,15 @@ struct SchematicView: View {
     @Binding var selection: SchematicSelection
     @Binding var netDrawState: NetDrawState
 
+    @State private var alertMessage: String?
+
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
-                ComponentPaletteView(onAdd: addComponent)
+                ComponentPaletteView(
+                    onAdd: addComponent,
+                    onAddLibraryPart: addLibraryPart
+                )
                 Divider()
                 SchematicCanvasView(
                     document: $document,
@@ -20,6 +25,14 @@ struct SchematicView: View {
             }
             Divider()
             InspectorStrip(document: $document, selection: $selection)
+        }
+        .alert("Can't add part", isPresented: Binding(
+            get: { alertMessage != nil },
+            set: { if !$0 { alertMessage = nil } }
+        )) {
+            Button("OK") { alertMessage = nil }
+        } message: {
+            Text(alertMessage ?? "")
         }
     }
 
@@ -35,6 +48,45 @@ struct SchematicView: View {
         )
         document.circuit.logic.components.append(component)
         document.circuit.schematic.setPosition(spawnPosition(), for: id)
+        selection = .component(id)
+    }
+
+    /// Instantiates a library part. Enforces the layer-count check up front:
+    /// a part designed against more channel layers than the parent has would
+    /// land internal routes at invalid depths in the parent's stack, so we
+    /// refuse instead of silently bumping (per the v1 design decision).
+    private func addLibraryPart(_ part: PartsLibrary.Part) {
+        let parentTop    = document.circuit.physical.topLayers
+        let parentBottom = document.circuit.physical.bottomLayers
+        let partTop      = part.document.physical.topLayers
+        let partBottom   = part.document.physical.bottomLayers
+        if partTop > parentTop || partBottom > parentBottom {
+            alertMessage = "\"\(part.displayName)\" needs " +
+                "topLayers ≥ \(partTop) and bottomLayers ≥ \(partBottom). " +
+                "Current document has \(parentTop)/\(parentBottom). " +
+                "Bump the channel-layer counts in settings before adding this part."
+            return
+        }
+        let label = document.circuit.logic.nextLabel(for: .subpart)
+        let id = UUID()
+        let component = Component(
+            id: id,
+            kind: .subpart,
+            label: label,
+            partRef: part.filename
+        )
+        document.circuit.logic.components.append(component)
+        document.circuit.schematic.setPosition(spawnPosition(), for: id)
+        // Default placement near the centre of the parent board so the
+        // expanded internals are visible without scrolling.
+        let outline = document.circuit.physical.boardOutline
+        let centre = Point(
+            x: outline.origin.x + outline.size.width / 2,
+            y: outline.origin.y + outline.size.height / 2
+        )
+        document.circuit.physical.placements.append(
+            Placement(componentId: id, position: centre, rotation: .r0, layer: .top, depth: 0)
+        )
         selection = .component(id)
     }
 

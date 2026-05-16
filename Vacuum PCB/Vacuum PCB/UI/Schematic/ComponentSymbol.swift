@@ -36,7 +36,68 @@ struct ComponentSymbolMetrics {
                 size: CGSize(width: 60, height: 30),
                 pinOffsets: ["p": CGPoint(x: 30, y: 0)]
             )
+        case .subpart:
+            // Subpart metrics are library-driven — go through
+            // `metrics(for: Component)` to get a real layout.
+            return ComponentSymbolMetrics(size: CGSize(width: 100, height: 80), pinOffsets: [:])
         }
+    }
+
+    /// Library-aware metrics. For primitives this delegates to the kind-only
+    /// version; for subparts it lays out one pin per `BoundaryPin`, grouping
+    /// by side and spacing along that side.
+    static func metrics(for component: Component) -> ComponentSymbolMetrics {
+        guard component.kind == .subpart,
+              let filename = component.partRef,
+              let part = PartsLibrary.shared.part(named: filename)
+        else { return metrics(for: component.kind) }
+        return subpartMetrics(pins: part.pins)
+    }
+
+    private static func subpartMetrics(pins: [BoundaryPin]) -> ComponentSymbolMetrics {
+        let spacing: CGFloat = 28
+        let margin: CGFloat = 20
+        let minSide: CGFloat = 70
+
+        let left   = pins.filter { $0.side == .left   }
+        let right  = pins.filter { $0.side == .right  }
+        let top    = pins.filter { $0.side == .top    }
+        let bottom = pins.filter { $0.side == .bottom }
+
+        // Height must accommodate the tallest vertical side; width similarly
+        // for top/bottom. Add slack for label centerline.
+        let vertCount = CGFloat(max(left.count, right.count))
+        let horzCount = CGFloat(max(top.count, bottom.count))
+        let height = max(minSide, vertCount * spacing + margin)
+        let width  = max(minSide, horzCount * spacing + margin)
+
+        let halfW = width / 2
+        let halfH = height / 2
+
+        var offsets: [String: CGPoint] = [:]
+        // Helper: position the i-th pin out of n along a side. We centre the
+        // pin band on the side and step `spacing` apart.
+        func place(side group: [BoundaryPin], onSide side: SymbolSide) {
+            let n = group.count
+            guard n > 0 else { return }
+            let band = CGFloat(n - 1) * spacing
+            for (i, pin) in group.enumerated() {
+                let along = -band / 2 + CGFloat(i) * spacing
+                let key = pin.portId.uuidString
+                switch side {
+                case .left:   offsets[key] = CGPoint(x: -halfW, y: along)
+                case .right:  offsets[key] = CGPoint(x:  halfW, y: along)
+                case .top:    offsets[key] = CGPoint(x: along,  y: -halfH)
+                case .bottom: offsets[key] = CGPoint(x: along,  y:  halfH)
+                }
+            }
+        }
+        place(side: left,   onSide: .left)
+        place(side: right,  onSide: .right)
+        place(side: top,    onSide: .top)
+        place(side: bottom, onSide: .bottom)
+
+        return ComponentSymbolMetrics(size: CGSize(width: width, height: height), pinOffsets: offsets)
     }
 
     func pinOffset(_ key: String) -> CGPoint {
@@ -51,7 +112,19 @@ struct ComponentSymbolView: View {
     let isSelected: Bool
 
     private var metrics: ComponentSymbolMetrics {
-        ComponentSymbolMetrics.metrics(for: component.kind)
+        ComponentSymbolMetrics.metrics(for: component)
+    }
+
+    /// Boundary-pin label lookup for subparts — keyed by the pin's UUID
+    /// string. Returns nil for primitive pins, which carry their own glyphs
+    /// (no boundary-pin label needed).
+    private var boundaryPinLabel: (String) -> String? {
+        guard component.kind == .subpart,
+              let filename = component.partRef,
+              let part = PartsLibrary.shared.part(named: filename)
+        else { return { _ in nil } }
+        let map = Dictionary(uniqueKeysWithValues: part.pins.map { ($0.portId.uuidString, $0.label) })
+        return { map[$0] }
     }
 
     var body: some View {
@@ -71,6 +144,7 @@ struct ComponentSymbolView: View {
         case .resistor:   AnyShape(RoundedRectangle(cornerRadius: 6))
         case .vacuumSource, .atmVent, .port:
                           AnyShape(RoundedRectangle(cornerRadius: 4))
+        case .subpart:    AnyShape(RoundedRectangle(cornerRadius: 6))
         }
     }
 
@@ -94,7 +168,15 @@ struct ComponentSymbolView: View {
                 Text(dir == .input ? "IN" : "OUT")
                     .font(.system(size: 9)).foregroundStyle(.secondary)
             }
+            if component.kind == .subpart {
+                Text(component.partRef.map(displayName(forFilename:)) ?? "missing part")
+                    .font(.system(size: 9)).foregroundStyle(.secondary)
+            }
         }
+    }
+
+    private func displayName(forFilename name: String) -> String {
+        name.lowercased().hasSuffix(".vpcb") ? String(name.dropLast(5)) : name
     }
 
     private var fillColor: Color {
@@ -104,6 +186,7 @@ struct ComponentSymbolView: View {
         case .vacuumSource:  return Color.red.opacity(0.18)
         case .atmVent:       return Color.green.opacity(0.18)
         case .port:          return Color.purple.opacity(0.18)
+        case .subpart:       return Color.teal.opacity(0.18)
         }
     }
 

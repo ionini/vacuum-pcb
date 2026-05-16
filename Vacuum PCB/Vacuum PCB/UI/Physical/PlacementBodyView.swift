@@ -26,6 +26,11 @@ struct PlacementBodyView: View {
                     drawResistor(in: &ctx)
                 case .vacuumSource, .atmVent, .port:
                     drawPort(in: &ctx)
+                case .subpart:
+                    // Subparts are rendered separately by SubpartExpandedView
+                    // (dotted outline + transformed internals); the per-
+                    // placement body view doesn't draw anything here.
+                    break
                 }
 
                 if isSelected {

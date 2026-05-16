@@ -132,6 +132,12 @@ enum PlateBuilder {
                 )
                 appendCutter(bore, plate: placement.layer,
                              top: &topCutters, bottom: &bottomCutters)
+
+            case .subpart:
+                // Subpart internals aren't flattened into the printed STL
+                // in v1 — the user sees them in the physical canvas only.
+                // 3D preview and export ignore subpart placements.
+                break
             }
         }
 
