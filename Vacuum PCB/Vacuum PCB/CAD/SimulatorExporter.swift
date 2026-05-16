@@ -106,7 +106,7 @@ enum SimulatorExporter {
                 let transitions = ResistorGeometry.transitions(for: component.resistorSize ?? .medium)
                 let local = ResistorGeometry.path(transitions: transitions, halfLen: halfLen, halfWid: halfWid)
                 let world = local.map { localToWorld($0, placement: placement) }
-                let midZ = m.midZ(for: Layer(plate: placement.layer, depth: 0))
+                let midZ = m.midZ(for: Layer(plate: placement.layer, depth: placement.depth))
                 fluidParts.append(channelMesh(
                     waypoints: world,
                     radius: m.resistorChannelDiameter / 2,

@@ -91,7 +91,11 @@ struct PlacementBodyView: View {
         // makes wiring around it feel cramped.
         let halfLen = ManufacturingConstants.resistorFootprintLength / 2
         let halfWid = ManufacturingConstants.resistorFootprintWidth / 2
-        let color = plateColor(placement.layer)
+        // Resistors are pure tubes, so their drawn colour reflects the full
+        // layer (plate + depth) the user has flipped them to — not just the
+        // plate. That way a resistor flipped to T1 visually matches the T1
+        // routes that will land on it.
+        let color = LayerPalette.color(for: Layer(plate: placement.layer, depth: placement.depth))
         let transitions = ResistorGeometry.transitions(for: component.resistorSize ?? .medium)
         let waypoints = ResistorGeometry.path(
             transitions: transitions, halfLen: halfLen, halfWid: halfWid

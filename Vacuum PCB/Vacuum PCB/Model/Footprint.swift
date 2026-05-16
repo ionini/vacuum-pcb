@@ -156,4 +156,14 @@ extension Placement {
     func resolvedPlate(of pin: FootprintPin) -> Plate {
         pin.relativeLayer.resolved(against: layer)
     }
+
+    /// Resolved full `Layer` for a pin. Transistors and ports anchor at
+    /// depth 0 (their geometry — dimple, drop bores, edge bore — only makes
+    /// sense at the silicone-facing channel layer). Resistors are tubes and
+    /// can sit on any depth, so their pins inherit `placement.depth`.
+    func resolvedLayer(of pin: FootprintPin, on component: Component) -> Layer {
+        let plate = resolvedPlate(of: pin)
+        let useDepth = component.kind == .resistor ? depth : 0
+        return Layer(plate: plate, depth: useDepth)
+    }
 }

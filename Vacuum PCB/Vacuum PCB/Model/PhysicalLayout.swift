@@ -7,20 +7,25 @@ struct Placement: Codable, Hashable {
     /// Which plate the component's primary features live on. For ports/vacuumSource/atmVent,
     /// this is the plate the edge bore is drilled into. For a transistor it is the plate
     /// holding the dimple (gate). For a resistor it is the plate the serpentine sits in.
-    ///
-    /// Components are always anchored to the silicone-facing surface (depth 0)
-    /// of their plate; only routes get a depth.
     var layer: Plate
+    /// Channel-layer depth inside `layer`. Only resistors actually use this —
+    /// they're pure tubes and can sit on any internal channel layer, so the
+    /// physical-canvas F shortcut cycles them through every configured layer.
+    /// For transistors and ports the depth is always 0 (their geometry — the
+    /// dimple, drop bores, and edge bore — anchors at the silicone-facing
+    /// surface), and writers can safely leave this at 0.
+    var depth: Int
 
     private enum CodingKeys: String, CodingKey {
-        case componentId, position, rotation, layer
+        case componentId, position, rotation, layer, depth
     }
 
-    init(componentId: UUID, position: Point, rotation: Rotation, layer: Plate) {
+    init(componentId: UUID, position: Point, rotation: Rotation, layer: Plate, depth: Int = 0) {
         self.componentId = componentId
         self.position = position
         self.rotation = rotation
         self.layer = layer
+        self.depth = max(0, depth)
     }
 
     init(from decoder: Decoder) throws {
@@ -28,10 +33,10 @@ struct Placement: Codable, Hashable {
         componentId = try c.decode(UUID.self, forKey: .componentId)
         position = try c.decode(Point.self, forKey: .position)
         rotation = try c.decode(Rotation.self, forKey: .rotation)
-        // Older files encoded `layer` as a single string ("top" / "bottom").
-        // New files use the same Plate enum (still a single string), so the
-        // standard decode works for both.
+        // Older files encoded `layer` as a single string ("top" / "bottom")
+        // and predate per-placement depth — default depth to 0 there.
         layer = try c.decode(Plate.self, forKey: .layer)
+        depth = max(0, try c.decodeIfPresent(Int.self, forKey: .depth) ?? 0)
     }
 }
 

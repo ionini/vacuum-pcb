@@ -45,9 +45,17 @@ struct PhysicalView: View {
             let layerList = removal.removedLayers.map(\.uiLabel).joined(separator: ", ")
             let routeCount = removal.segmentsToRemove.count
             let viaCount = removal.viasToRemove
+            let resistorCount = removal.resistorsToMigrate.count
+            var lines: [String] = []
+            if routeCount > 0 {
+                lines.append("\(routeCount) route segment\(routeCount == 1 ? "" : "s") and \(viaCount) via waypoint\(viaCount == 1 ? "" : "s") will be deleted.")
+            }
+            if resistorCount > 0 {
+                lines.append("\(resistorCount) resistor\(resistorCount == 1 ? "" : "s") will be migrated back to depth 0.")
+            }
             return Alert(
                 title: Text("Remove layer\(removal.removedLayers.count == 1 ? "" : "s") \(layerList)?"),
-                message: Text("\(routeCount) route segment\(routeCount == 1 ? "" : "s") and \(viaCount) via waypoint\(viaCount == 1 ? "" : "s") will be deleted."),
+                message: Text(lines.joined(separator: " ")),
                 primaryButton: .destructive(Text("Remove")) {
                     performPendingLayerRemoval(removal)
                 },
@@ -229,6 +237,10 @@ struct PhysicalView: View {
         let removedLayers: [Layer]
         let segmentsToRemove: [(routeIdx: Int, segmentIdx: Int)]
         let viasToRemove: Int
+        /// Resistor placements stranded on a removed depth — they get
+        /// migrated back to depth 0 (same plate) on confirm, since pure-tube
+        /// components can sit anywhere but a non-existent layer is invalid.
+        let resistorsToMigrate: [UUID]
     }
 
     private func applyLayerCount(_ newCount: Int, on plate: Plate) {
@@ -252,13 +264,24 @@ struct PhysicalView: View {
                 viaCount += seg.waypoints.filter { $0.kind == .via }.count
             }
         }
-        if segsToRemove.isEmpty {
+        // Resistor placements pinned to a removed depth.
+        var resistorMigrations: [UUID] = []
+        for placement in document.circuit.physical.placements
+        where placement.layer == plate && removedSet.contains(Layer(plate: plate, depth: placement.depth))
+        {
+            if let component = document.circuit.logic.components.first(where: { $0.id == placement.componentId }),
+               component.kind == .resistor {
+                resistorMigrations.append(placement.componentId)
+            }
+        }
+        if segsToRemove.isEmpty && resistorMigrations.isEmpty {
             setLayerCount(clamped, on: plate)
             return
         }
         pendingLayerRemoval = PendingLayerRemoval(
             plate: plate, newCount: clamped, removedLayers: removedLayers,
-            segmentsToRemove: segsToRemove, viasToRemove: viaCount
+            segmentsToRemove: segsToRemove, viasToRemove: viaCount,
+            resistorsToMigrate: resistorMigrations
         )
     }
 
@@ -271,7 +294,6 @@ struct PhysicalView: View {
     }
 
     private func performPendingLayerRemoval(_ removal: PendingLayerRemoval) {
-        // Walk segments back-to-front so indices stay valid.
         let removedSet = Set(removal.removedLayers)
         for routeIdx in document.circuit.physical.routes.indices {
             document.circuit.physical.routes[routeIdx].segments
@@ -279,6 +301,12 @@ struct PhysicalView: View {
         }
         // Drop now-empty routes so they don't linger.
         document.circuit.physical.routes.removeAll { $0.segments.isEmpty }
+        // Migrate stranded resistors back to depth 0 on the same plate.
+        for componentId in removal.resistorsToMigrate {
+            if let i = document.circuit.physical.placements.firstIndex(where: { $0.componentId == componentId }) {
+                document.circuit.physical.placements[i].depth = 0
+            }
+        }
         setLayerCount(removal.newCount, on: removal.plate)
     }
 

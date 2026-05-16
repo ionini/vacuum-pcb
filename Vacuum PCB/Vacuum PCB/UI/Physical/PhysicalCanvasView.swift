@@ -218,7 +218,7 @@ struct PhysicalCanvasView: View {
     private var placementBodies: some View {
         ZStack {
             ForEach(document.circuit.physical.placements, id: \.componentId) { placement in
-                if visible.contains(placement.layer),
+                if visible.contains(Layer(plate: placement.layer, depth: placement.depth)),
                    let component = component(for: placement.componentId) {
                     PlacementBodyView(
                         component: component,
@@ -240,7 +240,7 @@ struct PhysicalCanvasView: View {
     private var placementHitTargets: some View {
         ZStack {
             ForEach(document.circuit.physical.placements, id: \.componentId) { placement in
-                if visible.contains(placement.layer),
+                if visible.contains(Layer(plate: placement.layer, depth: placement.depth)),
                    let component = component(for: placement.componentId) {
                     let pos = transform.toScreen(placement.position)
                     let size = hitSize(for: component)
@@ -480,13 +480,13 @@ struct PhysicalCanvasView: View {
             ForEach(document.circuit.physical.placements, id: \.componentId) { placement in
                 if let component = component(for: placement.componentId) {
                     ForEach(component.footprint.pins, id: \.key) { pin in
-                        let pinPlate = placement.resolvedPlate(of: pin)
-                        if visible.contains(pinPlate) {
+                        let pinLayer = placement.resolvedLayer(of: pin, on: component)
+                        if visible.contains(pinLayer) {
                             let world = placement.worldPosition(of: pin)
                             let screen = transform.toScreen(world)
                             PhysicalPinHandle(
                                 pinKey: pin.key,
-                                plate: pinPlate,
+                                layer: pinLayer,
                                 isFirstOfRouting: isFirstRoutingPin(componentId: placement.componentId, key: pin.key)
                             ) {
                                 handlePinTap(componentId: placement.componentId, pinKey: pin.key)
@@ -870,7 +870,7 @@ struct PhysicalCanvasView: View {
 
         var placementHits: Set<UUID> = []
         for placement in document.circuit.physical.placements {
-            guard visible.contains(placement.layer) else { continue }
+            guard visible.contains(Layer(plate: placement.layer, depth: placement.depth)) else { continue }
             let p = placement.position
             if p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y {
                 placementHits.insert(placement.componentId)
@@ -967,10 +967,10 @@ struct PhysicalCanvasView: View {
               let pin = component.footprint.pin(pinKey)
         else { return }
         let world = placement.worldPosition(of: pin)
-        let pinPlate = placement.resolvedPlate(of: pin)
-        // Component pins always anchor at depth 0; routes can step away
-        // from this layer via vias if the user wants to use a deeper layer.
-        let pinLayer = Layer(plate: pinPlate, depth: 0)
+        // Resistor pins inherit the resistor's depth (resistors are pure
+        // tubes — they live on whichever layer the user flipped them to).
+        // Transistor and port pins always anchor at depth 0.
+        let pinLayer = placement.resolvedLayer(of: pin, on: component)
 
         switch routingState {
         case .idle:
@@ -1118,11 +1118,28 @@ struct PhysicalCanvasView: View {
 
     private func flipLayerSelection() {
         guard !selection.placements.isEmpty else { return }
+        // Build the cycle order once — T0, T1, …, Tn-1, B0, B1, …, Bm-1.
+        // Resistors step one position along this cycle on each F press, so
+        // F walks them through every channel layer the board has. Non-tube
+        // components (transistors, ports) keep the legacy "flip plate"
+        // behaviour since their geometry is pinned to depth 0.
+        let cycle = document.circuit.physical.layers(in: .top)
+            + document.circuit.physical.layers(in: .bottom)
         for id in selection.placements {
             guard let i = document.circuit.physical.placements.firstIndex(where: { $0.componentId == id })
             else { continue }
-            document.circuit.physical.placements[i].layer =
-                document.circuit.physical.placements[i].layer.opposite
+            let placement = document.circuit.physical.placements[i]
+            let component = document.circuit.logic.components.first(where: { $0.id == id })
+            if component?.kind == .resistor, !cycle.isEmpty {
+                let current = Layer(plate: placement.layer, depth: placement.depth)
+                let idx = cycle.firstIndex(of: current) ?? 0
+                let next = cycle[(idx + 1) % cycle.count]
+                document.circuit.physical.placements[i].layer = next.plate
+                document.circuit.physical.placements[i].depth = next.depth
+            } else {
+                document.circuit.physical.placements[i].layer = placement.layer.opposite
+                document.circuit.physical.placements[i].depth = 0
+            }
         }
     }
 
@@ -1156,7 +1173,7 @@ struct PhysicalCanvasView: View {
 
 struct PhysicalPinHandle: View {
     let pinKey: String
-    let plate: Plate
+    let layer: Layer
     let isFirstOfRouting: Bool
     let onTap: () -> Void
 
@@ -1176,9 +1193,11 @@ struct PhysicalPinHandle: View {
     private var fillColor: Color {
         if isFirstOfRouting { return .accentColor }
         if hovered { return .accentColor.opacity(0.5) }
-        // Component pins live at depth 0 on their plate — use the canonical
-        // plate hue so the pin reads the same as a depth-0 route landing on it.
-        return LayerPalette.color(for: Layer(plate: plate, depth: 0)).opacity(0.7)
+        // Resistor pins inherit the resistor's full Layer (plate + depth);
+        // transistor / port pins always come in at depth 0. Either way the
+        // pin handle uses its layer's palette colour so it reads the same
+        // as a route landing on it.
+        return LayerPalette.color(for: layer).opacity(0.7)
     }
 
     private var strokeColor: Color {

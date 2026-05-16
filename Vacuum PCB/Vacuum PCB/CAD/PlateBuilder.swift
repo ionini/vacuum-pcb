@@ -306,16 +306,19 @@ enum PlateBuilder {
         placement: Placement, component: Component, m: ManufacturingConstants,
         topMidZ: Double, bottomMidZ: Double
     ) -> Mesh {
+        _ = topMidZ; _ = bottomMidZ
         // Footprint is the same physical size for S/M/L; the resistor size
         // picks how many times the channel zigzags inside it. Path generator
         // is shared with the physical-canvas glyph so the preview and the
-        // printed channel match.
+        // printed channel match. Resistors are pure tubes — they can live on
+        // any channel-layer depth, so the serpentine's midZ comes from the
+        // placement's depth (defaults to 0 for legacy files).
         let halfLen = ManufacturingConstants.resistorFootprintLength / 2
         let halfWid = ManufacturingConstants.resistorFootprintWidth / 2
         let transitions = ResistorGeometry.transitions(for: component.resistorSize ?? .medium)
         let local = ResistorGeometry.path(transitions: transitions, halfLen: halfLen, halfWid: halfWid)
         let world = local.map { transformLocalToWorld($0, placement: placement) }
-        let midZ = placement.layer == .top ? topMidZ : bottomMidZ
+        let midZ = m.midZ(for: Layer(plate: placement.layer, depth: placement.depth))
         return channelMesh(waypoints: world, radius: m.resistorChannelDiameter / 2, midZ: midZ)
     }
 

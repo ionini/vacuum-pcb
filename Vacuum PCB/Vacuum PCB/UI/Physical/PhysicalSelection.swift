@@ -89,18 +89,4 @@ enum LayerVisibility: Hashable {
         case .explicit(let set): return set.contains(layer)
         }
     }
-
-    /// Overload for plate-only queries (component bodies, dimples, etc.):
-    /// returns true if *any* layer on this plate is currently visible.
-    func contains(_ plate: Plate) -> Bool { showsAnyLayer(on: plate) }
-
-    /// True when every layer on the given plate is currently visible —
-    /// useful for component-body rendering, which is plate-level.
-    func showsAnyLayer(on plate: Plate) -> Bool {
-        switch self {
-        case .all: return true
-        case .plateOnly(let p): return p == plate
-        case .explicit(let set): return set.contains(where: { $0.plate == plate })
-        }
-    }
 }
