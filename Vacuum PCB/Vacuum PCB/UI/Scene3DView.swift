@@ -107,6 +107,11 @@ struct Scene3DView: NSViewRepresentable {
         material.transparency = 0.55
         material.isDoubleSided = true
         material.lightingModel = .blinn
+        // Plates have internal cavities (channels, dome dimples, etc.). Without
+        // this, double-sided translucent geometry depth-occludes itself and
+        // back faces blend inconsistently — some show through, some don't —
+        // which looked patchy on the curved dome walls.
+        material.writesToDepthBuffer = false
         geometry.materials = [material]
         return geometry
     }
