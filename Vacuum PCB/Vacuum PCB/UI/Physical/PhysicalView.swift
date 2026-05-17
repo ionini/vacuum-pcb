@@ -338,15 +338,25 @@ struct PhysicalView: View {
                 .textFieldStyle(.roundedBorder)
                 .multilineTextAlignment(.trailing)
                 .frame(width: 48)
+                .focused($boardFieldFocused, equals: .width)
             Text("×").font(.caption).foregroundStyle(.secondary)
             TextField("", value: boardSizeBinding(\.height),
                       format: .number.precision(.fractionLength(0...2)))
                 .textFieldStyle(.roundedBorder)
                 .multilineTextAlignment(.trailing)
                 .frame(width: 48)
+                .focused($boardFieldFocused, equals: .height)
             Text("mm").font(.caption2).foregroundStyle(.tertiary)
         }
+        // Pressing Return in either field clears the focus so the canvas
+        // gets keyboard events back (otherwise R/F/V/0..9 all type into
+        // the still-focused field).
+        .onSubmit { boardFieldFocused = nil }
     }
+
+    @FocusState private var boardFieldFocused: BoardField?
+
+    private enum BoardField: Hashable { case width, height }
 
     /// Drops every unplaced component onto the board, preserving its
     /// schematic-side relative position. We compute the bounding box of the
