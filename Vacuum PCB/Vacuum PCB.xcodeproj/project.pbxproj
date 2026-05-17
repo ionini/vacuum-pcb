@@ -46,28 +46,6 @@
 		};
 /* End PBXFrameworksBuildPhase section */
 
-/* Begin PBXShellScriptBuildPhase section */
-		F9C0F0E12FB67F0000000001 /* SwiftLint */ = {
-			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 1;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-			);
-			name = SwiftLint;
-			outputFileListPaths = (
-			);
-			outputPaths = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "if which swiftlint > /dev/null; then\n  swiftlint --config \"${SRCROOT}/../.swiftlint.yml\"\nelse\n  echo \"warning: SwiftLint not installed, run 'brew install swiftlint'.\"\nfi\n";
-		};
-/* End PBXShellScriptBuildPhase section */
-
 /* Begin PBXGroup section */
 		F9B05BD32FB671F10071BB7F = {
 			isa = PBXGroup;
@@ -92,7 +70,6 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = F9B05BE72FB671F10071BB7F /* Build configuration list for PBXNativeTarget "Vacuum PCB" */;
 			buildPhases = (
-				F9C0F0E12FB67F0000000001 /* SwiftLint */,
 				F9B05BD82FB671F10071BB7F /* Sources */,
 				F9B05BD92FB671F10071BB7F /* Frameworks */,
 				F9B05BDA2FB671F10071BB7F /* Resources */,

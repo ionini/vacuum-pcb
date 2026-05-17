@@ -16,9 +16,7 @@ struct Vacuum_PCBApp: App {
     }
 
     var body: some Scene {
-        // File → New seeds the inverter sample instead of a blank doc — gives
-        // every new window a known-good circuit + buildable STL out of the box.
-        DocumentGroup(newDocument: VPCBDocument(circuit: Examples.inverter())) { config in
+        DocumentGroup(newDocument: VPCBDocument()) { config in
             DocumentView(document: config.$document)
         }
         .commands {
