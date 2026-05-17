@@ -36,6 +36,12 @@ struct BoundaryPin: Hashable {
     /// We don't constrain the parent's plate — the marker is layer-agnostic —
     /// but the library plate is still useful info for inspector tooltips.
     let plate: Plate
+    /// Depth of the boundary component inside the library (channel-layer index
+    /// on `plate`). Carried alongside `plate` so the parent can resolve the
+    /// pin's full `Layer` — without this, routes started from a sub-part's
+    /// outlet default to depth 0 regardless of where the underlying library
+    /// port actually sits.
+    let depth: Int
 }
 
 /// User-global library of reusable parts. One folder under Application
@@ -130,6 +136,7 @@ final class PartsLibrary: ObservableObject {
             let along: Double  // ordering coord along the chosen side
             let physicalAnchor: Point
             let plate: Plate
+            let depth: Int
         }
 
         var rough: [Provisional] = []
@@ -142,6 +149,7 @@ final class PartsLibrary: ObservableObject {
             // markers we transform this into the parent's frame at render time.
             let anchor: Point
             let plate: Plate
+            let depth: Int
             if let placement {
                 let fp = c.kind.footprint(manufacturing: doc.manufacturing)
                 if let pin = fp.pins.first {
@@ -150,9 +158,11 @@ final class PartsLibrary: ObservableObject {
                     anchor = placement.position
                 }
                 plate = placement.layer
+                depth = placement.depth
             } else {
                 anchor = .zero
                 plate = .top
+                depth = 0
             }
 
             // Project onto nearest edge. Inputs (ports) lean left; outputs
@@ -189,7 +199,8 @@ final class PartsLibrary: ObservableObject {
             }
             rough.append(Provisional(
                 portId: c.id, label: c.label, kind: c.kind,
-                side: side, along: along, physicalAnchor: anchor, plate: plate
+                side: side, along: along, physicalAnchor: anchor,
+                plate: plate, depth: depth
             ))
         }
 
@@ -201,7 +212,8 @@ final class PartsLibrary: ObservableObject {
                 pins.append(BoundaryPin(
                     portId: p.portId, label: p.label, kind: p.kind,
                     side: side, orderOnSide: i,
-                    physicalAnchor: p.physicalAnchor, plate: p.plate
+                    physicalAnchor: p.physicalAnchor,
+                    plate: p.plate, depth: p.depth
                 ))
             }
         }

@@ -19,10 +19,23 @@ enum RelativeLayer: Hashable {
 /// One pin of a component footprint.
 /// - `offset` is in millimeters relative to the component anchor at rotation r0.
 /// - `relativeLayer` is the pin's plate relative to the placement's primary layer.
+/// - `absoluteLayer` pins the pin to a specific `Layer` (plate + depth),
+///   bypassing the relative-to-placement rule. Used by sub-part instance pins,
+///   whose layer comes from the library file's internal port placement rather
+///   than from the parent's `placement.layer` (which is metadata-only for
+///   sub-parts since their internals each carry their own absolute layers).
 struct FootprintPin: Hashable {
     let key: String
     let offset: Point
     let relativeLayer: RelativeLayer
+    let absoluteLayer: Layer?
+
+    init(key: String, offset: Point, relativeLayer: RelativeLayer, absoluteLayer: Layer? = nil) {
+        self.key = key
+        self.offset = offset
+        self.relativeLayer = relativeLayer
+        self.absoluteLayer = absoluteLayer
+    }
 }
 
 /// Static geometric description of a component kind.
@@ -266,7 +279,8 @@ extension Component {
             FootprintPin(
                 key: p.portId.uuidString,
                 offset: Point(x: p.physicalAnchor.x - ox, y: p.physicalAnchor.y - oy),
-                relativeLayer: .same
+                relativeLayer: .same,
+                absoluteLayer: Layer(plate: p.plate, depth: p.depth)
             )
         }
         let rect = Rect(origin: .zero, size: outline.size)
@@ -294,9 +308,12 @@ extension Placement {
 
     /// Resolved plate the pin actually sits on. Component pins are anchored
     /// to a plate (not a depth) — they always live at the silicone-facing
-    /// surface (depth 0).
+    /// surface (depth 0). Pins that carry an `absoluteLayer` (today: sub-part
+    /// boundary pins) bypass the placement-relative rule and use that layer's
+    /// plate directly.
     func resolvedPlate(of pin: FootprintPin) -> Plate {
-        pin.relativeLayer.resolved(against: layer)
+        if let absolute = pin.absoluteLayer { return absolute.plate }
+        return pin.relativeLayer.resolved(against: layer)
     }
 
     /// Resolved full `Layer` for a pin. Transistors are pinned to depth 0
@@ -304,7 +321,11 @@ extension Placement {
     /// layer). Resistors are tubes and ports/vents/vacuum sources are edge
     /// bores — both are just holes drilled into the plate, so they can sit
     /// on any channel layer and their pins inherit `placement.depth`.
+    /// Sub-part boundary pins carry the library's internal port layer in
+    /// `absoluteLayer`, so a route started from the pin lands on whichever
+    /// plate + depth that port was on inside the library file.
     func resolvedLayer(of pin: FootprintPin, on component: Component) -> Layer {
+        if let absolute = pin.absoluteLayer { return absolute }
         let plate = resolvedPlate(of: pin)
         let useDepth: Int
         switch component.kind {
