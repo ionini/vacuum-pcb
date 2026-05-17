@@ -379,7 +379,8 @@ struct PhysicalCanvasView: View {
         ZStack {
             ForEach(document.circuit.physical.placements, id: \.componentId) { placement in
                 if let component = component(for: placement.componentId),
-                   isPlacementVisible(placement, kind: component.kind) {
+                   component.kind == .screw
+                    || visible.contains(Layer(plate: placement.layer, depth: placement.depth)) {
                     PlacementBodyView(
                         component: component,
                         placement: placement,
@@ -401,7 +402,8 @@ struct PhysicalCanvasView: View {
         ZStack {
             ForEach(document.circuit.physical.placements, id: \.componentId) { placement in
                 if let component = component(for: placement.componentId),
-                   isPlacementVisible(placement, kind: component.kind) {
+                   component.kind == .screw
+                    || visible.contains(Layer(plate: placement.layer, depth: placement.depth)) {
                     let pos = hitCenter(for: placement, component: component)
                     let size = hitSize(for: component)
                     Rectangle()
@@ -423,15 +425,6 @@ struct PhysicalCanvasView: View {
                 }
             }
         }
-    }
-
-    /// Whether to draw / hit-test this placement under the current layer
-    /// visibility filter. Screws are mechanical fasteners punched through
-    /// both plates — they belong to no single channel layer, so they stay
-    /// visible regardless of which plate / depth the user is inspecting.
-    private func isPlacementVisible(_ placement: Placement, kind: ComponentKind) -> Bool {
-        if kind == .screw { return true }
-        return visible.contains(Layer(plate: placement.layer, depth: placement.depth))
     }
 
     /// World→screen centre of the placement's bounding rect. Differs from
@@ -1128,7 +1121,14 @@ struct PhysicalCanvasView: View {
 
         var placementHits: Set<UUID> = []
         for placement in document.circuit.physical.placements {
-            guard visible.contains(Layer(plate: placement.layer, depth: placement.depth)) else { continue }
+            let kind = document.circuit.logic.components
+                .first(where: { $0.id == placement.componentId })?.kind
+            // Screws aren't bound to any channel layer; let them marquee
+            // through the layer filter so they can be selected even when
+            // both plates' chips are off.
+            let layerOK = kind == .screw
+                || visible.contains(Layer(plate: placement.layer, depth: placement.depth))
+            guard layerOK else { continue }
             let p = placement.position
             if p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y {
                 placementHits.insert(placement.componentId)

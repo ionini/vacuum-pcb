@@ -124,7 +124,11 @@ struct SubpartExpandedView: View {
                    // their full glyph (per the v1 spec).
                    !isBoundaryComponent(internalComponent) {
                     let effective = effectivePlacement(of: internalPlacement)
-                    if visible.contains(Layer(plate: effective.layer, depth: effective.depth)) {
+                    // Screws live across both plates mechanically — same
+                    // exemption from layer-filtering as primitive screws on
+                    // the parent canvas.
+                    if internalComponent.kind == .screw
+                        || visible.contains(Layer(plate: effective.layer, depth: effective.depth)) {
                         PlacementBodyView(
                             component: internalComponent,
                             placement: effective,
