@@ -244,9 +244,11 @@ enum PlateBuilder {
 
         // Euclid's BSP CSG can leave hairline cracks where curved surfaces meet flat ones.
         // makeWatertight inserts missing edge vertices without altering shape, and slicers
-        // refuse to print non-manifold STLs.
-        if !top.isWatertight { top = top.makeWatertight() }
-        if !bottom.isWatertight { bottom = bottom.makeWatertight() }
+        // refuse to print non-manifold STLs. Always run it: Euclid's `isWatertight` only
+        // detects count=1 hole edges (it accepts any even share count as fine), so the
+        // pre-check would silently skip plates that still need stitching.
+        top = top.makeWatertight()
+        bottom = bottom.makeWatertight()
 
         return Output(
             topPlate: top, bottomPlate: bottom,
@@ -436,17 +438,27 @@ enum PlateBuilder {
     /// Builds a round-bore channel running through `midZ` along a Manhattan polyline.
     /// Each waypoint contributes a sphere joint; each segment contributes a cylinder
     /// laid along its axis. Spheres + cylinders fully overlap so the union is closed.
+    ///
+    /// Sphere radius is bumped a hair above `radius` so each cylinder's flat end-cap
+    /// lands strictly inside its bracketing sphere instead of being coplanar with the
+    /// sphere's equator. With equal radii the cap and equator are the same disk in
+    /// the same plane, which is a degenerate case for Euclid's BSP union: it leaves
+    /// duplicate internal faces that show up as count=4 non-manifold edges along the
+    /// channel's tangent lines and make slicers reject the STL. The bump is well
+    /// below print resolution so the printed bore diameter is still `radius * 2`.
     private static func channelMesh(
         waypoints: [Point], radius: Double, midZ: Double
     ) -> Mesh {
         guard waypoints.count >= 2 else { return Mesh.empty }
+
+        let sphereRadius = radius + 0.005
 
         var parts: [Mesh] = []
         parts.reserveCapacity(2 * waypoints.count)
 
         // Spheres at each waypoint so junctions are watertight at any branching angle.
         for p in waypoints {
-            parts.append(Mesh.sphere(radius: radius, slices: 16)
+            parts.append(Mesh.sphere(radius: sphereRadius, slices: 16)
                 .translated(by: Vector(p.x, p.y, midZ)))
         }
 
