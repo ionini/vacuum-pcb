@@ -16,6 +16,33 @@ struct SchematicCanvasView: View {
     @State private var multiDrag: SchematicMultiDrag?
     @State private var marquee: MarqueeRect?
 
+    // MARK: - Zoom / pan
+    //
+    // The visible canvas is the inner ZStack rendered with `.scaleEffect`
+    // (about the top-left corner) and `.offset(pan)`. Children inside the
+    // scaled subtree keep operating in unscaled "schematic coord" space —
+    // that's what's stored in `SchematicLayout.position`. mouseLocation,
+    // marquee rects, and the rubber-band line are all unscaled.
+    //
+    // Cursor mapping: a window-space point P corresponds to schematic
+    // coords `(P - pan) / zoom`. We use this for the right-click handler
+    // (which lives outside the scaled subtree to dodge AppKit/CALayer
+    // mouse-coord weirdness with NSView wrappers) and for keeping the
+    // point under the cursor fixed during pinch.
+    @State private var zoom: Double = 1.0
+    @State private var pan: CGSize = .zero
+    @State private var userAdjustedView: Bool = false
+    @State private var magnifyBaseline: (zoom: Double, pan: CGSize)?
+    @State private var bgDragMode: BackgroundDragMode = .none
+    @State private var panBaseline: CGSize = .zero
+    @State private var lastViewSize: CGSize = CGSize(width: 800, height: 600)
+    /// Window-space mouse location, captured by an NSEvent monitor mirroring
+    /// the right-click catcher. Used so ⌘= / ⌘− / pinch all zoom about the
+    /// point the user is actually looking at, not the canvas centre.
+    @State private var windowCursor: CGPoint = .zero
+
+    enum BackgroundDragMode { case none, marquee, pan }
+
     struct MarqueeRect: Equatable {
         var startScreen: CGPoint
         var currentScreen: CGPoint
@@ -31,8 +58,102 @@ struct SchematicCanvasView: View {
     }
 
     var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .topLeading) {
+                // Solid backdrop sits *outside* the scaled subtree so it
+                // always fills the visible canvas no matter how far the
+                // user has zoomed in / out.
+                Color(NSColor.controlBackgroundColor)
+                    .ignoresSafeArea(edges: [])
+
+                scaledContent
+                    .scaleEffect(zoom, anchor: .topLeading)
+                    .offset(pan)
+                    .environment(\.schematicZoom, zoom)
+
+                // NSEvent-monitor key catcher. Outside the scaled subtree
+                // because it doesn't care about coordinates.
+                KeyEventCatcher(
+                    handlers: [
+                        KeyCodes.delete: { deleteSelection() },
+                        KeyCodes.forwardDelete: { deleteSelection() },
+                        KeyCodes.escape: {
+                            netDrawState = .idle
+                            selection = .none
+                        },
+                    ],
+                    commandHandlers: [
+                        KeyCodes.equals: { zoomBy(1.25, atWindowPoint: windowCursor, viewSize: geo.size) },
+                        KeyCodes.minus:  { zoomBy(1 / 1.25, atWindowPoint: windowCursor, viewSize: geo.size) },
+                        KeyCodes.zero:   { fitToView(viewSize: geo.size) },
+                    ]
+                )
+
+                // Right-click a net line to remove the pin at its non-anchor
+                // end from the net. Outside the scaled subtree (NSView mouse
+                // coords don't play well with CALayer transforms) — we
+                // convert from window space to schematic space manually.
+                RightClickCatcher { pt in
+                    let local = windowToSchematic(pt)
+                    handleRightClick(at: local)
+                }
+                .allowsHitTesting(true)
+
+                // Scroll-wheel → pan; Cmd+scroll → zoom about cursor.
+                ScrollEventCatcher(
+                    onPan: { dx, dy in
+                        pan = CGSize(
+                            width:  pan.width  + Double(dx),
+                            height: pan.height + Double(dy)
+                        )
+                        userAdjustedView = true
+                    },
+                    onZoom: { factor, cursor in
+                        zoomBy(factor, atWindowPoint: cursor, viewSize: geo.size)
+                    }
+                )
+                .allowsHitTesting(true)
+
+                ZoomToolbar(
+                    zoomPercent: zoom,
+                    onZoomOut: { zoomBy(1 / 1.25, atWindowPoint: windowCursor, viewSize: geo.size) },
+                    onFit:     { fitToView(viewSize: geo.size) },
+                    onZoomIn:  { zoomBy(1.25, atWindowPoint: windowCursor, viewSize: geo.size) }
+                )
+                .padding(8)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .allowsHitTesting(true)
+            }
+            .coordinateSpace(name: "schematic-screen")
+            .clipped()
+            .contentShape(Rectangle())
+            .gesture(magnifyGesture(viewSize: geo.size))
+            .onContinuousHover(coordinateSpace: .named("schematic-screen")) { phase in
+                if case .active(let p) = phase { windowCursor = p }
+            }
+            .onAppear {
+                lastViewSize = geo.size
+                if !userAdjustedView { fitToView(viewSize: geo.size) }
+            }
+            .onChange(of: geo.size) { _, new in
+                lastViewSize = new
+                if !userAdjustedView { fitToView(viewSize: new) }
+            }
+        }
+    }
+
+    /// The actual canvas contents — netlines, components, rubber-band line,
+    /// marquee, background tap target. Drawn at native (unscaled) schematic
+    /// coordinates; the parent applies `scaleEffect` + `offset` around it.
+    @ViewBuilder private var scaledContent: some View {
         ZStack(alignment: .topLeading) {
-            Color(NSColor.controlBackgroundColor)
+            // Background tap target inside the scaled tree: extends much
+            // further than the visible viewport so even at high zoom the
+            // user can still click empty space to deselect. Without this,
+            // the visible inner Color would shrink to a corner under
+            // scaleEffect and miss most clicks.
+            Color.clear
+                .frame(width: 100_000, height: 100_000)
                 .contentShape(Rectangle())
                 .onTapGesture {
                     if !NSEvent.modifierFlags.contains(.command) {
@@ -63,28 +184,102 @@ struct SchematicCanvasView: View {
             }
 
             marqueeOverlay
-
-            // NSEvent-monitor key catcher.
-            KeyEventCatcher(handlers: [
-                KeyCodes.delete: { deleteSelection() },
-                KeyCodes.forwardDelete: { deleteSelection() },
-                KeyCodes.escape: {
-                    netDrawState = .idle
-                    selection = .none
-                },
-            ])
-
-            // Right-click a net line to remove the pin at its non-anchor
-            // end from the net.
-            RightClickCatcher { pt in handleRightClick(at: pt) }
-                .allowsHitTesting(true)
         }
         .onContinuousHover { phase in
+            // Local-coord hover lives inside the scaled subtree so its
+            // value is already in schematic units — usable directly for
+            // rubber-band rendering and marquee math.
             switch phase {
             case .active(let pos): mouseLocation = pos
             case .ended: break
             }
         }
+    }
+
+    // MARK: - Zoom math
+
+    /// Recompute zoom + pan to fit every placed component into the visible
+    /// viewport with a comfortable margin. Falls back to identity when the
+    /// schematic is empty (so a brand-new doc renders at 1:1, ready to
+    /// receive its first component at the top-left).
+    private func fitToView(viewSize: CGSize) {
+        guard viewSize.width > 50, viewSize.height > 50 else { return }
+        let positions = document.circuit.logic.components
+            .filter { $0.kind != .screw }
+            .compactMap { document.circuit.schematic.position(for: $0.id) }
+        guard !positions.isEmpty else {
+            zoom = 1.0
+            pan = .zero
+            userAdjustedView = false
+            return
+        }
+        // Bounding rect padded by a generous component-size margin so the
+        // outermost glyphs (which extend by ±45 schematic units around
+        // their centre) aren't clipped at the viewport edge.
+        let pad: Double = 70
+        let minX = positions.map(\.x).min()! - pad
+        let maxX = positions.map(\.x).max()! + pad
+        let minY = positions.map(\.y).min()! - pad
+        let maxY = positions.map(\.y).max()! + pad
+        let w = max(1, maxX - minX), h = max(1, maxY - minY)
+        let margin: Double = 24
+        let availW = max(1, Double(viewSize.width)  - 2 * margin)
+        let availH = max(1, Double(viewSize.height) - 2 * margin)
+        let scale = min(availW / w, availH / h, 2.0)        // clamp so empty docs don't blow up
+        let usedW = w * scale, usedH = h * scale
+        zoom = scale
+        pan = CGSize(
+            width:  (Double(viewSize.width)  - usedW) / 2 - minX * scale,
+            height: (Double(viewSize.height) - usedH) / 2 - minY * scale
+        )
+        userAdjustedView = false
+    }
+
+    /// Zoom about a screen-space anchor point so the schematic coord
+    /// under the anchor stays put across the change. Used by the keyboard
+    /// shortcuts and the zoom-toolbar buttons.
+    private func zoomBy(_ factor: Double, atWindowPoint anchor: CGPoint, viewSize: CGSize) {
+        let anchorPoint = anchor == .zero
+            ? CGPoint(x: viewSize.width / 2, y: viewSize.height / 2)
+            : anchor
+        let minZoom = 0.1, maxZoom = 10.0
+        let newZoom = max(minZoom, min(maxZoom, zoom * factor))
+        let actualFactor = newZoom / zoom
+        guard abs(actualFactor - 1) > 0.0001 else { return }
+        pan = CGSize(
+            width:  Double(anchorPoint.x) - (Double(anchorPoint.x) - pan.width)  * actualFactor,
+            height: Double(anchorPoint.y) - (Double(anchorPoint.y) - pan.height) * actualFactor
+        )
+        zoom = newZoom
+        userAdjustedView = true
+    }
+
+    private func magnifyGesture(viewSize: CGSize) -> some Gesture {
+        MagnifyGesture()
+            .onChanged { value in
+                if magnifyBaseline == nil { magnifyBaseline = (zoom, pan) }
+                guard let base = magnifyBaseline else { return }
+                let anchor = windowCursor == .zero
+                    ? CGPoint(x: viewSize.width / 2, y: viewSize.height / 2)
+                    : windowCursor
+                let factor = max(0.05, value.magnification)
+                let newZoom = max(0.1, min(10.0, base.zoom * factor))
+                pan = CGSize(
+                    width:  Double(anchor.x) - (Double(anchor.x) - base.pan.width)  * (newZoom / base.zoom),
+                    height: Double(anchor.y) - (Double(anchor.y) - base.pan.height) * (newZoom / base.zoom)
+                )
+                zoom = newZoom
+                userAdjustedView = true
+            }
+            .onEnded { _ in magnifyBaseline = nil }
+    }
+
+    /// Converts a window-space point (received from the right-click catcher
+    /// or other AppKit hooks) into the unscaled schematic coord space the
+    /// rest of the canvas operates in.
+    private func windowToSchematic(_ p: CGPoint) -> CGPoint {
+        let s = max(0.01, zoom)
+        return CGPoint(x: (Double(p.x) - pan.width) / s, y: (Double(p.y) - pan.height) / s)
     }
 
     // MARK: - Marquee
@@ -104,15 +299,39 @@ struct SchematicCanvasView: View {
     }
 
     private var marqueeGesture: some Gesture {
+        // Plain drag = marquee (in schematic coords). Option-held drag =
+        // pan the viewport (in window coords). Mode is latched at first
+        // tick so the user can release Option mid-gesture without flipping.
         DragGesture(minimumDistance: 4, coordinateSpace: .local)
             .onChanged { value in
-                marquee = MarqueeRect(
-                    startScreen: value.startLocation,
-                    currentScreen: value.location
-                )
+                if bgDragMode == .none {
+                    if NSEvent.modifierFlags.contains(.option) {
+                        bgDragMode = .pan
+                        panBaseline = pan
+                    } else {
+                        bgDragMode = .marquee
+                    }
+                }
+                switch bgDragMode {
+                case .pan:
+                    // Pan in window-space pixels. value.translation is in
+                    // the gesture's local coords (schematic units) — scale
+                    // up by zoom so the cursor follows the drag 1:1.
+                    pan = CGSize(
+                        width:  panBaseline.width  + value.translation.width  * zoom,
+                        height: panBaseline.height + value.translation.height * zoom
+                    )
+                    userAdjustedView = true
+                case .marquee, .none:
+                    marquee = MarqueeRect(
+                        startScreen: value.startLocation,
+                        currentScreen: value.location
+                    )
+                }
             }
             .onEnded { value in
-                defer { marquee = nil }
+                defer { marquee = nil; bgDragMode = .none }
+                guard bgDragMode == .marquee else { return }
                 let rect = MarqueeRect(
                     startScreen: value.startLocation,
                     currentScreen: value.location

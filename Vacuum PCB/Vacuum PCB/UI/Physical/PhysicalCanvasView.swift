@@ -16,6 +16,22 @@ struct PhysicalCanvasView: View {
     @State private var mouseLocation: CGPoint = .zero
     @State private var draggingWaypoint: DraggingWaypoint?
     @State private var draggingPlacement: DraggingPlacement?
+    /// Whether the user has interacted with zoom/pan since the last fit. If
+    /// not, view-size changes re-fit to keep the board centred; once the
+    /// user has taken control, size changes leave the transform alone so
+    /// resizes don't yank the viewport.
+    @State private var userAdjustedView: Bool = false
+    /// Accumulator for an in-progress magnify gesture so we can apply
+    /// deltas against the transform at gesture start, not against a
+    /// running-multiplied baseline that would drift.
+    @State private var magnifyBaseline: CanvasTransform?
+    /// Background-drag mode latched at drag start: marquee (Option not held)
+    /// or pan (Option held). Decided once so a release after toggling the
+    /// modifier mid-drag doesn't flip behaviour at the very end.
+    @State private var bgDragMode: BackgroundDragMode = .none
+    @State private var panBaseline: CGSize = .zero
+
+    enum BackgroundDragMode { case none, marquee, pan }
 
     /// Live state for placement drags. We carry the offset in-view so the
     /// body, pin handles, and hit target can render at the cursor without
@@ -149,13 +165,48 @@ struct PhysicalCanvasView: View {
                 // NSEvent-monitor key catcher. Replaces the hidden-Button
                 // approach which would silently lose its shortcut when
                 // focus drifted to a non-canvas view.
-                KeyEventCatcher(handlers: viaKeyHandlers)
+                KeyEventCatcher(
+                    handlers: viaKeyHandlers,
+                    commandHandlers: zoomCommandHandlers
+                )
 
                 // Right-click catcher overlays the whole canvas. SwiftUI on
                 // macOS doesn't surface secondary-button taps natively, so a
                 // thin NSView fields rightMouseDown and forwards the location.
                 RightClickCatcher { pt in handleRightClick(at: pt) }
                     .allowsHitTesting(true)
+
+                // Scroll-wheel → pan; Cmd+scroll → zoom about cursor.
+                // Trackpad two-finger swipes route through the same event
+                // type so this covers both input methods.
+                ScrollEventCatcher(
+                    onPan: { dx, dy in
+                        transform = CanvasTransform(
+                            ptsPerMm: transform.ptsPerMm,
+                            offset: CGSize(
+                                width:  transform.offset.width  + Double(dx),
+                                height: transform.offset.height + Double(dy)
+                            )
+                        )
+                        userAdjustedView = true
+                    },
+                    onZoom: { factor, cursor in
+                        zoomBy(factor, cursor: cursor)
+                    }
+                )
+                .allowsHitTesting(true)
+
+                // Zoom controls floating in the top-right corner. Sits on
+                // top of all canvas content; ignores hits otherwise.
+                ZoomToolbar(
+                    zoomPercent: zoomPercent(viewSize: geo.size),
+                    onZoomOut: { zoomBy(1 / 1.25, viewSize: geo.size) },
+                    onFit: { recomputeTransform(viewSize: geo.size); userAdjustedView = false },
+                    onZoomIn: { zoomBy(1.25, viewSize: geo.size) }
+                )
+                .padding(8)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .allowsHitTesting(true)
             }
             .coordinateSpace(name: "canvas")
             .clipped()
@@ -163,8 +214,17 @@ struct PhysicalCanvasView: View {
             .onContinuousHover { phase in
                 if case .active(let p) = phase { mouseLocation = p }
             }
-            .onAppear { recomputeTransform(viewSize: geo.size) }
-            .onChange(of: geo.size) { _, new in recomputeTransform(viewSize: new) }
+            .gesture(magnifyGesture(viewSize: geo.size))
+            .onAppear {
+                lastViewSize = geo.size
+                recomputeTransform(viewSize: geo.size)
+            }
+            .onChange(of: geo.size) { _, new in
+                lastViewSize = new
+                // First-time fit only — once the user has zoomed/panned,
+                // resizing the window shouldn't blow away their viewport.
+                if !userAdjustedView { recomputeTransform(viewSize: new) }
+            }
             .onDrop(of: [.text], delegate: ParkingDropDelegate(
                 document: $document,
                 transform: { transform },
@@ -173,6 +233,80 @@ struct PhysicalCanvasView: View {
                 selection: $selection
             ))
         }
+    }
+
+    /// Zoom shortcuts bound to Cmd+key — kept separate from via/route keys
+    /// so plain `0` still drops a via and ⌘0 fits to view.
+    private var zoomCommandHandlers: [UInt16: () -> Void] {
+        [
+            KeyCodes.equals: { zoomBy(1.25, cursor: mouseLocation) },
+            KeyCodes.minus:  { zoomBy(1 / 1.25, cursor: mouseLocation) },
+            KeyCodes.zero:   { userAdjustedView = false; recomputeTransform(viewSize: lastViewSize) },
+        ]
+    }
+
+    /// View size cached during gesture passes so the keyboard-driven Fit
+    /// can recompute against a real rect. Defaults to a safe sentinel until
+    /// the first hover/layout pass populates it.
+    @State private var lastViewSize: CGSize = CGSize(width: 800, height: 600)
+
+    private func zoomPercent(viewSize: CGSize) -> Double {
+        // Express the current ptsPerMm as a fraction of the fit-to-view
+        // baseline so 100% always means "exactly fits". A user who hits +
+        // a few times and then Fit gets the readout back to 100%.
+        let fit = CanvasTransform.fit(
+            rect: document.circuit.physical.boardOutline,
+            in: viewSize, margin: 36
+        )
+        guard fit.ptsPerMm > 0 else { return 1 }
+        return transform.ptsPerMm / fit.ptsPerMm
+    }
+
+    /// Zooms about a screen-space anchor point. World coord under `cursor`
+    /// stays fixed: `new offset = cursor - (cursor - old offset) * factor`.
+    private func zoomBy(_ factor: Double, viewSize: CGSize) {
+        let anchor = CGPoint(x: viewSize.width / 2, y: viewSize.height / 2)
+        zoomBy(factor, cursor: anchor)
+    }
+
+    private func zoomBy(_ factor: Double, cursor: CGPoint) {
+        let minScale = 0.5, maxScale = 200.0
+        let newScale = max(minScale, min(maxScale, transform.ptsPerMm * factor))
+        let actualFactor = newScale / transform.ptsPerMm
+        guard abs(actualFactor - 1) > 0.0001 else { return }
+        let newOffsetX = Double(cursor.x) - (Double(cursor.x) - transform.offset.width)  * actualFactor
+        let newOffsetY = Double(cursor.y) - (Double(cursor.y) - transform.offset.height) * actualFactor
+        transform = CanvasTransform(
+            ptsPerMm: newScale,
+            offset: CGSize(width: newOffsetX, height: newOffsetY)
+        )
+        userAdjustedView = true
+    }
+
+    /// Trackpad pinch. The magnification value is cumulative within a
+    /// single gesture, so we capture a baseline at gesture start and apply
+    /// the delta against it each tick — otherwise repeated pinches would
+    /// drift away from the user's intended scale.
+    private func magnifyGesture(viewSize: CGSize) -> some Gesture {
+        MagnifyGesture()
+            .onChanged { value in
+                if magnifyBaseline == nil { magnifyBaseline = transform }
+                guard let base = magnifyBaseline else { return }
+                let cursor = mouseLocation == .zero
+                    ? CGPoint(x: viewSize.width / 2, y: viewSize.height / 2)
+                    : mouseLocation
+                let factor = max(0.05, value.magnification)
+                let newScale = max(0.5, min(200.0, base.ptsPerMm * factor))
+                let nx = Double(cursor.x) - (Double(cursor.x) - base.offset.width)  * (newScale / base.ptsPerMm)
+                let ny = Double(cursor.y) - (Double(cursor.y) - base.offset.height) * (newScale / base.ptsPerMm)
+                transform = CanvasTransform(
+                    ptsPerMm: newScale,
+                    offset: CGSize(width: nx, height: ny)
+                )
+                userAdjustedView = true
+                lastViewSize = viewSize
+            }
+            .onEnded { _ in magnifyBaseline = nil }
     }
 
 
@@ -244,8 +378,8 @@ struct PhysicalCanvasView: View {
     private var placementBodies: some View {
         ZStack {
             ForEach(document.circuit.physical.placements, id: \.componentId) { placement in
-                if visible.contains(Layer(plate: placement.layer, depth: placement.depth)),
-                   let component = component(for: placement.componentId) {
+                if let component = component(for: placement.componentId),
+                   isPlacementVisible(placement, kind: component.kind) {
                     PlacementBodyView(
                         component: component,
                         placement: placement,
@@ -266,8 +400,8 @@ struct PhysicalCanvasView: View {
     private var placementHitTargets: some View {
         ZStack {
             ForEach(document.circuit.physical.placements, id: \.componentId) { placement in
-                if visible.contains(Layer(plate: placement.layer, depth: placement.depth)),
-                   let component = component(for: placement.componentId) {
+                if let component = component(for: placement.componentId),
+                   isPlacementVisible(placement, kind: component.kind) {
                     let pos = hitCenter(for: placement, component: component)
                     let size = hitSize(for: component)
                     Rectangle()
@@ -289,6 +423,15 @@ struct PhysicalCanvasView: View {
                 }
             }
         }
+    }
+
+    /// Whether to draw / hit-test this placement under the current layer
+    /// visibility filter. Screws are mechanical fasteners punched through
+    /// both plates — they belong to no single channel layer, so they stay
+    /// visible regardless of which plate / depth the user is inspecting.
+    private func isPlacementVisible(_ placement: Placement, kind: ComponentKind) -> Bool {
+        if kind == .screw { return true }
+        return visible.contains(Layer(plate: placement.layer, depth: placement.depth))
     }
 
     /// World→screen centre of the placement's bounding rect. Differs from
@@ -926,15 +1069,40 @@ struct PhysicalCanvasView: View {
     }
 
     private var marqueeGesture: some Gesture {
+        // Background drag does two things depending on modifier at start:
+        // plain → marquee select, Option held → pan the viewport. The mode
+        // latches on first tick so a release after toggling Option mid-drag
+        // doesn't flip behaviour at the last moment.
         DragGesture(minimumDistance: 4, coordinateSpace: .local)
             .onChanged { value in
-                marquee = MarqueeRect(
-                    startScreen: value.startLocation,
-                    currentScreen: value.location
-                )
+                if bgDragMode == .none {
+                    if NSEvent.modifierFlags.contains(.option) {
+                        bgDragMode = .pan
+                        panBaseline = transform.offset
+                    } else {
+                        bgDragMode = .marquee
+                    }
+                }
+                switch bgDragMode {
+                case .pan:
+                    transform = CanvasTransform(
+                        ptsPerMm: transform.ptsPerMm,
+                        offset: CGSize(
+                            width:  panBaseline.width  + value.translation.width,
+                            height: panBaseline.height + value.translation.height
+                        )
+                    )
+                    userAdjustedView = true
+                case .marquee, .none:
+                    marquee = MarqueeRect(
+                        startScreen: value.startLocation,
+                        currentScreen: value.location
+                    )
+                }
             }
             .onEnded { value in
-                defer { marquee = nil }
+                defer { marquee = nil; bgDragMode = .none }
+                guard bgDragMode == .marquee else { return }
                 let rect = MarqueeRect(
                     startScreen: value.startLocation,
                     currentScreen: value.location

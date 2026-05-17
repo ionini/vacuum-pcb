@@ -18,6 +18,13 @@ struct ComponentNodeView: View {
     @State private var isRenaming = false
     @State private var renameDraft: String = ""
 
+    /// Scale factor the canvas applies via .scaleEffect. We divide every
+    /// `.global`-coord drag translation by this so the offset we render in
+    /// the (un-scaled) schematic coord space matches the pixel distance the
+    /// user actually dragged — at 2× zoom a 100 px drag should move the
+    /// component 50 schematic units, not 100.
+    @Environment(\.schematicZoom) private var schematicZoom: Double
+
     private var metrics: ComponentSymbolMetrics {
         ComponentSymbolMetrics.metrics(for: component)
     }
@@ -100,32 +107,40 @@ struct ComponentNodeView: View {
                     // of the group follows; otherwise fall back to local
                     // single-component drag.
                     if selection.contains(component: component.id), selection.components.count > 1 {
-                        startMultiDrag(initialTranslation: value.translation)
+                        startMultiDrag(initialTranslation: unscaled(value.translation))
                         return
                     }
                 }
                 if multiDrag != nil {
-                    multiDrag?.translation = value.translation
+                    multiDrag?.translation = unscaled(value.translation)
                 } else {
-                    dragOffset = value.translation
+                    dragOffset = unscaled(value.translation)
                 }
             }
             .onEnded { value in
                 if let multi = multiDrag {
-                    commitMultiDrag(multi, finalTranslation: value.translation)
+                    commitMultiDrag(multi, finalTranslation: unscaled(value.translation))
                     multiDrag = nil
                 } else {
                     let current = document.circuit.schematic.position(for: component.id)
                         ?? Point(x: 200, y: 200)
+                    let local = unscaled(value.translation)
                     let next = Point(
-                        x: current.x + value.translation.width,
-                        y: current.y + value.translation.height
+                        x: current.x + local.width,
+                        y: current.y + local.height
                     )
                     document.circuit.schematic.setPosition(next, for: component.id)
                     dragOffset = .zero
                     selection = .component(component.id)
                 }
             }
+    }
+
+    /// Converts a `.global`-coord drag translation (always in screen pixels)
+    /// into schematic coord units by dividing by the canvas zoom factor.
+    private func unscaled(_ size: CGSize) -> CGSize {
+        let s = max(0.01, schematicZoom)
+        return CGSize(width: size.width / s, height: size.height / s)
     }
 
     private func startMultiDrag(initialTranslation: CGSize) {
