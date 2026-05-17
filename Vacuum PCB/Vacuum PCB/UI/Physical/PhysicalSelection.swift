@@ -9,7 +9,7 @@ import Foundation
 /// one. Pin handles aren't selectable; they participate in routing only.
 struct PhysicalSelection: Hashable {
     var placements: Set<UUID> = []
-    var routeSegment: RouteSegmentRef? = nil
+    var routeSegment: RouteSegmentRef?
     /// Additional route waypoints picked up by the marquee (or future
     /// Cmd-clicks on handles). These ride along when the selection is
     /// dragged, so multi-select can grab a subcircuit *with* its interior

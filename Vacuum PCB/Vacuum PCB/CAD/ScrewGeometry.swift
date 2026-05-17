@@ -62,7 +62,7 @@ enum ScrewGeometry {
         )
 
         return (
-            top:    [countersink, through],
+            top: [countersink, through],
             bottom: [through, hexPrism]
         )
     }

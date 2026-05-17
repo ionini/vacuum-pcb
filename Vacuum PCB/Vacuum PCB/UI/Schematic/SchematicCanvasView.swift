@@ -84,8 +84,8 @@ struct SchematicCanvasView: View {
                     ],
                     commandHandlers: [
                         KeyCodes.equals: { zoomBy(1.25, atWindowPoint: windowCursor, viewSize: geo.size) },
-                        KeyCodes.minus:  { zoomBy(1 / 1.25, atWindowPoint: windowCursor, viewSize: geo.size) },
-                        KeyCodes.zero:   { fitToView(viewSize: geo.size) },
+                        KeyCodes.minus: { zoomBy(1 / 1.25, atWindowPoint: windowCursor, viewSize: geo.size) },
+                        KeyCodes.zero: { fitToView(viewSize: geo.size) },
                     ]
                 )
 
@@ -103,7 +103,7 @@ struct SchematicCanvasView: View {
                 ScrollEventCatcher(
                     onPan: { dx, dy in
                         pan = CGSize(
-                            width:  pan.width  + Double(dx),
+                            width: pan.width  + Double(dx),
                             height: pan.height + Double(dy)
                         )
                         userAdjustedView = true
@@ -117,8 +117,8 @@ struct SchematicCanvasView: View {
                 ZoomToolbar(
                     zoomPercent: zoom,
                     onZoomOut: { zoomBy(1 / 1.25, atWindowPoint: windowCursor, viewSize: geo.size) },
-                    onFit:     { fitToView(viewSize: geo.size) },
-                    onZoomIn:  { zoomBy(1.25, atWindowPoint: windowCursor, viewSize: geo.size) }
+                    onFit: { fitToView(viewSize: geo.size) },
+                    onZoomIn: { zoomBy(1.25, atWindowPoint: windowCursor, viewSize: geo.size) }
                 )
                 .padding(8)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
@@ -229,7 +229,7 @@ struct SchematicCanvasView: View {
         let usedW = w * scale, usedH = h * scale
         zoom = scale
         pan = CGSize(
-            width:  (Double(viewSize.width)  - usedW) / 2 - minX * scale,
+            width: (Double(viewSize.width)  - usedW) / 2 - minX * scale,
             height: (Double(viewSize.height) - usedH) / 2 - minY * scale
         )
         userAdjustedView = false
@@ -247,7 +247,7 @@ struct SchematicCanvasView: View {
         let actualFactor = newZoom / zoom
         guard abs(actualFactor - 1) > 0.0001 else { return }
         pan = CGSize(
-            width:  Double(anchorPoint.x) - (Double(anchorPoint.x) - pan.width)  * actualFactor,
+            width: Double(anchorPoint.x) - (Double(anchorPoint.x) - pan.width)  * actualFactor,
             height: Double(anchorPoint.y) - (Double(anchorPoint.y) - pan.height) * actualFactor
         )
         zoom = newZoom
@@ -265,7 +265,7 @@ struct SchematicCanvasView: View {
                 let factor = max(0.05, value.magnification)
                 let newZoom = max(0.1, min(10.0, base.zoom * factor))
                 pan = CGSize(
-                    width:  Double(anchor.x) - (Double(anchor.x) - base.pan.width)  * (newZoom / base.zoom),
+                    width: Double(anchor.x) - (Double(anchor.x) - base.pan.width)  * (newZoom / base.zoom),
                     height: Double(anchor.y) - (Double(anchor.y) - base.pan.height) * (newZoom / base.zoom)
                 )
                 zoom = newZoom
@@ -318,7 +318,7 @@ struct SchematicCanvasView: View {
                     // the gesture's local coords (schematic units) — scale
                     // up by zoom so the cursor follows the drag 1:1.
                     pan = CGSize(
-                        width:  panBaseline.width  + value.translation.width  * zoom,
+                        width: panBaseline.width  + value.translation.width  * zoom,
                         height: panBaseline.height + value.translation.height * zoom
                     )
                     userAdjustedView = true

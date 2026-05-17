@@ -479,7 +479,7 @@ final class OccupancyGrid {
             if x == x1 && y == y1 { break }
             let e2 = err * 2
             if e2 > -dy { err -= dy; x += sx }
-            if e2 < dx  { err += dx; y += sy }
+            if e2 < dx { err += dx; y += sy }
         }
     }
 
@@ -578,8 +578,7 @@ enum AStar2L {
             let otherPlate: Plate = cplate.opposite
             let isGoalCellOnOther = (ci == gx && cj == gy && otherPlate == goalPlate)
             if !noVias.isBlocked(ci, cj),
-               !gridFor(otherPlate).isBlocked(ci, cj) || isGoalCellOnOther
-            {
+               !gridFor(otherPlate).isBlocked(ci, cj) || isGoalCellOnOther {
                 let nIdx = stateIdx(ci, cj, otherPlate)
                 let tentative = gScore[current.stateIdx] + viaCost
                 if tentative < gScore[nIdx] {

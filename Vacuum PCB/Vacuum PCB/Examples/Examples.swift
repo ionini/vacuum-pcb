@@ -25,34 +25,34 @@ enum Examples {
 
         let logic = LogicGraph(
             components: [
-                Component(id: qId,    kind: .transistor,    label: "Q1"),
-                Component(id: rId,    kind: .resistor,      label: "R1", resistorSize: .medium),
-                Component(id: vacId,  kind: .vacuumSource,  label: "VAC"),
-                Component(id: ventId, kind: .atmVent,       label: "VENT"),
-                Component(id: inId,   kind: .port,          label: "IN",  portDirection: .input),
-                Component(id: outId,  kind: .port,          label: "OUT", portDirection: .output),
+                Component(id: qId, kind: .transistor, label: "Q1"),
+                Component(id: rId, kind: .resistor, label: "R1", resistorSize: .medium),
+                Component(id: vacId, kind: .vacuumSource, label: "VAC"),
+                Component(id: ventId, kind: .atmVent, label: "VENT"),
+                Component(id: inId, kind: .port, label: "IN", portDirection: .input),
+                Component(id: outId, kind: .port, label: "OUT", portDirection: .output),
             ],
             nets: [
                 // VAC rail: pull-up R1 ties OUT to vacuum.
                 Net(id: netVacId, label: "VAC", pins: [
                     PinRef(componentId: vacId, pinKey: "p"),
-                    PinRef(componentId: rId,   pinKey: "2"),
+                    PinRef(componentId: rId, pinKey: "2"),
                 ]),
                 // VENT rail: source side of Q1 ties to atmosphere.
                 Net(id: netVentId, label: "VENT", pins: [
                     PinRef(componentId: ventId, pinKey: "p"),
-                    PinRef(componentId: qId,    pinKey: "a"),
+                    PinRef(componentId: qId, pinKey: "a"),
                 ]),
                 // OUT node: drain of Q1, pull-up to VAC through R1, drives OUT port.
                 Net(id: netOutId, label: "OUT", pins: [
-                    PinRef(componentId: qId,   pinKey: "b"),
-                    PinRef(componentId: rId,   pinKey: "1"),
+                    PinRef(componentId: qId, pinKey: "b"),
+                    PinRef(componentId: rId, pinKey: "1"),
                     PinRef(componentId: outId, pinKey: "p"),
                 ]),
                 // IN node: drives Q1 gate (which lives on the bottom plate).
                 Net(id: netInId, label: "IN", pins: [
                     PinRef(componentId: inId, pinKey: "p"),
-                    PinRef(componentId: qId,  pinKey: "gate"),
+                    PinRef(componentId: qId, pinKey: "gate"),
                 ]),
             ]
         )
@@ -60,17 +60,17 @@ enum Examples {
         let physical = PhysicalLayout(
             placements: [
                 // Q1 dimple on the bottom plate; a/b source/drain on the top plate.
-                Placement(componentId: qId,    position: Point(x: 20, y: 15), rotation: .r0,   layer: .bottom),
+                Placement(componentId: qId, position: Point(x: 20, y: 15), rotation: .r0, layer: .bottom),
                 // Resistor serpentine on the top plate.
-                Placement(componentId: rId,    position: Point(x: 35, y: 15), rotation: .r0,   layer: .top),
+                Placement(componentId: rId, position: Point(x: 35, y: 15), rotation: .r0, layer: .top),
                 // Vacuum source: edge bore from +X edge into the top plate.
-                Placement(componentId: vacId,  position: Point(x: 47, y: 15), rotation: .r0,   layer: .top),
+                Placement(componentId: vacId, position: Point(x: 47, y: 15), rotation: .r0, layer: .top),
                 // Atmospheric vent: edge bore from -X edge into the top plate.
-                Placement(componentId: ventId, position: Point(x: 3,  y: 15), rotation: .r180, layer: .top),
+                Placement(componentId: ventId, position: Point(x: 3, y: 15), rotation: .r180, layer: .top),
                 // Input port: edge bore from -X edge into the bottom plate (matches gate layer).
-                Placement(componentId: inId,   position: Point(x: 3,  y: 8),  rotation: .r180, layer: .bottom),
+                Placement(componentId: inId, position: Point(x: 3, y: 8), rotation: .r180, layer: .bottom),
                 // Output port: edge bore from +X edge into the top plate.
-                Placement(componentId: outId,  position: Point(x: 47, y: 22), rotation: .r0,   layer: .top),
+                Placement(componentId: outId, position: Point(x: 47, y: 22), rotation: .r0, layer: .top),
             ],
             routes: [
                 Route(netId: netVacId, segments: [
@@ -81,7 +81,7 @@ enum Examples {
                 ]),
                 Route(netId: netVentId, segments: [
                     Segment(waypoints: [
-                        Waypoint(position: Point(x: 3,    y: 15)),
+                        Waypoint(position: Point(x: 3, y: 15)),
                         Waypoint(position: Point(x: 18.5, y: 15)),
                     ], layer: .top),
                 ]),
@@ -89,7 +89,7 @@ enum Examples {
                     // Drain to R1
                     Segment(waypoints: [
                         Waypoint(position: Point(x: 21.5, y: 15)),
-                        Waypoint(position: Point(x: 30,   y: 15)),
+                        Waypoint(position: Point(x: 30, y: 15)),
                     ], layer: .top),
                     // Junction at (30,15) to OUT port at (47,22), routed Manhattan.
                     Segment(waypoints: [
@@ -100,7 +100,7 @@ enum Examples {
                 ]),
                 Route(netId: netInId, segments: [
                     Segment(waypoints: [
-                        Waypoint(position: Point(x: 3,  y: 8)),
+                        Waypoint(position: Point(x: 3, y: 8)),
                         Waypoint(position: Point(x: 20, y: 8)),
                         Waypoint(position: Point(x: 20, y: 15)),
                     ], layer: .bottom),
@@ -115,12 +115,12 @@ enum Examples {
         // Schematic positions: standard inverter layout — VAC top-rail, VENT bottom-rail,
         // input on the left, output on the right, transistor + pull-up in the middle.
         let schematic = SchematicLayout(positions: [
-            SchematicPosition(componentId: vacId,  position: Point(x: 260, y:  60)),
-            SchematicPosition(componentId: rId,    position: Point(x: 260, y: 140)),
-            SchematicPosition(componentId: qId,    position: Point(x: 260, y: 240)),
+            SchematicPosition(componentId: vacId, position: Point(x: 260, y: 60)),
+            SchematicPosition(componentId: rId, position: Point(x: 260, y: 140)),
+            SchematicPosition(componentId: qId, position: Point(x: 260, y: 240)),
             SchematicPosition(componentId: ventId, position: Point(x: 180, y: 320)),
-            SchematicPosition(componentId: inId,   position: Point(x: 120, y: 240)),
-            SchematicPosition(componentId: outId,  position: Point(x: 400, y: 240)),
+            SchematicPosition(componentId: inId, position: Point(x: 120, y: 240)),
+            SchematicPosition(componentId: outId, position: Point(x: 400, y: 240)),
         ])
 
         return CircuitDocument(

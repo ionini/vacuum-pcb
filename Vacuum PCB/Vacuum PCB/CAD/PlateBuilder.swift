@@ -239,7 +239,7 @@ enum PlateBuilder {
         let topFeatures = topCutters.isEmpty ? Mesh.empty : Mesh.union(topCutters)
         let bottomFeatures = bottomCutters.isEmpty ? Mesh.empty : Mesh.union(bottomCutters)
 
-        if !topCutters.isEmpty    { top = top.subtracting(topFeatures) }
+        if !topCutters.isEmpty { top = top.subtracting(topFeatures) }
         if !bottomCutters.isEmpty { bottom = bottom.subtracting(bottomFeatures) }
 
         // Euclid's BSP CSG can leave hairline cracks where curved surfaces meet flat ones.

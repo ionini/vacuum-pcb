@@ -18,12 +18,12 @@ struct ComponentPaletteView: View {
                     .padding(.top, 4)
 
                 paletteButton(label: "Q", subtitle: "Transistor", kind: .transistor)
-                paletteButton(label: "R", subtitle: "Resistor",   kind: .resistor)
-                paletteButton(label: "D", subtitle: "LED",        kind: .led)
-                paletteButton(label: "VAC", subtitle: "Vacuum",   kind: .vacuumSource)
-                paletteButton(label: "ATM", subtitle: "Vent",     kind: .atmVent)
-                paletteButton(label: "IN", subtitle: "Input",     kind: .port, dir: .input)
-                paletteButton(label: "OUT", subtitle: "Output",   kind: .port, dir: .output)
+                paletteButton(label: "R", subtitle: "Resistor", kind: .resistor)
+                paletteButton(label: "D", subtitle: "LED", kind: .led)
+                paletteButton(label: "VAC", subtitle: "Vacuum", kind: .vacuumSource)
+                paletteButton(label: "ATM", subtitle: "Vent", kind: .atmVent)
+                paletteButton(label: "IN", subtitle: "Input", kind: .port, dir: .input)
+                paletteButton(label: "OUT", subtitle: "Output", kind: .port, dir: .output)
 
                 if !library.parts.isEmpty {
                     Divider().padding(.vertical, 4)

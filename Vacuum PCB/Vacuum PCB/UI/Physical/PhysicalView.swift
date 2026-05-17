@@ -279,8 +279,7 @@ struct PhysicalView: View {
         // layer disappears. Transistors are already pinned to depth 0.
         var resistorMigrations: [UUID] = []
         for placement in document.circuit.physical.placements
-        where placement.layer == plate && removedSet.contains(Layer(plate: plate, depth: placement.depth))
-        {
+        where placement.layer == plate && removedSet.contains(Layer(plate: plate, depth: placement.depth)) {
             if let component = document.circuit.logic.components.first(where: { $0.id == placement.componentId }) {
                 switch component.kind {
                 case .resistor, .port, .vacuumSource, .atmVent:

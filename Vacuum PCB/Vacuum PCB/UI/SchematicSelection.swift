@@ -8,7 +8,7 @@ import Foundation
 /// `NetDrawState`.
 struct SchematicSelection: Hashable {
     var components: Set<UUID> = []
-    var net: UUID? = nil
+    var net: UUID?
 
     static let none = SchematicSelection()
 

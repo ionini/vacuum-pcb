@@ -26,48 +26,48 @@ struct ManufacturingSettingsView: View {
             Text("Manufacturing").font(.title3).bold()
 
             group("Board") {
-                row("Width",  $draftBoard.width)
+                row("Width", $draftBoard.width)
                 row("Height", $draftBoard.height)
             }
 
             group("Plates") {
                 row("Plate thickness (single-layer)", $draftMfg.plateThickness)
-                row("Silicone thickness",             $draftMfg.siliconeThickness)
-                row("Inter-layer wall",               $draftMfg.interLayerWall)
-                row("Corner fillet radius",           $draftMfg.plateCornerFillet)
+                row("Silicone thickness", $draftMfg.siliconeThickness)
+                row("Inter-layer wall", $draftMfg.interLayerWall)
+                row("Corner fillet radius", $draftMfg.plateCornerFillet)
                 Text("Multi-layer plates: plate thickness above is the depth-0 plate height. Each extra channel layer adds channelDiameter + inter-layer wall to that plate's height. Corner fillet rounds the four vertical edges of each plate (viewed from above) — softens the print so the printer doesn't have to resolve a perfect 90° corner. Runs full plate height; silicone-facing faces stay rectangular. Set 0 for square corners.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
 
             group("Channels") {
-                row("Channel diameter",          $draftMfg.channelDiameter)
-                row("Resistor bore diameter",    $draftMfg.resistorChannelDiameter)
-                row("Port bore diameter",        $draftMfg.portBoreDiameter)
-                row("Port bore taper (°)",       $draftMfg.portBoreTaperDegrees)
+                row("Channel diameter", $draftMfg.channelDiameter)
+                row("Resistor bore diameter", $draftMfg.resistorChannelDiameter)
+                row("Port bore diameter", $draftMfg.portBoreDiameter)
+                row("Port bore taper (°)", $draftMfg.portBoreTaperDegrees)
                 row("Min channel spacing (DRC)", $draftMfg.minChannelSpacing)
                 Text("Port bore diameter is the narrow (route-side) end. The bore tapers outward at the given draft angle so it widens toward the board edge — 0° gives a straight cylinder.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
 
             group("Transistor gate") {
-                row("Dome diameter",        $draftMfg.dimpleDiameter)
-                row("Dome sphere offset",   $draftMfg.dimpleSphereOffset)
+                row("Dome diameter", $draftMfg.dimpleDiameter)
+                row("Dome sphere offset", $draftMfg.dimpleSphereOffset)
                 Text("Dome is a sphere of the diameter above, centred this far into the silicone gap from the plate face.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
 
             group("LED indicator") {
                 row("Dimple diameter", $draftMfg.ledDimpleDiameter)
-                row("Dimple depth",    $draftMfg.ledDimpleDepth)
+                row("Dimple depth", $draftMfg.ledDimpleDepth)
                 Text("LED dome is a sphere of the diameter above, centred this far into the silicone gap from the plate face (raw value, not derived). The opposite plate gets a cylindrical viewing hole 1 mm wider than the dimple, all the way through, so the silicone deflection is visible.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
 
             group("Transistor source/drain pads") {
-                row("Pads diameter",        $draftMfg.padsDiameter)
-                row("Pads separation",      $draftMfg.padsSeparation)
+                row("Pads diameter", $draftMfg.padsDiameter)
+                row("Pads separation", $draftMfg.padsSeparation)
                 row("Tube offset (centre)", $draftMfg.padsOffset)
-                row("Edge fillet radius",   $draftMfg.padsFilletRadius)
+                row("Edge fillet radius", $draftMfg.padsFilletRadius)
                 Text("Two cap-shaped cavities on the opposite plate, split by a strip of this width along the source-drain axis. Tube offset is the distance from the gate centre to each drop-bore tube. Fillet radius rounds the sharp edge between the spherical surface and the flat face (set 0 for a sharp corner).")
                     .font(.caption2).foregroundStyle(.secondary)
             }

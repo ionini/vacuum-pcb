@@ -31,7 +31,7 @@ enum ResistorGeometry {
         lead: Double = 1.0
     ) -> [Point] {
         let pin1 = Point(x: -halfLen, y: 0)
-        let pin2 = Point(x:  halfLen, y: 0)
+        let pin2 = Point(x: halfLen, y: 0)
         if transitions <= 0 {
             return [pin1, pin2]
         }

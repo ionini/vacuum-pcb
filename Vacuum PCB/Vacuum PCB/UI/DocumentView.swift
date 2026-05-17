@@ -165,9 +165,9 @@ struct DocumentView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Document").font(.title3).bold()
                 stat("Components", document.circuit.logic.components.count)
-                stat("Nets",       document.circuit.logic.nets.count)
+                stat("Nets", document.circuit.logic.nets.count)
                 stat("Placements", document.circuit.physical.placements.count)
-                stat("Routes",     document.circuit.physical.routes.count)
+                stat("Routes", document.circuit.physical.routes.count)
                 Divider()
                 let outline = document.circuit.physical.boardOutline
                 Text("Board: \(format(outline.size.width)) × \(format(outline.size.height)) mm")

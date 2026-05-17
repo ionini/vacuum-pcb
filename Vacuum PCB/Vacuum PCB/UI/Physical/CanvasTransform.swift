@@ -32,7 +32,7 @@ struct CanvasTransform: Hashable {
     static func fit(rect: Rect, in viewSize: CGSize, margin: Double = 24) -> CanvasTransform {
         let availW = max(1, Double(viewSize.width)  - 2 * margin)
         let availH = max(1, Double(viewSize.height) - 2 * margin)
-        let scale = min(availW / max(rect.size.width,  0.001),
+        let scale = min(availW / max(rect.size.width, 0.001),
                         availH / max(rect.size.height, 0.001))
         let usedW = rect.size.width  * scale
         let usedH = rect.size.height * scale

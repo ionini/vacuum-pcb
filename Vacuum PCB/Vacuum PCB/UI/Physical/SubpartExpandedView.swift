@@ -273,9 +273,9 @@ struct SubpartExpandedView: View {
     private func labelOffset(for side: SymbolSide) -> CGSize {
         switch side {
         case .left:   return CGSize(width: -22, height: 0)
-        case .right:  return CGSize(width:  22, height: 0)
-        case .top:    return CGSize(width: 0,   height: -14)
-        case .bottom: return CGSize(width: 0,   height:  14)
+        case .right:  return CGSize(width: 22, height: 0)
+        case .top:    return CGSize(width: 0, height: -14)
+        case .bottom: return CGSize(width: 0, height: 14)
         }
     }
 

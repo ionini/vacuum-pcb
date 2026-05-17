@@ -134,7 +134,7 @@ struct PlacementBodyView: View {
         let r = manufacturing.portBoreDiameter * transform.ptsPerMm
         var tri = Path()
         tri.move(to: CGPoint(x: r * 1.2, y: 0))
-        tri.addLine(to: CGPoint(x: -r * 0.5, y:  r * 0.7))
+        tri.addLine(to: CGPoint(x: -r * 0.5, y: r * 0.7))
         tri.addLine(to: CGPoint(x: -r * 0.5, y: -r * 0.7))
         tri.closeSubpath()
         // Match resistor behaviour: edge-bore ports/vents/vacuum sources can
@@ -172,8 +172,7 @@ struct PlacementBodyView: View {
             let a = .pi / 6 + Double(i) * .pi / 3
             let x = hexCircumR * cos(a)
             let y = hexCircumR * sin(a)
-            if i == 0 { hex.move(to: CGPoint(x: x, y: y)) }
-            else      { hex.addLine(to: CGPoint(x: x, y: y)) }
+            if i == 0 { hex.move(to: CGPoint(x: x, y: y)) } else { hex.addLine(to: CGPoint(x: x, y: y)) }
         }
         hex.closeSubpath()
         ctx.stroke(

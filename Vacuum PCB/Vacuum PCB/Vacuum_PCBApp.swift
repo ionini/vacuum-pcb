@@ -13,11 +13,6 @@ struct Vacuum_PCBApp: App {
         // Index reusable parts before any window opens so the schematic
         // palette is populated on first paint.
         PartsLibrary.shared.reload()
-        #if DEBUG
-        SelfTest.runJSONRoundTrip()
-        SelfTest.runSTLSmokeTest()
-        SelfTest.runNestedSubpartFlatten()
-        #endif
     }
 
     var body: some Scene {

@@ -184,7 +184,7 @@ struct PhysicalCanvasView: View {
                         transform = CanvasTransform(
                             ptsPerMm: transform.ptsPerMm,
                             offset: CGSize(
-                                width:  transform.offset.width  + Double(dx),
+                                width: transform.offset.width  + Double(dx),
                                 height: transform.offset.height + Double(dy)
                             )
                         )
@@ -240,8 +240,8 @@ struct PhysicalCanvasView: View {
     private var zoomCommandHandlers: [UInt16: () -> Void] {
         [
             KeyCodes.equals: { zoomBy(1.25, cursor: mouseLocation) },
-            KeyCodes.minus:  { zoomBy(1 / 1.25, cursor: mouseLocation) },
-            KeyCodes.zero:   { userAdjustedView = false; recomputeTransform(viewSize: lastViewSize) },
+            KeyCodes.minus: { zoomBy(1 / 1.25, cursor: mouseLocation) },
+            KeyCodes.zero: { userAdjustedView = false; recomputeTransform(viewSize: lastViewSize) },
         ]
     }
 
@@ -309,7 +309,6 @@ struct PhysicalCanvasView: View {
             .onEnded { _ in magnifyBaseline = nil }
     }
 
-
     // MARK: - Background visuals
 
     private func gridLines(in size: CGSize) -> some View {
@@ -328,7 +327,7 @@ struct PhysicalCanvasView: View {
             var y = outline.origin.y
             while y <= outline.maxY + 0.001 {
                 let a = transform.toScreen(Point(x: outline.origin.x, y: y))
-                let b = transform.toScreen(Point(x: outline.maxX,    y: y))
+                let b = transform.toScreen(Point(x: outline.maxX, y: y))
                 path.move(to: a); path.addLine(to: b)
                 y += step
             }
@@ -1081,7 +1080,7 @@ struct PhysicalCanvasView: View {
                     transform = CanvasTransform(
                         ptsPerMm: transform.ptsPerMm,
                         offset: CGSize(
-                            width:  panBaseline.width  + value.translation.width,
+                            width: panBaseline.width  + value.translation.width,
                             height: panBaseline.height + value.translation.height
                         )
                     )

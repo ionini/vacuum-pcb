@@ -13,9 +13,9 @@ struct ComponentSymbolMetrics {
             return ComponentSymbolMetrics(
                 size: CGSize(width: 80, height: 80),
                 pinOffsets: [
-                    "gate": CGPoint(x: -40, y:   0),
-                    "a":    CGPoint(x:   0, y: -40),
-                    "b":    CGPoint(x:   0, y:  40),
+                    "gate": CGPoint(x: -40, y: 0),
+                    "a": CGPoint(x: 0, y: -40),
+                    "b": CGPoint(x: 0, y: 40),
                 ]
             )
         case .resistor:
@@ -23,7 +23,7 @@ struct ComponentSymbolMetrics {
                 size: CGSize(width: 90, height: 30),
                 pinOffsets: [
                     "1": CGPoint(x: -45, y: 0),
-                    "2": CGPoint(x:  45, y: 0),
+                    "2": CGPoint(x: 45, y: 0),
                 ]
             )
         case .vacuumSource, .atmVent:
@@ -98,15 +98,15 @@ struct ComponentSymbolMetrics {
                 let key = pin.portId.uuidString
                 switch side {
                 case .left:   offsets[key] = CGPoint(x: -halfW, y: along)
-                case .right:  offsets[key] = CGPoint(x:  halfW, y: along)
-                case .top:    offsets[key] = CGPoint(x: along,  y: -halfH)
-                case .bottom: offsets[key] = CGPoint(x: along,  y:  halfH)
+                case .right:  offsets[key] = CGPoint(x: halfW, y: along)
+                case .top:    offsets[key] = CGPoint(x: along, y: -halfH)
+                case .bottom: offsets[key] = CGPoint(x: along, y: halfH)
                 }
             }
         }
-        place(side: left,   onSide: .left)
-        place(side: right,  onSide: .right)
-        place(side: top,    onSide: .top)
+        place(side: left, onSide: .left)
+        place(side: right, onSide: .right)
+        place(side: top, onSide: .top)
         place(side: bottom, onSide: .bottom)
 
         return ComponentSymbolMetrics(size: CGSize(width: width, height: height), pinOffsets: offsets)
@@ -213,4 +213,3 @@ struct ComponentSymbolView: View {
         isSelected ? Color.accentColor : Color.primary.opacity(0.6)
     }
 }
-

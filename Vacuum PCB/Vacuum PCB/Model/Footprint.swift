@@ -61,9 +61,9 @@ extension ComponentKind {
             return Footprint(
                 kind: .transistor,
                 pins: [
-                    FootprintPin(key: "gate", offset: .zero,                       relativeLayer: .same),
-                    FootprintPin(key: "a",    offset: Point(x: -halfPitch, y: 0),  relativeLayer: .opposite),
-                    FootprintPin(key: "b",    offset: Point(x:  halfPitch, y: 0),  relativeLayer: .opposite),
+                    FootprintPin(key: "gate", offset: .zero, relativeLayer: .same),
+                    FootprintPin(key: "a", offset: Point(x: -halfPitch, y: 0), relativeLayer: .opposite),
+                    FootprintPin(key: "b", offset: Point(x: halfPitch, y: 0), relativeLayer: .opposite),
                 ],
                 exclusionRect: Rect(
                     origin: Point(x: -half, y: -half),
@@ -87,7 +87,7 @@ extension ComponentKind {
                 kind: .resistor,
                 pins: [
                     FootprintPin(key: "1", offset: Point(x: -halfLen, y: 0), relativeLayer: .same),
-                    FootprintPin(key: "2", offset: Point(x:  halfLen, y: 0), relativeLayer: .same),
+                    FootprintPin(key: "2", offset: Point(x: halfLen, y: 0), relativeLayer: .same),
                 ],
                 exclusionRect: Rect(
                     origin: Point(x: -halfLen, y: -halfWid),

@@ -174,7 +174,7 @@ final class PartsLibrary: ObservableObject {
             // don't fight signal pins for the side rails. Only override when
             // the user hasn't put strong intent in the schematic layout.
             if c.kind == .port {
-                if c.portDirection == .input  { side = .left }
+                if c.portDirection == .input { side = .left }
                 if c.portDirection == .output { side = .right }
             } else if c.kind == .vacuumSource && side != .left && side != .right {
                 side = .top
