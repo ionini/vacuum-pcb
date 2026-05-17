@@ -109,6 +109,33 @@ struct ManufacturingConstants: Codable, Hashable {
     /// `dimpleSphereOffset` for transistors).
     var ledDimpleDepth: Double
 
+    /// Distance the screw head's top (and the nut's bottom) protrudes past
+    /// the plate's outer face. 0 keeps the legacy behaviour — the head sits
+    /// flush with the top plate's outer surface and the nut flush with the
+    /// bottom plate's. Positive values reduce the inlay and rise a volcano-
+    /// shaped dome around the protruding portion so the head/nut is still
+    /// laterally captured by print material.
+    var screwProtrusion: Double
+
+    /// Outer diameter of the volcano dome at its base (where it meets the
+    /// plate's outer face). The dome tapers inward to a flat plateau on
+    /// top whose rim sits a fixed `ScrewGeometry.domeRimMargin` outside
+    /// the head / hex cavity, so widening the base only widens the slope.
+    /// Has no effect when `screwProtrusion` is 0.
+    var screwDomeBaseDiameter: Double
+
+    /// Depth of the countersink cavity carved into the top plate for the
+    /// screw head. The cavity holds a fastener head this tall; at
+    /// `screwProtrusion = 0` the cavity is fully inside the plate, so the
+    /// head sits flush with the outer face.
+    var screwHeadDepth: Double
+
+    /// Depth of the hex-nut pocket carved into the bottom plate. The
+    /// pocket holds a nut this tall; at `screwProtrusion = 0` the pocket
+    /// is fully inside the plate, so the nut's bottom sits flush with the
+    /// outer face.
+    var screwNutDepth: Double
+
     static let defaults = ManufacturingConstants(
         plateThickness: 4.0,
         channelDiameter: 1.5,
@@ -128,7 +155,11 @@ struct ManufacturingConstants: Codable, Hashable {
         interLayerWall: 0.5,
         plateCornerFillet: 2,
         ledDimpleDiameter: 6.0,
-        ledDimpleDepth: 1.0
+        ledDimpleDepth: 1.0,
+        screwProtrusion: 0,
+        screwDomeBaseDiameter: 8.1,
+        screwHeadDepth: 2.7,
+        screwNutDepth: 1.7
     )
 
     // Codable hand-rolled so older .vpcb files (written before
@@ -143,6 +174,7 @@ struct ManufacturingConstants: Codable, Hashable {
         case resistorChannelDiameter, interLayerWall
         case plateCornerFillet
         case ledDimpleDiameter, ledDimpleDepth
+        case screwProtrusion, screwDomeBaseDiameter, screwHeadDepth, screwNutDepth
     }
 
     init(plateThickness: Double, channelDiameter: Double,
@@ -153,7 +185,9 @@ struct ManufacturingConstants: Codable, Hashable {
          padsFilletRadius: Double,
          gridPitch: Double, minChannelSpacing: Double, resistorChannelDiameter: Double,
          interLayerWall: Double, plateCornerFillet: Double,
-         ledDimpleDiameter: Double, ledDimpleDepth: Double) {
+         ledDimpleDiameter: Double, ledDimpleDepth: Double,
+         screwProtrusion: Double, screwDomeBaseDiameter: Double,
+         screwHeadDepth: Double, screwNutDepth: Double) {
         self.plateThickness = plateThickness
         self.channelDiameter = channelDiameter
         self.portBoreDiameter = portBoreDiameter
@@ -173,6 +207,10 @@ struct ManufacturingConstants: Codable, Hashable {
         self.plateCornerFillet = plateCornerFillet
         self.ledDimpleDiameter = ledDimpleDiameter
         self.ledDimpleDepth = ledDimpleDepth
+        self.screwProtrusion = screwProtrusion
+        self.screwDomeBaseDiameter = screwDomeBaseDiameter
+        self.screwHeadDepth = screwHeadDepth
+        self.screwNutDepth = screwNutDepth
     }
 
     /// Outer length of the resistor footprint (pin-to-pin distance). Constant
@@ -214,6 +252,14 @@ struct ManufacturingConstants: Codable, Hashable {
                                                   forKey: .ledDimpleDiameter) ?? 6.0
         ledDimpleDepth = try c.decodeIfPresent(Double.self,
                                                forKey: .ledDimpleDepth) ?? 1.0
+        screwProtrusion = try c.decodeIfPresent(Double.self,
+                                                forKey: .screwProtrusion) ?? 0
+        screwDomeBaseDiameter = try c.decodeIfPresent(Double.self,
+                                                      forKey: .screwDomeBaseDiameter) ?? 8.1
+        screwHeadDepth = try c.decodeIfPresent(Double.self,
+                                               forKey: .screwHeadDepth) ?? 2.7
+        screwNutDepth = try c.decodeIfPresent(Double.self,
+                                              forKey: .screwNutDepth) ?? 1.7
     }
 
     /// Effective thickness of a plate with `layerCount` channel layers. The

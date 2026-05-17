@@ -56,6 +56,11 @@ enum PlateBuilder {
 
         var topCutters: [Mesh] = []
         var bottomCutters: [Mesh] = []
+        // Additive material that needs to be unioned onto the plate before
+        // the cutters are subtracted — currently only the volcano dome
+        // around protruding screw heads / nuts, but kept generic.
+        var topAdditions: [Mesh] = []
+        var bottomAdditions: [Mesh] = []
 
         // Resolve current pin world positions per plate before channels run,
         // so the channel-build loop can extend any segment whose endpoint
@@ -190,13 +195,19 @@ enum PlateBuilder {
                 }
 
             case .screw:
-                let (topMeshes, bottomMeshes) = ScrewGeometry.cutters(
+                let screw = ScrewGeometry.meshes(
                     at: placement.position, rotation: placement.rotation,
                     topInnerZ: topInnerZ, topThickness: topThickness,
-                    bottomInnerZ: bottomInnerZ, bottomThickness: bottomThickness
+                    bottomInnerZ: bottomInnerZ, bottomThickness: bottomThickness,
+                    protrusion: m.screwProtrusion,
+                    domeBaseDiameter: m.screwDomeBaseDiameter,
+                    headDepth: m.screwHeadDepth,
+                    nutDepth: m.screwNutDepth
                 )
-                topCutters.append(contentsOf: topMeshes)
-                bottomCutters.append(contentsOf: bottomMeshes)
+                topCutters.append(contentsOf: screw.topCutters)
+                bottomCutters.append(contentsOf: screw.bottomCutters)
+                topAdditions.append(contentsOf: screw.topAdditions)
+                bottomAdditions.append(contentsOf: screw.bottomAdditions)
             }
         }
 
@@ -233,6 +244,13 @@ enum PlateBuilder {
             if plates.contains(.bottom) { bottomCutters.append(cutter) }
         }
 
+        // Additive material (volcano domes around protruding screws) joins
+        // the plate body BEFORE the cutters carve through it, so the head
+        // / nut cylinders subtract through both the plate and the dome in
+        // one pass.
+        if !topAdditions.isEmpty { top = top.union(Mesh.union(topAdditions)) }
+        if !bottomAdditions.isEmpty { bottom = bottom.union(Mesh.union(bottomAdditions)) }
+
         // Union the cutter sets once and reuse: the subtractions consume the
         // same union the preview's features-only mode renders, so we avoid
         // building it twice.
@@ -257,13 +275,22 @@ enum PlateBuilder {
         // subtraction above already used the un-clipped features, so any
         // slivers this introduces land in the preview mesh only — SceneKit
         // renders them fine, and the exported STL is unaffected.
+        // Volcano domes push the head / hex cavity cylinders past the plate
+        // slab by `screwProtrusion + domeCeilingMargin`. Widen the clip's
+        // outer overshoot to match so the preview shows the cavities all
+        // the way through the dome.
+        let screwOvershoot = m.screwProtrusion > 0
+            ? m.screwProtrusion + ScrewGeometry.domeCeilingMargin + 0.5
+            : 0
         let topFeaturesPreview = clippedToPlateSlab(
             topFeatures, outline: outline,
-            innerZ: topInnerZ, thickness: topThickness, side: .top
+            innerZ: topInnerZ, thickness: topThickness, side: .top,
+            outerOvershoot: max(1, screwOvershoot)
         )
         let bottomFeaturesPreview = clippedToPlateSlab(
             bottomFeatures, outline: outline,
-            innerZ: bottomInnerZ, thickness: bottomThickness, side: .bottom
+            innerZ: bottomInnerZ, thickness: bottomThickness, side: .bottom,
+            outerOvershoot: max(1, screwOvershoot)
         )
 
         return Output(
@@ -277,11 +304,11 @@ enum PlateBuilder {
     /// trimmed). The intersection lives in the preview-only path; slivers
     /// from the CSG cut are harmless to SceneKit.
     private static func clippedToPlateSlab(
-        _ mesh: Mesh, outline: Rect, innerZ: Double, thickness: Double, side: Plate
+        _ mesh: Mesh, outline: Rect, innerZ: Double, thickness: Double, side: Plate,
+        outerOvershoot: Double = 1
     ) -> Mesh {
         if mesh.isEmpty { return mesh }
         let xyMargin: Double = 5     // wider than port-bore overshoot
-        let outerOvershoot: Double = 1  // small slack above the outer plate face
 
         let outerZ: Double
         let cubeCenterZ: Double

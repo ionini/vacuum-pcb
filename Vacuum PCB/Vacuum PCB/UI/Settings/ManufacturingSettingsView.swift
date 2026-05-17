@@ -72,6 +72,15 @@ struct ManufacturingSettingsView: View {
                     .font(.caption2).foregroundStyle(.secondary)
             }
 
+            group("Screws") {
+                row("Head depth", $draftMfg.screwHeadDepth)
+                row("Nut depth", $draftMfg.screwNutDepth)
+                row("Head/nut protrusion", $draftMfg.screwProtrusion)
+                row("Volcano base diameter", $draftMfg.screwDomeBaseDiameter)
+                Text("Head and nut depths size the countersink and hex pocket to whatever fastener you're using (defaults match an M2-class screw). Protrusion is how far the head and nut stick past their plate's outer face — 0 keeps both flush. Positive values reduce the inlay and rise a Mt-Fuji-shaped volcano around the protruding portion so the head/nut is still held by printed material on the sides; the cavity stays open at the top so a driver can still reach the fastener. Volcano base diameter sets how wide the dome is at its base; the flat plateau on top always sits 0.75 mm outside the cavity, so widening the base only widens the slope. Volcano fields are ignored when protrusion is 0.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+
             group("Editor") {
                 row("Grid pitch", $draftMfg.gridPitch)
                 Text("Grid only affects physical-canvas snapping, not the 3D mesh.")
@@ -223,7 +232,12 @@ struct ManufacturingSettingsView: View {
             interLayerWall: max(0.1, m.interLayerWall),
             plateCornerFillet: max(0.0, m.plateCornerFillet),
             ledDimpleDiameter: max(0.1, m.ledDimpleDiameter),
-            ledDimpleDepth: max(0.0, m.ledDimpleDepth)
+            ledDimpleDepth: max(0.0, m.ledDimpleDepth),
+            screwProtrusion: max(0.0, m.screwProtrusion),
+            screwDomeBaseDiameter: max(ScrewGeometry.headDiameter + 0.2,
+                                       m.screwDomeBaseDiameter),
+            screwHeadDepth: max(0.1, m.screwHeadDepth),
+            screwNutDepth: max(0.1, m.screwNutDepth)
         )
     }
 
