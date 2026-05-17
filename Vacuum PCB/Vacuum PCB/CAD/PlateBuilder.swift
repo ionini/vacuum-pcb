@@ -250,10 +250,64 @@ enum PlateBuilder {
         top = top.makeWatertight()
         bottom = bottom.makeWatertight()
 
+        // Preview-only clip: keep the features that the 3D view renders
+        // confined to the plate's z slab. Pad cavities extend ~1 mm past
+        // the silicone face in their lathed form; without this clip they
+        // look like blisters bulging into the silicone gap. The plate
+        // subtraction above already used the un-clipped features, so any
+        // slivers this introduces land in the preview mesh only — SceneKit
+        // renders them fine, and the exported STL is unaffected.
+        let topFeaturesPreview = clippedToPlateSlab(
+            topFeatures, outline: outline,
+            innerZ: topInnerZ, thickness: topThickness, side: .top
+        )
+        let bottomFeaturesPreview = clippedToPlateSlab(
+            bottomFeatures, outline: outline,
+            innerZ: bottomInnerZ, thickness: bottomThickness, side: .bottom
+        )
+
         return Output(
             topPlate: top, bottomPlate: bottom,
-            topFeatures: topFeatures, bottomFeatures: bottomFeatures
+            topFeatures: topFeaturesPreview, bottomFeatures: bottomFeaturesPreview
         )
+    }
+
+    /// Intersects a features mesh with a fat cube covering the plate's z
+    /// slab and outline (with a small XY margin so edge-port bores aren't
+    /// trimmed). The intersection lives in the preview-only path; slivers
+    /// from the CSG cut are harmless to SceneKit.
+    private static func clippedToPlateSlab(
+        _ mesh: Mesh, outline: Rect, innerZ: Double, thickness: Double, side: Plate
+    ) -> Mesh {
+        if mesh.isEmpty { return mesh }
+        let xyMargin: Double = 5     // wider than port-bore overshoot
+        let outerOvershoot: Double = 1  // small slack above the outer plate face
+
+        let outerZ: Double
+        let cubeCenterZ: Double
+        let cubeHeight: Double
+        switch side {
+        case .top:
+            outerZ = innerZ + thickness
+            cubeCenterZ = (innerZ + outerZ + outerOvershoot) / 2
+            cubeHeight = (outerZ + outerOvershoot) - innerZ
+        case .bottom:
+            outerZ = innerZ - thickness
+            cubeCenterZ = (innerZ + outerZ - outerOvershoot) / 2
+            cubeHeight = innerZ - (outerZ - outerOvershoot)
+        }
+
+        let cx = outline.origin.x + outline.size.width / 2
+        let cy = outline.origin.y + outline.size.height / 2
+        let cube = Mesh.cube(
+            center: Vector(cx, cy, cubeCenterZ),
+            size: Vector(
+                outline.size.width + 2 * xyMargin,
+                outline.size.height + 2 * xyMargin,
+                cubeHeight
+            )
+        )
+        return mesh.intersection(cube)
     }
 
     // MARK: - Plate base
