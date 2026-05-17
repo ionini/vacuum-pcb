@@ -110,23 +110,23 @@ struct ManufacturingConstants: Codable, Hashable {
     var ledDimpleDepth: Double
 
     static let defaults = ManufacturingConstants(
-        plateThickness: 5.0,
+        plateThickness: 4.0,
         channelDiameter: 1.5,
         portBoreDiameter: 1.7,
         portBoreTaperDegrees: 1.0,
-        siliconeThickness: 0.5,
+        siliconeThickness: 0.1,
         dimpleDiameter: 5.0,
         dimpleDepth: 1.0,
         dimpleSphereOffset: 1.0,
         padsDiameter: 4.0,
         padsSeparation: 1.0,
-        padsOffset: 1.5,
+        padsOffset: 1.25,
         padsFilletRadius: 0.5,
         gridPitch: 1.0,
         minChannelSpacing: 1.5,
         resistorChannelDiameter: 0.5,
-        interLayerWall: 0.6,
-        plateCornerFillet: 0,
+        interLayerWall: 0.5,
+        plateCornerFillet: 2,
         ledDimpleDiameter: 6.0,
         ledDimpleDepth: 1.0
     )
@@ -199,7 +199,7 @@ struct ManufacturingConstants: Codable, Hashable {
         padsSeparation = try c.decodeIfPresent(Double.self,
                                                forKey: .padsSeparation) ?? 1.0
         padsOffset = try c.decodeIfPresent(Double.self,
-                                           forKey: .padsOffset) ?? 1.5
+                                           forKey: .padsOffset) ?? 1.25
         padsFilletRadius = try c.decodeIfPresent(Double.self,
                                                  forKey: .padsFilletRadius) ?? 0.5
         gridPitch = try c.decode(Double.self, forKey: .gridPitch)
@@ -207,9 +207,9 @@ struct ManufacturingConstants: Codable, Hashable {
         resistorChannelDiameter = try c.decodeIfPresent(Double.self,
                                                        forKey: .resistorChannelDiameter) ?? 0.5
         interLayerWall = try c.decodeIfPresent(Double.self,
-                                              forKey: .interLayerWall) ?? 0.6
+                                              forKey: .interLayerWall) ?? 0.5
         plateCornerFillet = try c.decodeIfPresent(Double.self,
-                                                forKey: .plateCornerFillet) ?? 0
+                                                forKey: .plateCornerFillet) ?? 2
         ledDimpleDiameter = try c.decodeIfPresent(Double.self,
                                                   forKey: .ledDimpleDiameter) ?? 6.0
         ledDimpleDepth = try c.decodeIfPresent(Double.self,
