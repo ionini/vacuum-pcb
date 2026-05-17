@@ -244,59 +244,79 @@ enum PlateBuilder {
             if plates.contains(.bottom) { bottomCutters.append(cutter) }
         }
 
-        // Additive material (volcano domes around protruding screws) joins
-        // the plate body BEFORE the cutters carve through it, so the head
-        // / nut cylinders subtract through both the plate and the dome in
-        // one pass.
-        if !topAdditions.isEmpty { top = top.union(Mesh.union(topAdditions)) }
-        if !bottomAdditions.isEmpty { bottom = bottom.union(Mesh.union(bottomAdditions)) }
-
-        // Union the cutter sets once and reuse: the subtractions consume the
-        // same union the preview's features-only mode renders, so we avoid
-        // building it twice.
-        let topFeatures = topCutters.isEmpty ? Mesh.empty : Mesh.union(topCutters)
-        let bottomFeatures = bottomCutters.isEmpty ? Mesh.empty : Mesh.union(bottomCutters)
-
-        if !topCutters.isEmpty { top = top.subtracting(topFeatures) }
-        if !bottomCutters.isEmpty { bottom = bottom.subtracting(bottomFeatures) }
-
-        // Euclid's BSP CSG can leave hairline cracks where curved surfaces meet flat ones.
-        // makeWatertight inserts missing edge vertices without altering shape, and slicers
-        // refuse to print non-manifold STLs. Always run it: Euclid's `isWatertight` only
-        // detects count=1 hole edges (it accepts any even share count as fine), so the
-        // pre-check would silently skip plates that still need stitching.
-        top = top.makeWatertight()
-        bottom = bottom.makeWatertight()
-
-        // Preview-only clip: keep the features that the 3D view renders
-        // confined to the plate's z slab. Pad cavities extend ~1 mm past
-        // the silicone face in their lathed form; without this clip they
-        // look like blisters bulging into the silicone gap. The plate
-        // subtraction above already used the un-clipped features, so any
-        // slivers this introduces land in the preview mesh only — SceneKit
-        // renders them fine, and the exported STL is unaffected.
+        // Top and bottom plates are independent after this point — the
+        // additions union, cutters union, plate subtraction, and feature
+        // clip all run per-plate, so we dispatch both sides across two
+        // cores. Euclid itself parallelises internally per CSG call; this
+        // adds an outer layer of parallelism so the second core isn't idle
+        // while the first plate runs a `.subtracting`.
         // Volcano domes push the head / hex cavity cylinders past the plate
-        // slab by `screwProtrusion + domeCeilingMargin`. Widen the clip's
-        // outer overshoot to match so the preview shows the cavities all
-        // the way through the dome.
+        // slab by `screwProtrusion + domeCeilingMargin`. Widen the preview
+        // clip's outer overshoot to match so the cavities show all the way
+        // through the dome.
         let screwOvershoot = m.screwProtrusion > 0
             ? m.screwProtrusion + ScrewGeometry.domeCeilingMargin + 0.5
             : 0
-        let topFeaturesPreview = clippedToPlateSlab(
-            topFeatures, outline: outline,
-            innerZ: topInnerZ, thickness: topThickness, side: .top,
-            outerOvershoot: max(1, screwOvershoot)
-        )
-        let bottomFeaturesPreview = clippedToPlateSlab(
-            bottomFeatures, outline: outline,
-            innerZ: bottomInnerZ, thickness: bottomThickness, side: .bottom,
-            outerOvershoot: max(1, screwOvershoot)
-        )
+        let clipOvershoot = max(1, screwOvershoot)
 
+        var topOut: (plate: Mesh, preview: Mesh) = (top, .empty)
+        var bottomOut: (plate: Mesh, preview: Mesh) = (bottom, .empty)
+        DispatchQueue.concurrentPerform(iterations: 2) { index in
+            switch index {
+            case 0:
+                topOut = buildPlateCSG(
+                    base: top, additions: topAdditions, cutters: topCutters,
+                    outline: outline, innerZ: topInnerZ,
+                    thickness: topThickness, side: .top,
+                    previewOvershoot: clipOvershoot
+                )
+            default:
+                bottomOut = buildPlateCSG(
+                    base: bottom, additions: bottomAdditions, cutters: bottomCutters,
+                    outline: outline, innerZ: bottomInnerZ,
+                    thickness: bottomThickness, side: .bottom,
+                    previewOvershoot: clipOvershoot
+                )
+            }
+        }
+
+        // `makeWatertight()` is intentionally NOT called here. Euclid's BSP
+        // CSG can leave hairline cracks where curved surfaces meet flat
+        // ones; slicers refuse to print non-manifold STLs, so the export
+        // sites (`STLExportDocument`, the Bambu Studio path) watertight on
+        // demand. SceneKit doesn't care about manifoldness, so the preview
+        // skips the stitching pass — it's one of the heavier Euclid
+        // operations and the preview is the hot path.
         return Output(
-            topPlate: top, bottomPlate: bottom,
-            topFeatures: topFeaturesPreview, bottomFeatures: bottomFeaturesPreview
+            topPlate: topOut.plate, bottomPlate: bottomOut.plate,
+            topFeatures: topOut.preview, bottomFeatures: bottomOut.preview
         )
+    }
+
+    /// Per-plate CSG pipeline: union the additive domes onto the base
+    /// slab, union the cutter list, subtract the cutter union from the
+    /// plate, and clip the cutter union to the plate slab for the
+    /// features-only preview. Runs on a single side so the two plates can
+    /// be processed in parallel.
+    private static func buildPlateCSG(
+        base: Mesh, additions: [Mesh], cutters: [Mesh],
+        outline: Rect, innerZ: Double, thickness: Double, side: Plate,
+        previewOvershoot: Double
+    ) -> (plate: Mesh, preview: Mesh) {
+        var plate = base
+        if !additions.isEmpty {
+            plate = plate.union(Mesh.union(additions))
+        }
+        let featuresUnion = cutters.isEmpty ? Mesh.empty : Mesh.union(cutters)
+        if !cutters.isEmpty {
+            plate = plate.subtracting(featuresUnion)
+        }
+        let preview = clippedToPlateSlab(
+            featuresUnion, outline: outline,
+            innerZ: innerZ, thickness: thickness, side: side,
+            outerOvershoot: previewOvershoot
+        )
+        return (plate, preview)
     }
 
     /// Intersects a features mesh with a fat cube covering the plate's z

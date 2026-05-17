@@ -356,7 +356,13 @@ struct DocumentView: View {
         guard let bambuURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.bambuStudioBundleID) else {
             return
         }
-        let combined = Mesh.merge([built.topPlate, built.bottomPlate])
+        // makeWatertight stitches the hairline cracks Euclid's BSP CSG leaves
+        // where curved surfaces meet flat ones; the preview build skips it, so
+        // we apply it here on the way to the slicer.
+        let combined = Mesh.merge([
+            built.topPlate.makeWatertight(),
+            built.bottomPlate.makeWatertight(),
+        ])
         let data = combined.stlData()
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("\(stlFilename).stl")
