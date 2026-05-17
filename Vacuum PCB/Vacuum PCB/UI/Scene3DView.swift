@@ -68,6 +68,17 @@ struct Scene3DView: NSViewRepresentable {
         c.camera.usesOrthographicProjection = true
         c.camera.zNear = 0.01
         c.camera.zFar = 10_000
+        // Screen-space ambient occlusion. Darkens contact lines and crevices
+        // where geometry curves inward — gives same-colour adjacent features
+        // (e.g. two channel tubes meeting at a waypoint) a visible seam in
+        // both the "Channels" and "Both" preview modes. Plates currently
+        // don't write to the depth buffer (see plateGeometry), so they don't
+        // participate in SSAO — only the feature solids do. Radius is in
+        // scene units (mm); 2.5 mm picks up channel-junction crevices and
+        // dimple boundaries without smearing across the whole part.
+        c.camera.screenSpaceAmbientOcclusionIntensity = 1.5
+        c.camera.screenSpaceAmbientOcclusionRadius = 2.5
+        c.camera.screenSpaceAmbientOcclusionBias = 0.03
         c.cameraNode.camera = c.camera
         c.cameraNode.name = "Main Camera"
         c.scene.rootNode.addChildNode(c.cameraNode)
@@ -182,10 +193,16 @@ struct Scene3DView: NSViewRepresentable {
     }
 
     private func addLights(to scene: SCNScene) {
+        // Lower the ambient now that SSAO contributes baseline contact
+        // darkening — keeping it high washes out the occlusion. Key + fill
+        // is a standard three-point rig minus the back light: key gives
+        // form, fill softens the shadow side without flattening the SSAO,
+        // and the bigger angular spread between the two makes adjacent
+        // same-colour solids read distinctly across more of the orbit.
         let ambient = SCNNode()
         ambient.light = SCNLight()
         ambient.light?.type = .ambient
-        ambient.light?.intensity = 300
+        ambient.light?.intensity = 180
         scene.rootNode.addChildNode(ambient)
 
         let key = SCNNode()
@@ -194,5 +211,12 @@ struct Scene3DView: NSViewRepresentable {
         key.light?.intensity = 700
         key.eulerAngles = SCNVector3(-Double.pi / 3, Double.pi / 6, 0)
         scene.rootNode.addChildNode(key)
+
+        let fill = SCNNode()
+        fill.light = SCNLight()
+        fill.light?.type = .directional
+        fill.light?.intensity = 350
+        fill.eulerAngles = SCNVector3(-Double.pi / 6, -2 * Double.pi / 3, 0)
+        scene.rootNode.addChildNode(fill)
     }
 }
