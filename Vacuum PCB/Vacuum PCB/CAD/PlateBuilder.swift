@@ -661,23 +661,21 @@ enum PlateBuilder {
         let radius = m.padsDiameter / 2
         let sep = m.padsSeparation
         let fillet = m.padsFilletRadius
-        let eps = 0.05
         let oppositePlate = placement.layer.opposite
         let oppositeInnerZ = oppositePlate == .top ? topInnerZ : bottomInnerZ
 
-        let bothPads = filletedPadsSolid(R: radius, sep: sep, fillet: fillet)
-
-        // Clip to the plate body half-space so the half on the silicone-gap
-        // side doesn't leak into the other plate's view.
-        let bodyHalfHeight = radius + 0.5
-        let bodyCubeCenterZ = oppositePlate == .top
-            ? bodyHalfHeight - eps
-            : -bodyHalfHeight + eps
-        let bodyCube = Mesh.cube(
-            center: Vector(0, 0, bodyCubeCenterZ),
-            size: Vector(2 * (radius + 0.5), 2 * (radius + 0.5), 2 * bodyHalfHeight)
-        )
-        let cavityLocal = bothPads.intersection(bodyCube)
+        // The lathed pad solid is already closed — `filletedPadsSolid` makes
+        // a spherical cap with a flat back disk, watertight by construction.
+        // An earlier revision intersected it with a body-cube half-space to
+        // keep the cavity's lower radial half from poking into the silicone
+        // gap in the "Channels" preview. That intersection cut the pad
+        // sphere right next to its equator (the densest band of Euclid's
+        // sphere triangulation) and generated hairline slivers that showed
+        // up as open edges in the exported STL. Skipping the clip lets the
+        // pad extend ~1 mm past the plate's silicone face in the preview
+        // — cosmetic, since the plate subtraction outside the plate is a
+        // no-op and the printed cavity is unchanged.
+        let cavityLocal = filletedPadsSolid(R: radius, sep: sep, fillet: fillet)
 
         let rotated = cavityLocal.rotated(
             by: Euclid.Rotation.roll(.radians(placement.rotation.radians))
