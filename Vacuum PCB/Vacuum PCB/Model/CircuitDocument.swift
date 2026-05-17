@@ -36,6 +36,13 @@ extension CircuitDocument {
     /// (port / vacuumSource / atmVent inside the library file) are dropped:
     /// they're connection markers in the parent view, not real bores.
     ///
+    /// Library files may themselves contain subparts — those expand
+    /// recursively (the child is pre-flattened, then its now-primitive
+    /// placements are translated into the parent's frame). Reference cycles
+    /// between files are detected via the `visiting` set and broken silently
+    /// at the offending placement (which is dropped from the flattened
+    /// output; the canvas surfaces the cycle as a red placeholder).
+    ///
     /// This is what the CAD pipeline (PlateBuilder, SimulatorExporter)
     /// operates on. DRC and Ratsnest run against the unflattened doc and
     /// treat subparts as black-box obstacles per the v1 design — flattening
@@ -44,6 +51,13 @@ extension CircuitDocument {
     /// Subparts whose library file is missing are silently dropped (already
     /// surfaced as a red placeholder in the canvas).
     func flattened() -> CircuitDocument {
+        flattened(visiting: [])
+    }
+
+    /// Recursive worker for `flattened()`. `visiting` holds the chain of
+    /// library filenames currently being expanded; a subpart whose `partRef`
+    /// is already in that set is skipped (cycle).
+    func flattened(visiting: Set<String>) -> CircuitDocument {
         var primitives = self
         var components = primitives.logic.components.filter { $0.kind != .subpart }
         var placements: [Placement] = primitives.physical.placements.filter { p in
@@ -54,8 +68,15 @@ extension CircuitDocument {
         for placement in self.physical.placements {
             guard let comp = self.logic.components.first(where: { $0.id == placement.componentId }),
                   comp.kind == .subpart,
-                  let part = comp.partRef.flatMap({ PartsLibrary.shared.part(named: $0) })
+                  let filename = comp.partRef,
+                  !visiting.contains(filename),
+                  let part = PartsLibrary.shared.part(named: filename)
             else { continue }
+
+            // Pre-flatten the child so any subparts inside it are already
+            // expanded to primitives in the child's coordinate system. The
+            // parent then only needs a single rotation/translation step.
+            let childFlat = part.document.flattened(visiting: visiting.union([filename]))
 
             let outline = part.document.physical.boardOutline
             let ox = outline.minX
@@ -73,13 +94,12 @@ extension CircuitDocument {
 
             // Internal placements (skip boundary components — they're pin
             // markers in the parent view, not real fluid features).
-            for internalPlacement in part.document.physical.placements {
-                guard let internalComp = part.document.logic.components
+            for internalPlacement in childFlat.physical.placements {
+                guard let internalComp = childFlat.logic.components
                         .first(where: { $0.id == internalPlacement.componentId }),
                       internalComp.kind != .port,
                       internalComp.kind != .vacuumSource,
-                      internalComp.kind != .atmVent,
-                      internalComp.kind != .subpart  // defensive: library is flat-only but guard anyway
+                      internalComp.kind != .atmVent
                 else { continue }
 
                 let newId = UUID()
@@ -102,7 +122,7 @@ extension CircuitDocument {
             // Internal routes. NetId is regenerated — PlateBuilder ignores
             // it, and reusing the library's netId could collide with a
             // parent net's id and confuse downstream code that does care.
-            for route in part.document.physical.routes {
+            for route in childFlat.physical.routes {
                 let newSegments = route.segments.map { seg -> Segment in
                     let newWaypoints = seg.waypoints.map {
                         Waypoint(position: toWorld($0.position), kind: $0.kind)

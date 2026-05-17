@@ -16,6 +16,7 @@ struct Vacuum_PCBApp: App {
         #if DEBUG
         SelfTest.runJSONRoundTrip()
         SelfTest.runSTLSmokeTest()
+        SelfTest.runNestedSubpartFlatten()
         #endif
     }
 

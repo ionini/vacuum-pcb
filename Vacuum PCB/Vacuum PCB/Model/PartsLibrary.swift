@@ -39,8 +39,10 @@ struct BoundaryPin: Hashable {
 }
 
 /// User-global library of reusable parts. One folder under Application
-/// Support, scanned at launch (and on `reload()`). Files that contain
-/// `.subpart` components are rejected — v1 is flat-only.
+/// Support, scanned at launch (and on `reload()`). Library files may
+/// themselves contain `.subpart` instances — nested hierarchies expand
+/// recursively at flatten / render time. Reference cycles between files
+/// are tolerated at load and broken at use site with a placeholder.
 ///
 /// Lookup is by filename (no UUID inside the library file). Renaming a
 /// library file breaks every parent that references it — by design, matches
@@ -91,9 +93,6 @@ final class PartsLibrary: ObservableObject {
         for entry in entries where entry.pathExtension.lowercased() == "vpcb" {
             guard let data = try? Data(contentsOf: entry) else { continue }
             guard let doc = try? CircuitDocument.decoded(from: data) else { continue }
-            // Flat-only: a library file may not itself contain sub-part
-            // instances. Reject so nested parts don't sneak in until v2.
-            if doc.logic.components.contains(where: { $0.kind == .subpart }) { continue }
             let pins = Self.boundaryPins(in: doc)
             collected.append(Part(filename: entry.lastPathComponent, document: doc, pins: pins))
         }

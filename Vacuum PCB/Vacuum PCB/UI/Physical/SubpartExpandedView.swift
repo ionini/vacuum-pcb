@@ -21,9 +21,15 @@ struct SubpartExpandedView: View {
     let transform: CanvasTransform
     let visible: LayerVisibility
     let isSelected: Bool
+    /// Chain of library filenames already being expanded above this view.
+    /// A nested subpart whose `partRef` is already in this set is rendered
+    /// as a red cycle placeholder instead of recursing.
+    var visiting: Set<String> = []
 
     var body: some View {
-        if let part = component.partRef.flatMap({ PartsLibrary.shared.part(named: $0) }) {
+        if let filename = component.partRef, visiting.contains(filename) {
+            cyclePlaceholder(filename: filename)
+        } else if let part = component.partRef.flatMap({ PartsLibrary.shared.part(named: $0) }) {
             let part = part
             ZStack {
                 // 1. Internal routes — drawn underneath placements so the
@@ -114,21 +120,69 @@ struct SubpartExpandedView: View {
         .allowsHitTesting(false)
     }
 
+    /// Cycle placeholder: visually mirrors the missing-part one but with a
+    /// "Cycle: A → B → A" label so the user can trace where the loop closes.
+    private func cyclePlaceholder(filename: String) -> some View {
+        let chain = (Array(visiting) + [filename]).joined(separator: " → ")
+        return Canvas { ctx, _ in
+            let half = 8.0
+            let corners = [
+                Point(x: placement.position.x - half, y: placement.position.y - half),
+                Point(x: placement.position.x + half, y: placement.position.y - half),
+                Point(x: placement.position.x + half, y: placement.position.y + half),
+                Point(x: placement.position.x - half, y: placement.position.y + half),
+            ]
+            var path = Path()
+            path.move(to: transform.toScreen(corners[0]))
+            for c in corners.dropFirst() {
+                path.addLine(to: transform.toScreen(c))
+            }
+            path.closeSubpath()
+            ctx.stroke(
+                path,
+                with: .color(.red),
+                style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round, dash: [4, 3])
+            )
+            ctx.draw(
+                Text("Cycle: \(chain)").font(.system(size: 10, weight: .semibold)).foregroundColor(.red),
+                at: transform.toScreen(Point(x: placement.position.x, y: placement.position.y))
+            )
+        }
+        .allowsHitTesting(false)
+    }
+
     // MARK: - Internal placements
 
     private func internalPlacements(part: PartsLibrary.Part) -> some View {
-        ZStack {
+        // Visiting set passed down into any nested SubpartExpandedView so a
+        // cycle (A.vpcb → B.vpcb → A.vpcb) renders as a placeholder instead
+        // of recursing forever. Keyed by library filename, matching the
+        // rule used by `CircuitDocument.flattened(visiting:)`.
+        let childVisiting = component.partRef.map { visiting.union([$0]) } ?? visiting
+        return ZStack {
             ForEach(part.document.physical.placements, id: \.componentId) { internalPlacement in
                 if let internalComponent = part.document.logic.components.first(where: { $0.id == internalPlacement.componentId }),
                    // Boundary components are drawn as pin markers instead of
                    // their full glyph (per the v1 spec).
                    !isBoundaryComponent(internalComponent) {
                     let effective = effectivePlacement(of: internalPlacement)
-                    // Screws live across both plates mechanically — same
-                    // exemption from layer-filtering as primitive screws on
-                    // the parent canvas.
-                    if internalComponent.kind == .screw
+                    if internalComponent.kind == .subpart {
+                        // Nested subpart: recurse so the user sees the full
+                        // hierarchy expanded (Half Adder → XOR → transistors).
+                        SubpartExpandedView(
+                            component: internalComponent,
+                            placement: effective,
+                            parentManufacturing: part.document.manufacturing,
+                            transform: transform,
+                            visible: visible,
+                            isSelected: false,
+                            visiting: childVisiting
+                        )
+                    } else if internalComponent.kind == .screw
                         || visible.contains(Layer(plate: effective.layer, depth: effective.depth)) {
+                        // Screws live across both plates mechanically — same
+                        // exemption from layer-filtering as primitive screws
+                        // on the parent canvas.
                         PlacementBodyView(
                             component: internalComponent,
                             placement: effective,

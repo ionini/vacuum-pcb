@@ -45,8 +45,15 @@ Five component kinds, no more in MVP:
 5. **External port** — generic edge-entry tube terminal (input or output).
 
 **Not in MVP:** PMOS-equivalent / normally-closed transistors, capacitors
-(compliant chambers), one-way valves, hierarchical sub-circuits, latches as
-primitives. Latches are built from transistors + feedback.
+(compliant chambers), one-way valves, latches as primitives. Latches are
+built from transistors + feedback.
+
+Reusable sub-circuits **are** supported via the parts library (a `.vpcb`
+dropped into the Parts folder appears in the palette and can be instanced
+as a `.subpart` component). Library files may themselves contain
+`.subpart` instances — nested hierarchies expand recursively at flatten /
+render time. Reference cycles between files are tolerated at load and
+broken at use site with a red placeholder.
 
 ---
 
@@ -318,8 +325,6 @@ Mechanical but high-impact.
   to validate logic before printing. Cheap to implement; high value.
 - **Pneumatic (analog) simulation.** SPICE-style with pressure/flow values.
   Research-grade; defer indefinitely.
-- **Sub-circuit / hierarchical components.** Once you've built a NAND from
-  transistors, drop it as a single block elsewhere.
 - **Autorouter.** Generally a tarpit; defer until you've manually routed
   enough designs to know what tradeoffs you want.
 
