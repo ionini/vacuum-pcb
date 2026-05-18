@@ -34,7 +34,7 @@ final class SimulationState {
     var transistorOpenness: [UUID: Double] = [:]
 
     /// Whether the integrator advances on each clock tick.
-    var isPlaying: Bool = true
+    var isPlaying: Bool = false
 
     /// Sim-time accumulator so the engine takes fixed steps even when the
     /// view's clock tick is jittery. Drained on each tick.
