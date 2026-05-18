@@ -14,6 +14,11 @@ final class SimulationState {
     /// changes; the user's input settings carry over by component id.
     private(set) var network: PneumaticNetwork
 
+    /// Subpart-flattened snapshot of the document, cached so the
+    /// rendering layer can iterate the inlined primitives without paying
+    /// the flatten cost every frame. Updated alongside `network`.
+    private(set) var flattenedDoc: CircuitDocument
+
     var params: SimulationParameters = .defaults
 
     /// User-controlled input port pressures keyed by input component id.
@@ -36,7 +41,9 @@ final class SimulationState {
     private var simAccumulator: Double = 0
 
     init(document: CircuitDocument) {
-        self.network = PneumaticNetwork.build(from: document)
+        let flattened = document.flattenedForSimulation()
+        self.flattenedDoc = flattened
+        self.network = PneumaticNetwork.build(from: flattened)
         self.pressureByNet = initialPressures(for: network)
     }
 
@@ -45,7 +52,9 @@ final class SimulationState {
     /// component id where possible, so editing the document while playing
     /// doesn't flash everything back to atmosphere.
     func rebuild(from document: CircuitDocument) {
-        let next = PneumaticNetwork.build(from: document)
+        let flattened = document.flattenedForSimulation()
+        let next = PneumaticNetwork.build(from: flattened)
+        self.flattenedDoc = flattened
         // Preserve pressures for nets that still exist; default new nets to atm.
         var nextPressures: [UUID: Double] = [:]
         let existingNetIds = Set(next.nets.map(\.id))

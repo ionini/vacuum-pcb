@@ -101,7 +101,17 @@ struct SimulateSchematicCanvas: View {
         case .atmVent:      return 1
         case .port, .led:
             return netPressure(pin: PinRef(componentId: component.id, pinKey: "p"))
-        case .subpart, .screw: return 1
+        case .subpart:
+            // Library-driven boundary pins live in `Component.pinKeys`.
+            // Average their net pressures so the symbol's tint reflects
+            // the overall state of the subpart's external connections.
+            let keys = component.pinKeys
+            guard !keys.isEmpty else { return 1 }
+            let sum = keys.reduce(0.0) {
+                $0 + netPressure(pin: PinRef(componentId: component.id, pinKey: $1))
+            }
+            return sum / Double(keys.count)
+        case .screw: return 1
         }
     }
 
@@ -136,7 +146,9 @@ struct SimulateSchematicCanvas: View {
             } else {
                 Text(PressureColor.formatted(pressure))
             }
-        case .subpart, .screw:
+        case .subpart:
+            Text(PressureColor.formatted(pressure))
+        case .screw:
             EmptyView()
         }
     }

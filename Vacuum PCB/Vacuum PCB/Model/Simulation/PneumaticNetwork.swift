@@ -87,6 +87,12 @@ struct PneumaticNetwork {
         return out
     }
 
+    /// Builds a pneumatic network from a *flattened* document. Callers
+    /// must run `CircuitDocument.flattenedForSimulation()` first when
+    /// subparts are in play — this function expects every component on the
+    /// doc to be a primitive and every net to be valid.
+    /// `SimulationState` does the flattening once per document change and
+    /// passes the cached result here so we don't re-flatten per frame.
     static func build(from doc: CircuitDocument) -> PneumaticNetwork {
         let pinToNet = pinToNetMap(doc)
 

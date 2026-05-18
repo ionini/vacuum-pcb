@@ -13,8 +13,16 @@ import SwiftUI
 /// `CanvasTransform` mutates `ptsPerMm` directly so the Canvas redraws
 /// crisply at every zoom level (no scaleEffect rasterization).
 struct SimulatePhysicalCanvas: View {
+    /// Parent document. Used for board outline and the initial fit. Net
+    /// pressures and component bodies come from the simulation state's
+    /// cached subpart-flattened snapshot so library internals render.
     let document: CircuitDocument
     @Bindable var state: SimulationState
+
+    /// Subpart-flattened doc the simulator solves on. The Physical canvas
+    /// renders from this so a subpart's library-internal transistors,
+    /// resistors and routes appear at their world-space positions.
+    private var flat: CircuitDocument { state.flattenedDoc }
 
     @State private var transform: CanvasTransform = .default
     @State private var userAdjusted: Bool = false
@@ -102,7 +110,7 @@ struct SimulatePhysicalCanvas: View {
 
     private func drawRoutes(in ctx: inout GraphicsContext) {
         let stroke = max(2.0, document.manufacturing.channelDiameter * transform.ptsPerMm * 0.85)
-        for route in document.physical.routes {
+        for route in flat.physical.routes {
             let pressure = state.pressure(net: route.netId)
             let color = PressureColor.strokeColor(for: pressure)
             for segment in route.segments {
@@ -121,9 +129,9 @@ struct SimulatePhysicalCanvas: View {
     }
 
     private func drawComponents(in ctx: inout GraphicsContext) {
-        let netByPin = PneumaticNetwork.pinToNetMap(document)
-        for placement in document.physical.placements {
-            guard let component = document.logic.components
+        let netByPin = PneumaticNetwork.pinToNetMap(flat)
+        for placement in flat.physical.placements {
+            guard let component = flat.logic.components
                     .first(where: { $0.id == placement.componentId })
             else { continue }
             let p = representativePressure(for: component, netByPin: netByPin)
