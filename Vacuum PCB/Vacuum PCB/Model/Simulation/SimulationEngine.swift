@@ -1,0 +1,186 @@
+import Foundation
+
+/// Backward-Euler integrator on top of a `PneumaticNetwork`.
+///
+/// Each tick we build a sparse-but-dense (small N) admittance matrix Y of
+/// conductances between free nets, fold the C/dt term into the diagonal, and
+/// solve `(Y + C/dt) P_new = (C/dt) P_old + Σ G·P_pinned` for the free nets.
+///
+/// Transistor conductance depends on the gate net's pressure, which itself
+/// changes during the solve. We iterate the conductance evaluation against
+/// the previous step's pressures (Gauss-Seidel style); two or three passes
+/// converge for the gate switching dynamics we care about. The smoothed
+/// sigmoidal ramp around the gate threshold keeps the integrator stable so
+/// long state doesn't ping-pong.
+enum SimulationEngine {
+
+    /// One time step. `pressures` is mutated in place. `inputs` is a snapshot
+    /// of user-set input port pressures keyed by component id.
+    static func step(
+        network: PneumaticNetwork,
+        params: SimulationParameters,
+        pressures: inout [UUID: Double],
+        inputs: [UUID: Double],
+        transistorOpenness: inout [UUID: Double]
+    ) {
+        // Anchor table: net id → fixed pressure value. Inputs are looked up
+        // from the user-controlled `inputs` dict; missing keys default to
+        // atmosphere (1.0).
+        var anchored: [UUID: Double] = [:]
+        for boundary in network.hardBoundaries {
+            anchored[boundary.netId] = boundary.value
+        }
+        for input in network.inputs {
+            anchored[input.netId] = inputs[input.id] ?? 1.0
+        }
+
+        // Build free-net index. Pinned nets get pinned directly in
+        // `pressures`; only free nets become unknowns.
+        var freeIndex: [UUID: Int] = [:]
+        var freeIds: [UUID] = []
+        for net in network.nets {
+            if anchored[net.id] == nil {
+                freeIndex[net.id] = freeIds.count
+                freeIds.append(net.id)
+            }
+        }
+        // Force anchored nets to their boundary value so the rest of the
+        // solver and the UI both read consistent state.
+        for (netId, value) in anchored {
+            pressures[netId] = value
+        }
+        guard !freeIds.isEmpty else { return }
+
+        let dt = max(params.dtSeconds, 1e-6)
+
+        // One pass is enough when gate states change slowly. Two gives us a
+        // little extra robustness when an input flip causes a cascade.
+        for _ in 0..<2 {
+            let n = freeIds.count
+            var y = Array(repeating: Array(repeating: 0.0, count: n), count: n)
+            var rhs = Array(repeating: 0.0, count: n)
+
+            // 1. Capacitance + previous-state RHS.
+            for (idx, netId) in freeIds.enumerated() {
+                let c = network.capacitanceByNet[netId] ?? params.nodeBaseCapacitance
+                let cOverDt = c / dt
+                y[idx][idx] += cOverDt
+                rhs[idx] += cOverDt * (pressures[netId] ?? 1.0)
+            }
+
+            // 2. Resistor edges. Conductance = 1 / (length * R_per_mm).
+            for r in network.resistors {
+                let length = max(0.1, r.pathLengthMm)
+                let g = 1.0 / (length * params.resistorResistancePerMm)
+                stamp(&y, &rhs, freeIndex: freeIndex, anchored: anchored,
+                      net1: r.net1, net2: r.net2, g: g)
+            }
+
+            // 3. Transistor edges. Conductance depends on gate net pressure
+            // (whatever was last solved / anchored).
+            for t in network.transistors {
+                let gatePressure = anchored[t.gateNet] ?? pressures[t.gateNet] ?? 1.0
+                let g = params.conductance(forGatePressure: gatePressure)
+                transistorOpenness[t.id] = openness(forGatePressure: gatePressure, params: params)
+                stamp(&y, &rhs, freeIndex: freeIndex, anchored: anchored,
+                      net1: t.aNet, net2: t.bNet, g: g)
+            }
+
+            // 4. Solve. Dense Gaussian elimination — N is small (number of
+            // free nets, typically <30 for hobby designs).
+            let solved = solve(matrix: &y, rhs: &rhs)
+            for (idx, netId) in freeIds.enumerated() {
+                pressures[netId] = solved[idx]
+            }
+        }
+    }
+
+    /// Returns a 0…1 "open fraction" suitable for UI rendering. 0 = closed
+    /// (gate at atm), 1 = fully open (gate at vacuum).
+    private static func openness(forGatePressure p: Double, params: SimulationParameters) -> Double {
+        let g = params.conductance(forGatePressure: p)
+        let span = params.transistorOnConductance - params.transistorOffConductance
+        guard span > 0 else { return 0 }
+        return max(0, min(1, (g - params.transistorOffConductance) / span))
+    }
+
+    /// Stamps a single conductive edge into the matrix. Two-port version of
+    /// the MNA stamp — for a free↔free edge it contributes to both diagonals
+    /// and both off-diagonals; for a free↔anchored edge it folds the anchor
+    /// value into the RHS instead of growing the matrix.
+    private static func stamp(
+        _ y: inout [[Double]],
+        _ rhs: inout [Double],
+        freeIndex: [UUID: Int],
+        anchored: [UUID: Double],
+        net1: UUID, net2: UUID, g: Double
+    ) {
+        if net1 == net2 { return }  // self-loop = no-op
+        let i = freeIndex[net1]
+        let j = freeIndex[net2]
+        switch (i, j) {
+        case let (ii?, jj?):
+            y[ii][ii] += g
+            y[jj][jj] += g
+            y[ii][jj] -= g
+            y[jj][ii] -= g
+        case let (ii?, nil):
+            if let p2 = anchored[net2] {
+                y[ii][ii] += g
+                rhs[ii] += g * p2
+            }
+        case let (nil, jj?):
+            if let p1 = anchored[net1] {
+                y[jj][jj] += g
+                rhs[jj] += g * p1
+            }
+        case (nil, nil):
+            // Both endpoints anchored: edge has no degrees of freedom.
+            break
+        }
+    }
+
+    /// Gaussian elimination with partial pivoting. In-place on the passed
+    /// matrix/vector for clarity — caller takes a copy by passing inout from
+    /// a local var.
+    private static func solve(matrix: inout [[Double]], rhs: inout [Double]) -> [Double] {
+        let n = rhs.count
+        guard n > 0 else { return [] }
+        for k in 0..<n {
+            // Partial pivot
+            var maxRow = k
+            var maxVal = abs(matrix[k][k])
+            for r in (k + 1)..<n where abs(matrix[r][k]) > maxVal {
+                maxVal = abs(matrix[r][k])
+                maxRow = r
+            }
+            if maxRow != k {
+                matrix.swapAt(k, maxRow)
+                rhs.swapAt(k, maxRow)
+            }
+            let pivot = matrix[k][k]
+            if abs(pivot) < 1e-12 {
+                // Singular — leave the row as-is, treat unknown as previous value.
+                continue
+            }
+            for r in (k + 1)..<n {
+                let factor = matrix[r][k] / pivot
+                if factor == 0 { continue }
+                for c in k..<n {
+                    matrix[r][c] -= factor * matrix[k][c]
+                }
+                rhs[r] -= factor * rhs[k]
+            }
+        }
+        var x = Array(repeating: 0.0, count: n)
+        for k in stride(from: n - 1, through: 0, by: -1) {
+            var sum = rhs[k]
+            for c in (k + 1)..<n {
+                sum -= matrix[k][c] * x[c]
+            }
+            let pivot = matrix[k][k]
+            x[k] = abs(pivot) < 1e-12 ? rhs[k] : sum / pivot
+        }
+        return x
+    }
+}

@@ -31,7 +31,13 @@ struct DocumentView: View {
         case openInFlowSimulator
     }
 
-    enum Tab: Hashable { case schematic, physical, preview }
+    enum Tab: Hashable { case schematic, physical, preview, simulate }
+
+    /// Created lazily on first visit to the Simulate tab so users who never
+    /// open it don't pay the network-build cost. Re-created from scratch when
+    /// the user leaves and comes back, which also clears the input toggles —
+    /// per the v1 scope, simulation state isn't persisted.
+    @State private var simulationState: SimulationState?
 
     var body: some View {
         HSplitView {
@@ -89,6 +95,7 @@ struct DocumentView: View {
             Text("Schematic").tag(Tab.schematic)
             Text("Physical").tag(Tab.physical)
             Text("3D Preview").tag(Tab.preview)
+            Text("Simulate").tag(Tab.simulate)
         }
         .pickerStyle(.segmented)
         .padding(.horizontal, 12)
@@ -107,6 +114,21 @@ struct DocumentView: View {
             PhysicalView(document: $document, selection: $physicalSelection)
         case .preview:
             previewView
+        case .simulate:
+            simulateView
+        }
+    }
+
+    @ViewBuilder private var simulateView: some View {
+        if let state = simulationState {
+            SimulateView(document: $document, state: state)
+        } else {
+            // Trampoline: spin up the state then re-render. This pattern
+            // (vs. computing in onAppear) keeps the @State write off the
+            // view-build path so SwiftUI doesn't grouse.
+            Color.clear.onAppear {
+                simulationState = SimulationState(document: document.circuit)
+            }
         }
     }
 
@@ -184,6 +206,9 @@ struct DocumentView: View {
                 if selectedTab == .preview {
                     Divider()
                     ManufacturingSettingsView(document: $document)
+                }
+                if selectedTab == .simulate, let state = simulationState {
+                    SimulateControlsView(state: state)
                 }
             }
             .padding(14)
