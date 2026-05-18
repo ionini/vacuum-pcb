@@ -14,11 +14,62 @@ struct SimulateControlsView: View {
             Divider()
             Text("Simulate")
                 .font(.headline)
+            tuning
             inputs
             probes
             transistors
             netList
         }
+    }
+
+    /// Two sliders we surface for interactive calibration. The defaults
+    /// produce sensible behaviour on the canonical inverter, but real
+    /// pneumatic devices have wildly varying restrictions, and the gate
+    /// "threshold" is the cleanest knob for adjusting how much vacuum the
+    /// silicone needs to commit to a switch.
+    @ViewBuilder private var tuning: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Tuning").font(.subheadline).bold()
+            tuningSlider(
+                label: "R / mm",
+                help: "Resistance per mm of channel inside a resistor. " +
+                      "Lower = pressure equalises faster through resistors.",
+                value: $state.params.resistorResistancePerMm,
+                range: 0.05...4.0,
+                format: "%.2f"
+            )
+            tuningSlider(
+                label: "Gate at",
+                help: "Pressure at which a transistor's source-drain path " +
+                      "is half-open. Lower = needs more vacuum on the gate " +
+                      "to activate.",
+                value: $state.params.gateThreshold,
+                range: 0.05...0.9,
+                format: "%.2f"
+            )
+        }
+    }
+
+    private func tuningSlider(
+        label: String,
+        help: String,
+        value: Binding<Double>,
+        range: ClosedRange<Double>,
+        format: String
+    ) -> some View {
+        HStack(spacing: 6) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 46, alignment: .leading)
+            Slider(value: value, in: range)
+                .controlSize(.small)
+            Text(String(format: format, value.wrappedValue))
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 36, alignment: .trailing)
+        }
+        .help(help)
     }
 
     @ViewBuilder private var inputs: some View {

@@ -47,18 +47,24 @@ struct SimulationParameters: Equatable {
     var timeScale: Double
 
     // Defaults are sized for crisp digital-style swings on the canonical
-    // NMOS inverter (R1 ≈ 80 → G ≈ 0.0125): we want G_off ≪ G_resistor ≪
-    // G_on. With a 125× ratio either side the inverter's "low" output
-    // settles below 0.01 and the "high" output above 0.99, which reads as
-    // a clean rail-to-rail flip in the UI.
+    // NMOS inverter while still letting an unloaded net equalize back to
+    // atmosphere in a couple of seconds. We want G_off ≪ G_resistor ≪
+    // G_on. Capacitances are kept low so the visible time constant for a
+    // small resistor (S, 12 mm) is around 1 s; large resistors lag
+    // noticeably more without dragging into uncomfortable territory.
+    //
+    // Gate threshold defaults to 0.3 — the transistor only opens when the
+    // gate is reasonably close to vacuum, so a partially-pulled gate net
+    // doesn't accidentally trigger the switch. Bumping it back up toward
+    // 0.5 from the sidebar slider widens the activation band.
     static let defaults = SimulationParameters(
-        resistorResistancePerMm: 4.0,
-        transistorOnConductance: 1.5,
-        transistorOffConductance: 0.0001,
-        gateThreshold: 0.5,
+        resistorResistancePerMm: 0.5,
+        transistorOnConductance: 5.0,
+        transistorOffConductance: 0.0005,
+        gateThreshold: 0.3,
         gateHysteresis: 0.08,
-        nodeBaseCapacitance: 0.30,
-        channelCapacitancePerMm: 0.10,
+        nodeBaseCapacitance: 0.10,
+        channelCapacitancePerMm: 0.04,
         dtSeconds: 0.01,
         timeScale: 1.0
     )
