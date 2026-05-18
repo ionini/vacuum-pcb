@@ -13,6 +13,10 @@ struct SimulateView: View {
     @Bindable var state: SimulationState
 
     @State private var viewMode: ViewMode = .schematic
+    /// Layer-visibility filter for the physical heatmap. Mirrors the editor's
+    /// per-layer pills so the user can isolate T0 / B0 / etc. while tracing
+    /// pressure flow. Schematic mode ignores this.
+    @State private var visible: LayerVisibility = .both
     /// Last wall-clock instant we tick'd the integrator. Updated by the
     /// TimelineView's `date` so the elapsed delta is real seconds.
     @State private var lastTick: Date = .now
@@ -44,7 +48,8 @@ struct SimulateView: View {
                 case .schematic:
                     SimulateSchematicCanvas(document: document.circuit, state: state)
                 case .physical:
-                    SimulatePhysicalCanvas(document: document.circuit, state: state)
+                    SimulatePhysicalCanvas(document: document.circuit, state: state,
+                                           visible: visible)
                 }
             }
             .onChange(of: ctx.date) { _, newDate in
@@ -69,6 +74,11 @@ struct SimulateView: View {
             .pickerStyle(.segmented)
             .frame(width: 220)
             .labelsHidden()
+
+            if viewMode == .physical {
+                Divider().frame(height: 18)
+                layerVisibilityControls
+            }
 
             Divider().frame(height: 18)
 
@@ -111,6 +121,59 @@ struct SimulateView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(.regularMaterial)
+    }
+
+    /// Plate-level segmented picker plus per-layer multi-select pills. Same
+    /// affordance as the physical editor's bottom strip so the user's muscle
+    /// memory carries over: tap T0/B1 to isolate a single channel layer, tap
+    /// "All" to bring everything back.
+    @ViewBuilder private var layerVisibilityControls: some View {
+        Picker("Visible plates", selection: $visible) {
+            Text("All").tag(LayerVisibility.both)
+            Text("Top").tag(LayerVisibility.topOnly)
+            Text("Bottom").tag(LayerVisibility.bottomOnly)
+        }
+        .pickerStyle(.segmented)
+        .frame(width: 180)
+        .labelsHidden()
+
+        HStack(spacing: 4) {
+            ForEach(allLayers, id: \.self) { layer in
+                let on = visible.contains(layer)
+                Button {
+                    toggleLayer(layer)
+                } label: {
+                    Text(layer.uiLabel)
+                        .font(.caption.monospacedDigit())
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(on ? LayerPalette.color(for: layer).opacity(0.85)
+                                       : Color.secondary.opacity(0.12))
+                        .foregroundStyle(on ? .white : .secondary)
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    /// All layers currently configured on the board, in T0…Tn, B0…Bm order.
+    private var allLayers: [Layer] {
+        document.circuit.physical.layers(in: .top) +
+        document.circuit.physical.layers(in: .bottom)
+    }
+
+    /// Promote whatever `visible` currently is to an explicit set, with the
+    /// tapped layer flipped. Mirrors `PhysicalView.toggleLayer` so the two
+    /// strips behave identically.
+    private func toggleLayer(_ layer: Layer) {
+        var set = Set(allLayers.filter { visible.contains($0) })
+        if set.contains(layer) {
+            set.remove(layer)
+        } else {
+            set.insert(layer)
+        }
+        visible = .explicit(set)
     }
 
     private var legendText: String {

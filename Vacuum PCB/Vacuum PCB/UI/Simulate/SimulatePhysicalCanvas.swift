@@ -18,6 +18,11 @@ struct SimulatePhysicalCanvas: View {
     /// cached subpart-flattened snapshot so library internals render.
     let document: CircuitDocument
     @Bindable var state: SimulationState
+    /// Which layers the user has chosen to display. Matches the editor's
+    /// per-layer pills so the user can isolate e.g. just B0 to trace one
+    /// channel layer's pressure flow without overlapping strokes from other
+    /// depths/plates.
+    let visible: LayerVisibility
 
     /// Subpart-flattened doc the simulator solves on. The Physical canvas
     /// renders from this so a subpart's library-internal transistors,
@@ -114,6 +119,7 @@ struct SimulatePhysicalCanvas: View {
             let pressure = state.pressure(net: route.netId)
             let color = PressureColor.strokeColor(for: pressure)
             for segment in route.segments {
+                guard visible.contains(segment.layer) else { continue }
                 let pts = segment.waypoints.map { transform.toScreen($0.position) }
                 guard pts.count >= 2 else { continue }
                 var path = Path()
@@ -134,6 +140,13 @@ struct SimulatePhysicalCanvas: View {
             guard let component = flat.logic.components
                     .first(where: { $0.id == placement.componentId })
             else { continue }
+            // Screws have no layer story (they bridge both plates), so they
+            // stay visible regardless of the filter — same convention as the
+            // editing canvas.
+            if component.kind != .screw,
+               !visible.contains(Layer(plate: placement.layer, depth: placement.depth)) {
+                continue
+            }
             let p = representativePressure(for: component, netByPin: netByPin)
             let center = transform.toScreen(placement.position)
             drawBody(in: &ctx, component: component, placement: placement,
