@@ -58,7 +58,7 @@ struct SimulationParameters: Equatable {
     // doesn't accidentally trigger the switch. Bumping it back up toward
     // 0.5 from the sidebar slider widens the activation band.
     static let defaults = SimulationParameters(
-        resistorResistancePerMm: 0.5,
+        resistorResistancePerMm: 0.05,
         transistorOnConductance: 5.0,
         transistorOffConductance: 0.0005,
         gateThreshold: 0.3,
