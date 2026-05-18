@@ -492,20 +492,34 @@ enum PlateBuilder {
 
     // MARK: - Pin-snap extension
 
-    /// Per-layer map of every component pin's current world position. Used
-    /// by the channel build to extend a segment whose endpoint was drawn at
-    /// a now-stale pin location (e.g. before `padsOffset` moved). Keyed by
-    /// full `Layer` (plate + depth) — keying by plate alone would let a
-    /// segment on top/depth-0 snap to a pin on top/depth-1 (e.g. a resistor
-    /// pin), drawing a phantom stub.
+    /// Per-layer map of pin positions the channel build is allowed to extend
+    /// a segment endpoint to. Restricted to transistor source/drain pins —
+    /// they're the only pins whose world position can drift after a route was
+    /// drawn (the user nudges `padsOffset` and the pads move outward), so
+    /// they're the only pins that need the snap.
+    ///
+    /// Resistor / port / vent pins are fixed in world coordinates the moment
+    /// they were placed, and snapping to them is actively harmful: a via that
+    /// lands equidistant from two nearby pins on the same layer (e.g. an
+    /// XOR's R1.pin1 and R2.pin1 only 4 mm apart, both ~2.83 mm from a shared
+    /// via) picks up a phantom waypoint and draws a triangle whose hypotenuse
+    /// bridges the two pins. The asymmetry surfaces in CSG: the union keeps
+    /// the two near-tangent tubes apart on one subpart copy and merges them
+    /// on another, shorting the resistors on only one of two otherwise-
+    /// identical subpart copies.
+    ///
+    /// Keyed by full `Layer` (plate + depth) — keying by plate alone would
+    /// let a top-d0 segment snap to a transistor pin on top-d1.
     static func collectPinPositions(
         doc: CircuitDocument, m: ManufacturingConstants,
         componentsById: [UUID: Component]
     ) -> [Layer: [Point]] {
         var out: [Layer: [Point]] = [:]
         for placement in doc.physical.placements {
-            guard let component = componentsById[placement.componentId] else { continue }
-            for pin in component.footprint(m).pins {
+            guard let component = componentsById[placement.componentId],
+                  component.kind == .transistor
+            else { continue }
+            for pin in component.footprint(m).pins where pin.key == "a" || pin.key == "b" {
                 let layer = placement.resolvedLayer(of: pin, on: component)
                 out[layer, default: []].append(placement.worldPosition(of: pin))
             }
