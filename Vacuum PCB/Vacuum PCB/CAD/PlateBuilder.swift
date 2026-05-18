@@ -42,10 +42,10 @@ enum PlateBuilder {
         let topThickness = m.plateThickness(forLayerCount: doc.physical.topLayers)
         let bottomThickness = m.plateThickness(forLayerCount: doc.physical.bottomLayers)
 
-        var top = plateBase(outline: outline, thickness: topThickness,
+        let top = plateBase(outline: outline, thickness: topThickness,
                             innerZ: topInnerZ, side: .top,
                             edgeChamfer: m.plateCornerFillet)
-        var bottom = plateBase(outline: outline, thickness: bottomThickness,
+        let bottom = plateBase(outline: outline, thickness: bottomThickness,
                                innerZ: bottomInnerZ, side: .bottom,
                                edgeChamfer: m.plateCornerFillet)
 
