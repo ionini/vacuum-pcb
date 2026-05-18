@@ -53,18 +53,27 @@ enum SimulationEngine {
 
         let dt = max(params.dtSeconds, 1e-6)
 
+        let n = freeIds.count
+        // One contiguous buffer for the row-major NxN matrix and a parallel
+        // RHS / solution vector. Nested-array variants were burning
+        // measurable time on per-step allocations at 60 Hz; a single
+        // `[Double]` reuses across the two iterations and stresses the
+        // allocator only when the network shape actually changes.
+        var y = [Double](repeating: 0, count: n * n)
+        var rhs = [Double](repeating: 0, count: n)
+        var solution = [Double](repeating: 0, count: n)
+
         // One pass is enough when gate states change slowly. Two gives us a
         // little extra robustness when an input flip causes a cascade.
         for _ in 0..<2 {
-            let n = freeIds.count
-            var y = Array(repeating: Array(repeating: 0.0, count: n), count: n)
-            var rhs = Array(repeating: 0.0, count: n)
+            for i in 0..<(n * n) { y[i] = 0 }
+            for i in 0..<n { rhs[i] = 0 }
 
             // 1. Capacitance + previous-state RHS.
             for (idx, netId) in freeIds.enumerated() {
                 let c = network.capacitanceByNet[netId] ?? params.nodeBaseCapacitance
                 let cOverDt = c / dt
-                y[idx][idx] += cOverDt
+                y[idx * n + idx] += cOverDt
                 rhs[idx] += cOverDt * (pressures[netId] ?? 1.0)
             }
 
@@ -72,7 +81,7 @@ enum SimulationEngine {
             for r in network.resistors {
                 let length = max(0.1, r.pathLengthMm)
                 let g = 1.0 / (length * params.resistorResistancePerMm)
-                stamp(&y, &rhs, freeIndex: freeIndex, anchored: anchored,
+                stamp(&y, &rhs, n: n, freeIndex: freeIndex, anchored: anchored,
                       net1: r.net1, net2: r.net2, g: g)
             }
 
@@ -82,15 +91,15 @@ enum SimulationEngine {
                 let gatePressure = anchored[t.gateNet] ?? pressures[t.gateNet] ?? 1.0
                 let g = params.conductance(forGatePressure: gatePressure)
                 transistorOpenness[t.id] = openness(forGatePressure: gatePressure, params: params)
-                stamp(&y, &rhs, freeIndex: freeIndex, anchored: anchored,
+                stamp(&y, &rhs, n: n, freeIndex: freeIndex, anchored: anchored,
                       net1: t.aNet, net2: t.bNet, g: g)
             }
 
             // 4. Solve. Dense Gaussian elimination — N is small (number of
             // free nets, typically <30 for hobby designs).
-            let solved = solve(matrix: &y, rhs: &rhs)
+            solve(matrix: &y, rhs: &rhs, n: n, into: &solution)
             for (idx, netId) in freeIds.enumerated() {
-                pressures[netId] = solved[idx]
+                pressures[netId] = solution[idx]
             }
         }
     }
@@ -108,9 +117,13 @@ enum SimulationEngine {
     /// the MNA stamp — for a free↔free edge it contributes to both diagonals
     /// and both off-diagonals; for a free↔anchored edge it folds the anchor
     /// value into the RHS instead of growing the matrix.
+    ///
+    /// The matrix is a row-major flat `[Double]` of length n*n; index it as
+    /// `y[row * n + col]`.
     private static func stamp(
-        _ y: inout [[Double]],
+        _ y: inout [Double],
         _ rhs: inout [Double],
+        n: Int,
         freeIndex: [UUID: Int],
         anchored: [UUID: Double],
         net1: UUID, net2: UUID, g: Double
@@ -120,18 +133,18 @@ enum SimulationEngine {
         let j = freeIndex[net2]
         switch (i, j) {
         case let (ii?, jj?):
-            y[ii][ii] += g
-            y[jj][jj] += g
-            y[ii][jj] -= g
-            y[jj][ii] -= g
+            y[ii * n + ii] += g
+            y[jj * n + jj] += g
+            y[ii * n + jj] -= g
+            y[jj * n + ii] -= g
         case let (ii?, nil):
             if let p2 = anchored[net2] {
-                y[ii][ii] += g
+                y[ii * n + ii] += g
                 rhs[ii] += g * p2
             }
         case let (nil, jj?):
             if let p1 = anchored[net1] {
-                y[jj][jj] += g
+                y[jj * n + jj] += g
                 rhs[jj] += g * p1
             }
         case (nil, nil):
@@ -140,47 +153,49 @@ enum SimulationEngine {
         }
     }
 
-    /// Gaussian elimination with partial pivoting. In-place on the passed
-    /// matrix/vector for clarity — caller takes a copy by passing inout from
-    /// a local var.
-    private static func solve(matrix: inout [[Double]], rhs: inout [Double]) -> [Double] {
-        let n = rhs.count
-        guard n > 0 else { return [] }
+    /// Gaussian elimination with partial pivoting on a row-major flat
+    /// matrix. Writes the solution into the caller-provided buffer to
+    /// avoid an allocation on every step.
+    private static func solve(matrix: inout [Double], rhs: inout [Double], n: Int, into x: inout [Double]) {
+        guard n > 0 else { return }
         for k in 0..<n {
-            // Partial pivot
+            // Partial pivot — find the row with the largest |matrix[r][k]|
+            // and swap rows k and maxRow so the pivot is well-conditioned.
             var maxRow = k
-            var maxVal = abs(matrix[k][k])
-            for r in (k + 1)..<n where abs(matrix[r][k]) > maxVal {
-                maxVal = abs(matrix[r][k])
-                maxRow = r
+            var maxVal = abs(matrix[k * n + k])
+            for r in (k + 1)..<n {
+                let v = abs(matrix[r * n + k])
+                if v > maxVal { maxVal = v; maxRow = r }
             }
             if maxRow != k {
-                matrix.swapAt(k, maxRow)
-                rhs.swapAt(k, maxRow)
+                for c in 0..<n {
+                    let tmp = matrix[k * n + c]
+                    matrix[k * n + c] = matrix[maxRow * n + c]
+                    matrix[maxRow * n + c] = tmp
+                }
+                let tmp = rhs[k]; rhs[k] = rhs[maxRow]; rhs[maxRow] = tmp
             }
-            let pivot = matrix[k][k]
+            let pivot = matrix[k * n + k]
             if abs(pivot) < 1e-12 {
-                // Singular — leave the row as-is, treat unknown as previous value.
+                // Singular column — leave row as-is, treat unknown as previous value.
                 continue
             }
             for r in (k + 1)..<n {
-                let factor = matrix[r][k] / pivot
+                let factor = matrix[r * n + k] / pivot
                 if factor == 0 { continue }
                 for c in k..<n {
-                    matrix[r][c] -= factor * matrix[k][c]
+                    matrix[r * n + c] -= factor * matrix[k * n + c]
                 }
                 rhs[r] -= factor * rhs[k]
             }
         }
-        var x = Array(repeating: 0.0, count: n)
         for k in stride(from: n - 1, through: 0, by: -1) {
             var sum = rhs[k]
             for c in (k + 1)..<n {
-                sum -= matrix[k][c] * x[c]
+                sum -= matrix[k * n + c] * x[c]
             }
-            let pivot = matrix[k][k]
+            let pivot = matrix[k * n + k]
             x[k] = abs(pivot) < 1e-12 ? rhs[k] : sum / pivot
         }
-        return x
     }
 }

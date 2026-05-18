@@ -82,20 +82,29 @@ final class SimulationState {
 
     /// Advance the simulator by `wallSeconds` of real time. Takes as many
     /// fixed-`dt` steps as fit, leaving any remainder in the accumulator.
+    ///
+    /// The observable dictionaries are copied to local vars for the step
+    /// loop and written back once at the end — without that, every step
+    /// would publish an `@Observable` change and SwiftUI would invalidate
+    /// every probe, every transistor row, and both canvases up to eight
+    /// times per frame.
     func advance(wallSeconds: Double) {
         guard isPlaying else { return }
         let scaledSeconds = wallSeconds * max(0, params.timeScale)
         simAccumulator += scaledSeconds
         let dt = max(params.dtSeconds, 1e-6)
+        guard simAccumulator >= dt else { return }
+        var localPressures = pressureByNet
+        var localTransistors = transistorOpenness
         // Clamp to a small batch of steps per frame so a hitch in the UI
         // clock doesn't snowball into a multi-second catch-up burst.
         var steps = 0
         while simAccumulator >= dt && steps < 8 {
             SimulationEngine.step(
                 network: network, params: params,
-                pressures: &pressureByNet,
+                pressures: &localPressures,
                 inputs: inputPressures,
-                transistorOpenness: &transistorOpenness
+                transistorOpenness: &localTransistors
             )
             simAccumulator -= dt
             steps += 1
@@ -104,6 +113,8 @@ final class SimulationState {
             // Drop the rest of the backlog instead of catching up forever.
             simAccumulator = 0
         }
+        pressureByNet = localPressures
+        transistorOpenness = localTransistors
     }
 
     /// Convenience: pressure of one net, defaulting to atmosphere if the net

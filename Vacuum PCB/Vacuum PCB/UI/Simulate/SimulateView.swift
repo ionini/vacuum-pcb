@@ -34,10 +34,11 @@ struct SimulateView: View {
     }
 
     @ViewBuilder private var content: some View {
-        // Timer drives the integrator at ~60 Hz. Even when paused we keep
-        // the timeline going so a future un-pause picks up at the right
-        // wall-clock instant without one giant catch-up step.
-        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: false)) { ctx in
+        // Timer drives the integrator at ~60 Hz. We pause the schedule when
+        // the user pauses playback — otherwise every paused tab still
+        // burned its tick on a no-op `advance` call and triggered a layout
+        // pass for the surrounding views.
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !state.isPlaying)) { ctx in
             Group {
                 switch viewMode {
                 case .schematic:
