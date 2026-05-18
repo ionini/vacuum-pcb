@@ -268,6 +268,8 @@ enum PlateBuilder {
                     base: top, additions: topAdditions, cutters: topCutters,
                     outline: outline, innerZ: topInnerZ,
                     thickness: topThickness, side: .top,
+                    cornerRadius: m.plateCornerFillet,
+                    additionOvershoot: screwOvershoot,
                     previewOvershoot: clipOvershoot
                 )
             default:
@@ -275,6 +277,8 @@ enum PlateBuilder {
                     base: bottom, additions: bottomAdditions, cutters: bottomCutters,
                     outline: outline, innerZ: bottomInnerZ,
                     thickness: bottomThickness, side: .bottom,
+                    cornerRadius: m.plateCornerFillet,
+                    additionOvershoot: screwOvershoot,
                     previewOvershoot: clipOvershoot
                 )
             }
@@ -301,11 +305,23 @@ enum PlateBuilder {
     private static func buildPlateCSG(
         base: Mesh, additions: [Mesh], cutters: [Mesh],
         outline: Rect, innerZ: Double, thickness: Double, side: Plate,
+        cornerRadius: Double, additionOvershoot: Double,
         previewOvershoot: Double
     ) -> (plate: Mesh, preview: Mesh) {
         var plate = base
         if !additions.isEmpty {
-            plate = plate.union(Mesh.union(additions))
+            // Clip dome additions to the plate's XY outline so a screw near
+            // the board edge doesn't grow a volcano that overhangs the
+            // boundary. The clipper is the same rounded-rect prism as the
+            // plate, extended in Z to cover the full dome height.
+            let clipper = plateBase(
+                outline: outline,
+                thickness: thickness + max(0, additionOvershoot),
+                innerZ: innerZ, side: side,
+                edgeChamfer: cornerRadius
+            )
+            let clipped = Mesh.union(additions).intersection(clipper)
+            plate = plate.union(clipped)
         }
         let featuresUnion = cutters.isEmpty ? Mesh.empty : Mesh.union(cutters)
         if !cutters.isEmpty {
