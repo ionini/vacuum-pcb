@@ -40,25 +40,17 @@ struct DocumentView: View {
     @State private var simulationState: SimulationState?
 
     var body: some View {
-        HSplitView {
-            sidebar
-                .frame(minWidth: 220, idealWidth: 260, maxWidth: 320)
-            VStack(spacing: 0) {
-                tabPicker
-                Divider()
-                tabContent
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
+        splitLayout
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     Button("Save STL file…") { triggerExport(.saveSTL) }
+                    #if canImport(AppKit)
                     Button("Open in Bambu Studio") { triggerExport(.openInBambuStudio) }
                         .disabled(!bambuStudioInstalled)
                     Button("Open in Flow Simulator") { triggerExport(.openInFlowSimulator) }
                         .disabled(!flowSimulatorInstalled)
+                    #endif
                 } label: {
                     Label(previewDirty ? "Build & Export…" : "Export…",
                           systemImage: "square.and.arrow.up")
@@ -86,6 +78,37 @@ struct DocumentView: View {
             contentType: .stl,
             defaultFilename: stlFilename
         ) { _ in }
+    }
+
+    /// Sidebar + main content. On macOS the splitter is user-resizable via
+    /// `HSplitView`; on iPad we fall back to a plain `HStack` because
+    /// `HSplitView` is AppKit-only. The sidebar is still scrollable so it
+    /// works on the smaller iPad widths even without a divider drag handle.
+    @ViewBuilder private var splitLayout: some View {
+        #if canImport(AppKit)
+        HSplitView {
+            sidebar
+                .frame(minWidth: 220, idealWidth: 260, maxWidth: 320)
+            mainPane
+        }
+        #else
+        HStack(spacing: 0) {
+            sidebar
+                .frame(minWidth: 220, idealWidth: 260, maxWidth: 320)
+            Divider()
+            mainPane
+        }
+        #endif
+    }
+
+    private var mainPane: some View {
+        VStack(spacing: 0) {
+            tabPicker
+            Divider()
+            tabContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - Tab picker
@@ -305,12 +328,21 @@ struct DocumentView: View {
         case .saveSTL:
             showExporter = true
         case .openInBambuStudio:
+            #if canImport(AppKit)
             openInBambuStudio()
+            #else
+            break
+            #endif
         case .openInFlowSimulator:
+            #if canImport(AppKit)
             openInFlowSimulator()
+            #else
+            break
+            #endif
         }
     }
 
+    #if canImport(AppKit)
     private static let bambuStudioBundleID = "com.bambulab.bambu-studio"
     private static let flowSimulatorBundleID = "com.ionini.Flow-Simulator"
 
@@ -404,6 +436,7 @@ struct DocumentView: View {
             }
         }
     }
+    #endif
 
     // MARK: - Build
 

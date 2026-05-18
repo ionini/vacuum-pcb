@@ -63,7 +63,7 @@ struct SchematicCanvasView: View {
                 // Solid backdrop sits *outside* the scaled subtree so it
                 // always fills the visible canvas no matter how far the
                 // user has zoomed in / out.
-                Color(NSColor.controlBackgroundColor)
+                Color.canvasBackground
                     .ignoresSafeArea(edges: [])
 
                 scaledContent
@@ -156,7 +156,7 @@ struct SchematicCanvasView: View {
                 .frame(width: 100_000, height: 100_000)
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    if !NSEvent.modifierFlags.contains(.command) {
+                    if !ModifierKeys.commandHeld {
                         selection = .none
                     }
                     netDrawState = .idle
@@ -305,7 +305,7 @@ struct SchematicCanvasView: View {
         DragGesture(minimumDistance: 4, coordinateSpace: .local)
             .onChanged { value in
                 if bgDragMode == .none {
-                    if NSEvent.modifierFlags.contains(.option) {
+                    if ModifierKeys.optionHeld {
                         bgDragMode = .pan
                         panBaseline = pan
                     } else {
@@ -337,7 +337,7 @@ struct SchematicCanvasView: View {
                     currentScreen: value.location
                 ).rect
                 guard rect.width > 2 || rect.height > 2 else { return }
-                applyMarquee(rect: rect, additive: NSEvent.modifierFlags.contains(.command))
+                applyMarquee(rect: rect, additive: ModifierKeys.commandHeld)
             }
     }
 

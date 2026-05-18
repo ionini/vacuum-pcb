@@ -28,7 +28,7 @@ struct SimulatePanZoom<Content: View>: View {
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .topLeading) {
-                Color(NSColor.controlBackgroundColor)
+                Color.canvasBackground
                     .ignoresSafeArea(edges: [])
 
                 content()

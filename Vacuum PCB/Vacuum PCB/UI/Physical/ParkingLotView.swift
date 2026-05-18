@@ -62,7 +62,7 @@ struct ParkingLotView: View {
         }
         .frame(width: 160)
         .padding(.horizontal, 8)
-        .background(Color(NSColor.windowBackgroundColor))
+        .background(Color.paneBackground)
     }
 
     private var unplaced: [Component] {

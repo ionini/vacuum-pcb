@@ -40,7 +40,7 @@ struct ComponentPaletteView: View {
             .padding(.horizontal, 6)
         }
         .frame(width: 80)
-        .background(Color(NSColor.windowBackgroundColor))
+        .background(Color.paneBackground)
     }
 
     private func paletteButton(

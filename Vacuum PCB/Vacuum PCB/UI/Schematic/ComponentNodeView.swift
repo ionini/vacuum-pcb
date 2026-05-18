@@ -78,7 +78,7 @@ struct ComponentNodeView: View {
     }
 
     private func handleSymbolTap() {
-        if NSEvent.modifierFlags.contains(.command) {
+        if ModifierKeys.commandHeld {
             // Cmd-click toggles in/out of the multi-selection.
             var next = selection
             next.net = nil
@@ -288,10 +288,14 @@ struct ComponentNodeView: View {
     // MARK: - Rename
 
     private var renameField: some View {
-        TextField("Label", text: $renameDraft, onCommit: commitRename)
+        let field = TextField("Label", text: $renameDraft, onCommit: commitRename)
             .textFieldStyle(.roundedBorder)
             .frame(width: 80)
-            .onExitCommand { isRenaming = false }
+        #if canImport(AppKit)
+        return field.onExitCommand { isRenaming = false }
+        #else
+        return field
+        #endif
     }
 
     private func commitRename() {

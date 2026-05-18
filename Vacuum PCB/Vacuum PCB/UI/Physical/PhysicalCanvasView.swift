@@ -115,7 +115,7 @@ struct PhysicalCanvasView: View {
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .topLeading) {
-                Color(NSColor.controlBackgroundColor)
+                Color.canvasBackground
                     .contentShape(Rectangle())
                     .onTapGesture(coordinateSpace: .local) { pt in
                         handleBackgroundTap(at: pt)
@@ -210,7 +210,7 @@ struct PhysicalCanvasView: View {
             }
             .coordinateSpace(name: "canvas")
             .clipped()
-            .background(Color(NSColor.controlBackgroundColor))
+            .background(Color.canvasBackground)
             .onContinuousHover { phase in
                 if case .active(let p) = phase { mouseLocation = p }
             }
@@ -458,13 +458,13 @@ struct PhysicalCanvasView: View {
         // routes traversing the body; without this, those routes are
         // unreachable. Cmd-click is preserved for multi-select on placements
         // — only plain clicks defer to the route.
-        if !NSEvent.modifierFlags.contains(.command),
+        if !ModifierKeys.commandHeld,
            let hit = routeSegmentHit(at: pt) {
             selection = .routeSegment(netId: hit.netId, segmentIndex: hit.segmentIndex)
             routingState = .idle
             return
         }
-        if NSEvent.modifierFlags.contains(.command) {
+        if ModifierKeys.commandHeld {
             // Cmd-click toggles in/out of the multi-selection without
             // disturbing whatever else is selected. Route segment goes away
             // when we transition into multi-select on placements.
@@ -514,7 +514,7 @@ struct PhysicalCanvasView: View {
                 let allScrews = drag.originals.keys.allSatisfy { id in
                     document.circuit.logic.components.first(where: { $0.id == id })?.kind == .screw
                 }
-                let cmdHeld = NSEvent.modifierFlags.contains(.command)
+                let cmdHeld = ModifierKeys.commandHeld
                 let delta: Point
                 if allScrews && cmdHeld {
                     delta = raw
@@ -544,7 +544,7 @@ struct PhysicalCanvasView: View {
     /// route waypoint sitting on any pin of any dragged placement on top of
     /// whatever the selection already carries.
     private func startPlacementDrag(grabbed placement: Placement, translation: CGSize) {
-        let withRoutes = NSEvent.modifierFlags.contains(.command)
+        let withRoutes = ModifierKeys.commandHeld
         let dragSet: Set<UUID>
         var carriedWaypoints: Set<RouteWaypointAddress> = []
         if selection.contains(placement: placement.componentId), selection.placements.count > 1 {
@@ -1062,7 +1062,7 @@ struct PhysicalCanvasView: View {
         DragGesture(minimumDistance: 4, coordinateSpace: .local)
             .onChanged { value in
                 if bgDragMode == .none {
-                    if NSEvent.modifierFlags.contains(.option) {
+                    if ModifierKeys.optionHeld {
                         bgDragMode = .pan
                         panBaseline = transform.offset
                     } else {
@@ -1096,7 +1096,7 @@ struct PhysicalCanvasView: View {
                 // Tiny rectangles (sub-grid) are likely fumbled clicks — treat
                 // as a no-op rather than wiping the selection silently.
                 guard rect.width > 2 || rect.height > 2 else { return }
-                applyMarquee(screenRect: rect, additive: NSEvent.modifierFlags.contains(.command))
+                applyMarquee(screenRect: rect, additive: ModifierKeys.commandHeld)
             }
     }
 
@@ -1159,7 +1159,7 @@ struct PhysicalCanvasView: View {
             // here by computing point-to-polyline distance.
             if let hit = routeSegmentHit(at: pt) {
                 selection = .routeSegment(netId: hit.netId, segmentIndex: hit.segmentIndex)
-            } else if !NSEvent.modifierFlags.contains(.command) {
+            } else if !ModifierKeys.commandHeld {
                 // Cmd-tap on empty area preserves selection (so the user can
                 // Cmd-tap placements to extend a multi-selection without
                 // accidentally clearing it). Plain background tap deselects.
@@ -1488,13 +1488,27 @@ struct WaypointHandle: View {
 // MARK: - Right-click catcher
 
 /// SwiftUI on macOS doesn't expose secondary-button taps, so we drop a thin
-/// NSView into the hierarchy that:
-///  * returns `nil` from `hitTest` so left clicks (and other gestures) pass
-///    through to sibling SwiftUI views beneath it,
-///  * registers a local NSEvent monitor while attached to a window so that
-///    right-clicks anywhere over the host view are observed and reported
-///    in SwiftUI-style (Y-down) coordinates.
-struct RightClickCatcher: NSViewRepresentable {
+/// NSView into the hierarchy that monitors `.rightMouseDown` and forwards
+/// the location in SwiftUI-style (Y-down) coordinates. The view returns
+/// `nil` from `hitTest` so left clicks pass through to sibling SwiftUI
+/// views beneath it. On iOS / iPad there's no secondary-click concept, so
+/// this is a no-op view; right-click-driven actions (removing a pin from
+/// a net, deleting an interior waypoint) are unreachable on touch in v1.
+struct RightClickCatcher: View {
+    let onRightClick: (CGPoint) -> Void
+
+    var body: some View {
+        #if canImport(AppKit)
+        RightClickCatcherRepresentable(onRightClick: onRightClick)
+        #else
+        Color.clear.allowsHitTesting(false)
+        #endif
+    }
+}
+
+#if canImport(AppKit)
+
+private struct RightClickCatcherRepresentable: NSViewRepresentable {
     let onRightClick: (CGPoint) -> Void
 
     func makeNSView(context: Context) -> RightClickCatcherView {
@@ -1540,6 +1554,8 @@ final class RightClickCatcherView: NSView {
         if let monitor { NSEvent.removeMonitor(monitor) }
     }
 }
+
+#endif
 
 // MARK: - Drop delegate for parking-lot drops
 

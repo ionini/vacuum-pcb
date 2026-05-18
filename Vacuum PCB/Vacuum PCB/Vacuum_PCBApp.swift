@@ -6,6 +6,9 @@
 //
 
 import SwiftUI
+#if canImport(AppKit)
+import AppKit
+#endif
 
 @main
 struct Vacuum_PCBApp: App {
@@ -19,6 +22,7 @@ struct Vacuum_PCBApp: App {
         DocumentGroup(newDocument: VPCBDocument()) { config in
             DocumentView(document: config.$document)
         }
+        #if canImport(AppKit)
         .commands {
             CommandMenu("Library") {
                 Button("Reload Library") {
@@ -35,5 +39,6 @@ struct Vacuum_PCBApp: App {
                 }
             }
         }
+        #endif
     }
 }

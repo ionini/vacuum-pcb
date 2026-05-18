@@ -20,15 +20,15 @@ enum PreviewDisplayMode: String, CaseIterable, Hashable {
 
 /// SceneKit-backed 3D preview of the two plates.
 ///
-/// Built once with `makeNSView`; `updateNSView` only swaps geometries on the
-/// existing nodes so orbit / zoom state survives document edits. Camera is
-/// orthographic and seeded at the standard iso angle (Z-up, viewed from the
-/// +X / -Y / +Z octant).
+/// Built once with `makePlatformView`; `updatePlatformView` only swaps
+/// geometries on the existing nodes so orbit / zoom state survives document
+/// edits. Camera is orthographic and seeded at the standard iso angle
+/// (Z-up, viewed from the +X / -Y / +Z octant).
 ///
 /// Camera control mirrors the flow_simulator setup: the controller's pivot is
 /// pinned to the model centroid instead of letting SceneKit recompute it from
 /// the bounding box, which would drift as geometry changes.
-struct Scene3DView: NSViewRepresentable {
+struct Scene3DView {
     var top: Mesh
     var bottom: Mesh
     var topFeatures: Mesh
@@ -50,11 +50,14 @@ struct Scene3DView: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeNSView(context: Context) -> SCNView {
-        let c = context.coordinator
+    fileprivate func makeSCNView(coordinator c: Coordinator) -> SCNView {
         let view = SCNView()
         view.scene = c.scene
+        #if canImport(AppKit)
         view.backgroundColor = NSColor.windowBackgroundColor
+        #elseif canImport(UIKit)
+        view.backgroundColor = UIColor.systemBackground
+        #endif
         view.antialiasingMode = .multisampling4X
         view.allowsCameraControl = true
         view.autoenablesDefaultLighting = false
@@ -93,8 +96,7 @@ struct Scene3DView: NSViewRepresentable {
         return view
     }
 
-    func updateNSView(_ view: SCNView, context: Context) {
-        let c = context.coordinator
+    fileprivate func refresh(view: SCNView, coordinator c: Coordinator) {
         applyGeometries(coordinator: c)
         applyDisplayMode(coordinator: c)
         if c.lastOutline != boardOutline {
@@ -111,17 +113,13 @@ struct Scene3DView: NSViewRepresentable {
         c.bottomFeaturesNode.geometry = featuresGeometry(for: bottomFeatures, color: .systemTeal)
     }
 
-    private func plateGeometry(for mesh: Mesh, color: NSColor) -> SCNGeometry {
+    private func plateGeometry(for mesh: Mesh, color: PlatformColor) -> SCNGeometry {
         let geometry = SCNGeometry(mesh)
         let material = SCNMaterial()
         material.diffuse.contents = color.withAlphaComponent(0.55)
         material.transparency = 0.55
         material.isDoubleSided = true
         material.lightingModel = .blinn
-        // Plates have internal cavities (channels, dome dimples, etc.). Without
-        // this, double-sided translucent geometry depth-occludes itself and
-        // back faces blend inconsistently — some show through, some don't —
-        // which looked patchy on the curved dome walls.
         material.writesToDepthBuffer = false
         geometry.materials = [material]
         return geometry
@@ -131,7 +129,7 @@ struct Scene3DView: NSViewRepresentable {
     /// against the translucent plate body in `both` mode and read clearly on
     /// their own in `featuresOnly`. Color tracks layer to match the schematic
     /// and physical canvas conventions.
-    private func featuresGeometry(for mesh: Mesh, color: NSColor) -> SCNGeometry {
+    private func featuresGeometry(for mesh: Mesh, color: PlatformColor) -> SCNGeometry {
         let geometry = SCNGeometry(mesh)
         let material = SCNMaterial()
         material.diffuse.contents = color
@@ -193,12 +191,6 @@ struct Scene3DView: NSViewRepresentable {
     }
 
     private func addLights(to scene: SCNScene) {
-        // Lower the ambient now that SSAO contributes baseline contact
-        // darkening — keeping it high washes out the occlusion. Key + fill
-        // is a standard three-point rig minus the back light: key gives
-        // form, fill softens the shadow side without flattening the SSAO,
-        // and the bigger angular spread between the two makes adjacent
-        // same-colour solids read distinctly across more of the orbit.
         let ambient = SCNNode()
         ambient.light = SCNLight()
         ambient.light?.type = .ambient
@@ -220,3 +212,15 @@ struct Scene3DView: NSViewRepresentable {
         scene.rootNode.addChildNode(fill)
     }
 }
+
+#if canImport(AppKit)
+extension Scene3DView: NSViewRepresentable {
+    func makeNSView(context: Context) -> SCNView { makeSCNView(coordinator: context.coordinator) }
+    func updateNSView(_ view: SCNView, context: Context) { refresh(view: view, coordinator: context.coordinator) }
+}
+#elseif canImport(UIKit)
+extension Scene3DView: UIViewRepresentable {
+    func makeUIView(context: Context) -> SCNView { makeSCNView(coordinator: context.coordinator) }
+    func updateUIView(_ view: SCNView, context: Context) { refresh(view: view, coordinator: context.coordinator) }
+}
+#endif

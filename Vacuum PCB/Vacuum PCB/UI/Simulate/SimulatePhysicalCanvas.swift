@@ -39,7 +39,7 @@ struct SimulatePhysicalCanvas: View {
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .topLeading) {
-                Color(NSColor.controlBackgroundColor)
+                Color.canvasBackground
                     .ignoresSafeArea(edges: [])
 
                 Canvas { ctx, _ in
