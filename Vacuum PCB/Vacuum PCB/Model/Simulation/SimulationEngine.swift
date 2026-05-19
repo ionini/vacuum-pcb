@@ -85,7 +85,19 @@ enum SimulationEngine {
                       net1: r.net1, net2: r.net2, g: g)
             }
 
-            // 3. Transistor edges. Conductance depends on gate net pressure
+            // 3. Pump edges. Each vacuum source becomes a conductance from
+            // its net to a virtual anchor at `params.pumpMaxVacuum`. The
+            // effective conductance depends on the current net pressure
+            // (re-evaluated each iteration alongside transistor gates).
+            for pump in network.pumps {
+                let currentP = anchored[pump.netId] ?? pressures[pump.netId] ?? 1.0
+                let g = params.pumpConductance(forNetPressure: currentP)
+                guard g > 0, let idx = freeIndex[pump.netId] else { continue }
+                y[idx * n + idx] += g
+                rhs[idx] += g * params.pumpMaxVacuum
+            }
+
+            // 4. Transistor edges. Conductance depends on gate net pressure
             // (whatever was last solved / anchored).
             for t in network.transistors {
                 let gatePressure = anchored[t.gateNet] ?? pressures[t.gateNet] ?? 1.0
@@ -95,7 +107,7 @@ enum SimulationEngine {
                       net1: t.aNet, net2: t.bNet, g: g)
             }
 
-            // 4. Solve. Dense Gaussian elimination — N is small (number of
+            // 5. Solve. Dense Gaussian elimination — N is small (number of
             // free nets, typically <30 for hobby designs).
             solve(matrix: &y, rhs: &rhs, n: n, into: &solution)
             for (idx, netId) in freeIds.enumerated() {

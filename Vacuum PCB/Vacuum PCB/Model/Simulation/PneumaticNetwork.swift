@@ -4,7 +4,10 @@ import Foundation
 /// interactive simulation.
 ///
 /// One node per net. Components map to edges and boundary conditions:
-///   * VAC source pins its net to vacuum (P = 0).
+///   * VAC source is a soft pump: a conductance edge from its net to a
+///     virtual anchor at `pumpMaxVacuum`. Flow capacity and curve shape
+///     come from `SimulationParameters` so the user can model a real
+///     pump's Q-vs-P curve rather than assuming infinite suction.
 ///   * ATM vent pins its net to atmosphere (P = 1).
 ///   * Input port pins its net to the user-controlled pressure for that port.
 ///   * Output port and LED are read-only probes (no constraint).
@@ -40,12 +43,24 @@ struct PneumaticNetwork {
         let pathLengthMm: Double
     }
 
-    /// Hard boundary: a net forced to a known constant pressure (VAC / ATM).
+    /// Hard boundary: a net forced to a known constant pressure (ATM vent).
     /// Inputs are intentionally NOT here — their value depends on user
     /// controls, so the engine reads them from `SimulationState` directly.
+    /// Vacuum sources are also not here; they're modelled as soft `Pump`
+    /// edges with finite flow capacity.
     struct HardBoundary {
         let netId: UUID
         let value: Double
+    }
+
+    /// Soft vacuum source: a conductance edge from `netId` to a virtual
+    /// anchor at `SimulationParameters.pumpMaxVacuum`. The effective
+    /// conductance depends on the net's current pressure (see
+    /// `SimulationParameters.pumpConductance(forNetPressure:)`).
+    struct Pump: Identifiable {
+        let id: UUID            // component id
+        let label: String
+        let netId: UUID
     }
 
     /// A pressure probe surfaced in the Simulate sidebar.
@@ -70,6 +85,7 @@ struct PneumaticNetwork {
     /// Volume-derived capacitance per net id.
     let capacitanceByNet: [UUID: Double]
     let hardBoundaries: [HardBoundary]
+    let pumps: [Pump]
     let inputs: [Input]
     let probes: [Probe]
     let transistors: [TransistorEdge]
@@ -97,6 +113,7 @@ struct PneumaticNetwork {
         let pinToNet = pinToNetMap(doc)
 
         var hardBoundaries: [HardBoundary] = []
+        var pumps: [Pump] = []
         var inputs: [Input] = []
         var probes: [Probe] = []
         var transistors: [TransistorEdge] = []
@@ -110,7 +127,7 @@ struct PneumaticNetwork {
             switch component.kind {
             case .vacuumSource:
                 if let net = netForSinglePin(component) {
-                    hardBoundaries.append(HardBoundary(netId: net, value: 0))
+                    pumps.append(Pump(id: component.id, label: component.label, netId: net))
                 }
             case .atmVent:
                 if let net = netForSinglePin(component) {
@@ -164,6 +181,7 @@ struct PneumaticNetwork {
             nets: doc.logic.nets,
             capacitanceByNet: capacitanceByNet,
             hardBoundaries: hardBoundaries,
+            pumps: pumps,
             inputs: inputs,
             probes: probes,
             transistors: transistors,

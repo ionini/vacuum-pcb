@@ -47,6 +47,48 @@ struct SimulateControlsView: View {
                 range: 0.05...0.9,
                 format: "%.2f"
             )
+            pumpTuning
+        }
+    }
+
+    /// Three sliders modelling the real vacuum pump's Q-vs-P curve. The
+    /// previous solver treated VAC sources as ideal anchors at zero — useful
+    /// for crisp digital simulations, but it hid leakage losses that matter
+    /// the moment a real (finite-flow) pump is wired up. Defaults are tuned
+    /// to roughly preserve the old "infinite" behaviour; dial flow capacity
+    /// down to see how much vacuum the resistors are actually draining.
+    @ViewBuilder private var pumpTuning: some View {
+        if !state.network.pumps.isEmpty {
+            Text("Pump").font(.subheadline).bold().padding(.top, 4)
+            tuningSlider(
+                label: "Max vac",
+                help: "Deepest scaled pressure the pump can pull at zero " +
+                      "flow (deadhead). 0 = perfect vacuum; 0.2 = pump " +
+                      "asymptotes to 20% of atmosphere.",
+                value: $state.params.pumpMaxVacuum,
+                range: 0.0...0.8,
+                format: "%.2f"
+            )
+            tuningSlider(
+                label: "Flow",
+                help: "Pump conductance at free flow (net at atmosphere). " +
+                      "Higher = the pump can overcome more resistor leakage " +
+                      "and drag the source net closer to max vacuum. Lower " +
+                      "to model an underpowered pump.",
+                value: $state.params.pumpFlowCapacity,
+                range: 0.5...50.0,
+                format: "%.1f"
+            )
+            tuningSlider(
+                label: "Droop",
+                help: "Q-vs-P curve shape. 0 = linear. >0 = concave (pump " +
+                      "struggles near deadhead). <0 = convex (pump holds " +
+                      "flow in the middle, then knees down near max vacuum) " +
+                      "— measured pumps often look like this.",
+                value: $state.params.pumpDroopExponent,
+                range: -0.9...3.0,
+                format: "%.2f"
+            )
         }
     }
 

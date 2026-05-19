@@ -46,6 +46,29 @@ struct SimulationParameters: Equatable {
     /// Real seconds per simulated second. 1.0 = realtime; higher = faster.
     var timeScale: Double
 
+    /// Deepest scaled pressure a pump can reach at zero flow (deadhead). A
+    /// real diaphragm pump can't reach absolute vacuum — it stalls somewhere
+    /// short of it. 0 = perfect pump; 0.2 = pump asymptotes to 20% of atm.
+    var pumpMaxVacuum: Double
+
+    /// Pump conductance at the free-flow point (net at atmosphere). Replaces
+    /// the previous "infinite" hard-anchor behaviour. Higher = pump moves
+    /// more air per unit pressure differential, so the source net is dragged
+    /// closer to `pumpMaxVacuum` even under heavy leakage from atm.
+    var pumpFlowCapacity: Double
+
+    /// Shape of the pump's Q-vs-P curve. Exponent on the normalised remaining
+    /// differential; effective flow follows `Q/Q_max = P_norm^(droop + 1)`.
+    ///   0  = linear — flow drops in proportion to the remaining differential.
+    ///   >0 = concave — pump struggles near deadhead (flow falls below the
+    ///        linear line). Some diaphragm pumps behave this way.
+    ///   <0 = convex — pump holds flow well in the middle range and then
+    ///        knees down sharply near deadhead. Typical of pumps whose
+    ///        measured curve drops 0.2 L/min near atmosphere but 0.35 L/min
+    ///        near max vacuum (the per-step loss accelerates).
+    /// Must stay > −1 so flow still reaches 0 at deadhead.
+    var pumpDroopExponent: Double
+
     // Defaults are sized for crisp digital-style swings on the canonical
     // NMOS inverter while still letting an unloaded net equalize back to
     // atmosphere in a couple of seconds. We want G_off ≪ G_resistor ≪
@@ -66,7 +89,15 @@ struct SimulationParameters: Equatable {
         nodeBaseCapacitance: 0.10,
         channelCapacitancePerMm: 0.04,
         dtSeconds: 0.01,
-        timeScale: 1.0
+        timeScale: 1.0,
+        // Pump defaults match a real diaphragm pump curve measured at the
+        // bench: deadhead at −46.7 kPa (P_scaled ≈ 0.54), free flow of
+        // 2.10 L/min (G ≈ 2.10 / (1 − 0.54) ≈ 4.6), and a slightly convex
+        // shape (droop ≈ −0.14) where the per-step flow loss accelerates as
+        // the pump approaches max vacuum.
+        pumpMaxVacuum: 0.54,
+        pumpFlowCapacity: 4.6,
+        pumpDroopExponent: -0.14
     )
 
     /// Smooth-step blend between `transistorOffConductance` (gate at atm) and
@@ -82,5 +113,40 @@ struct SimulationParameters: Equatable {
         else { t = (p - lo) / (hi - lo) }
         // p=0 → t=0 → on; p=1 → t=1 → off.
         return transistorOnConductance + t * (transistorOffConductance - transistorOnConductance)
+    }
+
+    /// 0…1 "open fraction" of the gate ramp at a given net pressure, using
+    /// the same threshold and hysteresis the transistor solver uses. 1 = the
+    /// silicone is sucked fully into the dimple (transistor on, LED lit);
+    /// 0 = the silicone is at rest against atmosphere (transistor closed,
+    /// LED dark). LEDs share this with transistors because they're the same
+    /// dimple — the user tunes one threshold and both surfaces follow.
+    func gateOpenness(forPressure p: Double) -> Double {
+        let lo = gateThreshold - gateHysteresis
+        let hi = gateThreshold + gateHysteresis
+        if p <= lo { return 1 }
+        if p >= hi { return 0 }
+        return 1 - (p - lo) / (hi - lo)
+    }
+
+    /// Effective pump conductance at the given source-net pressure. Treats
+    /// the pump as a resistive edge from the net to a virtual anchor held at
+    /// `pumpMaxVacuum`; the conductance is `pumpFlowCapacity` at atmosphere
+    /// and falls off according to `pumpDroopExponent` as the net approaches
+    /// max vacuum. Returns 0 once the net is at or below max vacuum, so the
+    /// pump never *injects* pressure into the channel.
+    func pumpConductance(forNetPressure p: Double) -> Double {
+        let pMin = pumpMaxVacuum
+        let diff = p - pMin
+        guard diff > 0 else { return 0 }
+        let span = max(1e-6, 1.0 - pMin)
+        let diffNorm = min(1.0, diff / span)
+        // Allow negative droop for convex curves. Clamp above −1 so flow
+        // still reaches zero at deadhead, and cap the shape so an
+        // aggressively convex curve at tiny `diffNorm` doesn't blow up the
+        // matrix conditioning.
+        let droop = max(-0.99, pumpDroopExponent)
+        let shape = droop == 0 ? 1.0 : min(100.0, pow(diffNorm, droop))
+        return pumpFlowCapacity * shape
     }
 }
