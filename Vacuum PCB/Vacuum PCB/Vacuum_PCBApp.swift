@@ -19,6 +19,11 @@ struct Vacuum_PCBApp: App {
         DocumentGroup(newDocument: VPCBDocument()) { config in
             DocumentView(document: config.$document)
         }
+        // SwiftUI's intrinsic-size default for document windows was small
+        // enough that the Physical bottom strip needed scrolling on every
+        // launch. Pick a size that gives the canvas room and matches what
+        // a 13" laptop can still display.
+        .defaultSize(width: 1400, height: 900)
         .commands {
             // Adds the standard View > Show/Hide Inspector menu item with
             // its ⌃⌘I shortcut, wired to the document's `.inspector(...)`.

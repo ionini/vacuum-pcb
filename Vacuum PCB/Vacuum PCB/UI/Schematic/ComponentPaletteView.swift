@@ -40,7 +40,11 @@ struct ComponentPaletteView: View {
             .padding(.horizontal, 6)
         }
         .frame(width: 80)
-        .background(Color(NSColor.windowBackgroundColor))
+        // No explicit background: SwiftUI extends solid colors through the
+        // toolbar safe-area inset, which would bleed an opaque column up
+        // behind the translucent Liquid Glass toolbar. The Divider on the
+        // right edge (drawn by SchematicView) still separates the palette
+        // from the canvas.
     }
 
     private func paletteButton(
