@@ -4,7 +4,7 @@ import Euclid
 struct DocumentView: View {
     @Binding var document: VPCBDocument
 
-    @State private var selectedTab: Tab = .schematic
+    @State private var selectedTab: ViewTab = .schematic
     @State private var selection: SchematicSelection = .none
     @State private var netDrawState: NetDrawState = .idle
     /// Lifted up from PhysicalView so the sidebar's DRC list can jump to a
@@ -25,13 +25,23 @@ struct DocumentView: View {
     /// even when CSG has to run first.
     @State private var pendingExportAction: ExportAction?
 
+    /// Split-view + inspector visibility, exposed so the toolbar toggles
+    /// match the system sidebar/inspector buttons. Inspector starts closed
+    /// because the default tab (.schematic) has no contextual content;
+    /// `onChange(of: selectedTab)` reveals it when switching to a tab that
+    /// does.
+    @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
+    @State private var showInspector: Bool = false
+
     enum ExportAction {
         case saveSTL
         case openInBambuStudio
         case openInFlowSimulator
     }
 
-    enum Tab: Hashable { case schematic, physical, preview, simulate }
+    /// Renamed from `Tab` to avoid shadowing SwiftUI's `Tab` value type used
+    /// by `TabView { Tab(...) }`.
+    enum ViewTab: Hashable { case schematic, physical, preview, simulate }
 
     /// Created lazily on first visit to the Simulate tab so users who never
     /// open it don't pay the network-build cost. Re-created from scratch when
@@ -40,32 +50,17 @@ struct DocumentView: View {
     @State private var simulationState: SimulationState?
 
     var body: some View {
-        HSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebar
-                .frame(minWidth: 220, idealWidth: 260, maxWidth: 320)
-            VStack(spacing: 0) {
-                tabPicker
-                Divider()
-                tabContent
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 320)
+        } detail: {
+            detail
         }
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    Button("Save STL file…") { triggerExport(.saveSTL) }
-                    Button("Open in Bambu Studio") { triggerExport(.openInBambuStudio) }
-                        .disabled(!bambuStudioInstalled)
-                    Button("Open in Flow Simulator") { triggerExport(.openInFlowSimulator) }
-                        .disabled(!flowSimulatorInstalled)
-                } label: {
-                    Label(previewDirty ? "Build & Export…" : "Export…",
-                          systemImage: "square.and.arrow.up")
-                }
-                .disabled(isBuilding)
-            }
+        .inspector(isPresented: $showInspector) {
+            inspector
+                .inspectorColumnWidth(min: 240, ideal: 300, max: 420)
         }
+        .toolbar { documentToolbar }
         .onChange(of: document.circuit) { _, _ in
             previewDirty = true
             // When the user is already on the 3D Preview tab, rebuild
@@ -79,6 +74,11 @@ struct DocumentView: View {
             // the 3D preview. Avoids the per-edit Euclid CSG storm that was
             // producing the "batch:" log spam and pinning a core.
             if newTab == .preview, previewDirty, !isBuilding { rebuild() }
+            // Show the inspector only on tabs that actually have contextual
+            // controls. The Physical bottom strip is wide; closing the
+            // inspector here keeps the window from being squeezed past the
+            // canvas's intrinsic minimum.
+            showInspector = tabHasInspectorContent(newTab)
         }
         .fileExporter(
             isPresented: $showExporter,
@@ -88,21 +88,13 @@ struct DocumentView: View {
         ) { _ in }
     }
 
-    // MARK: - Tab picker
+    // MARK: - Detail content
 
-    private var tabPicker: some View {
-        Picker("View", selection: $selectedTab) {
-            Text("Schematic").tag(Tab.schematic)
-            Text("Physical").tag(Tab.physical)
-            Text("3D Preview").tag(Tab.preview)
-            Text("Simulate").tag(Tab.simulate)
-        }
-        .pickerStyle(.segmented)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-    }
-
-    @ViewBuilder private var tabContent: some View {
+    /// Switch on the sidebar's current selection. We don't use a TabView
+    /// here: the navigation chooser lives in the sidebar (Mac App Store
+    /// pattern), and a `switch` evaluates one view at a time so SwiftUI
+    /// doesn't size the window to the widest tab's intrinsic content.
+    @ViewBuilder private var detail: some View {
         switch selectedTab {
         case .schematic:
             SchematicView(
@@ -151,7 +143,7 @@ struct DocumentView: View {
                 if isBuilding {
                     ProgressView("Building plates…")
                         .padding(12)
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                        .glassEffect(in: .rect(cornerRadius: 12))
                         .padding(.top, 56)
                 }
             }
@@ -176,73 +168,77 @@ struct DocumentView: View {
         .labelsHidden()
         .fixedSize()
         .padding(8)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .glassEffect(in: .rect(cornerRadius: 10))
         .padding(.top, 8)
     }
 
-    // MARK: - Sidebar
+    // MARK: - Sidebar (navigation + document info)
 
+    /// Left column. Top section is the view chooser (Mac App Store / Mail
+    /// pattern: nav lives in the sidebar). Below that are document-wide
+    /// facts and DRC. Tool-specific controls (manufacturing constants,
+    /// simulator inputs) live in the right-hand inspector — the macOS
+    /// convention for "properties of the current view" (Xcode, Pages,
+    /// Keynote, Final Cut all do this).
     private var sidebar: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Document").font(.title3).bold()
+        List(selection: $selectedTab) {
+            Section("Views") {
+                Label("Schematic", systemImage: "point.3.connected.trianglepath.dotted")
+                    .tag(ViewTab.schematic)
+                Label("Physical", systemImage: "square.stack.3d.up")
+                    .tag(ViewTab.physical)
+                Label("3D Preview", systemImage: "cube.transparent")
+                    .tag(ViewTab.preview)
+                Label("Simulate", systemImage: "waveform.path")
+                    .tag(ViewTab.simulate)
+            }
+            Section("Document") {
                 stat("Components", document.circuit.logic.components.count)
                 stat("Nets", document.circuit.logic.nets.count)
                 stat("Placements", document.circuit.physical.placements.count)
                 stat("Routes", document.circuit.physical.routes.count)
-                Divider()
                 let outline = document.circuit.physical.boardOutline
-                Text("Board: \(format(outline.size.width)) × \(format(outline.size.height)) mm")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                HStack {
+                    Text("Board")
+                    Spacer()
+                    Text("\(format(outline.size.width)) × \(format(outline.size.height)) mm")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
                 if isBuilding {
                     ProgressView("Rebuilding…").controlSize(.small)
                 }
-                drcSection
-
-                // Settings show up on the 3D Preview tab, where they're most
-                // relevant — the user is looking at what the constants
-                // actually produce.
-                if selectedTab == .preview {
-                    Divider()
-                    ManufacturingSettingsView(document: $document)
-                }
-                if selectedTab == .simulate, let state = simulationState {
-                    SimulateControlsView(state: state)
-                }
             }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            Section("Design Rules") {
+                drcRows
+            }
         }
+        .listStyle(.sidebar)
     }
 
     /// DRC summary: how many nets are clean, how many have routing issues,
     /// and the first few issues in human-readable form. Updates live as the
     /// document changes — this whole view rebuilds on every circuit change.
-    @ViewBuilder private var drcSection: some View {
+    @ViewBuilder private var drcRows: some View {
         let issues = DRC.check(document.circuit)
         let netsWithIssues = Set(issues.map(\.netId)).count
         let totalNets = document.circuit.logic.nets.count
-        Divider()
         if totalNets == 0 {
-            Text("No nets defined")
-                .font(.caption)
+            Label("No nets defined", systemImage: "circle.dashed")
                 .foregroundStyle(.secondary)
         } else if issues.isEmpty {
             Label("All \(totalNets) nets routed", systemImage: "checkmark.circle.fill")
-                .font(.caption)
                 .foregroundStyle(.green)
         } else {
             Label("\(netsWithIssues) of \(totalNets) nets have issues",
                   systemImage: "exclamationmark.triangle.fill")
-                .font(.caption)
                 .foregroundStyle(.orange)
             ForEach(issues.prefix(6)) { issue in
                 Button {
                     focusIssue(issue)
                 } label: {
-                    Text("• \(issue.summary)")
-                        .font(.caption2)
+                    Text(issue.summary)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
@@ -269,10 +265,88 @@ struct DocumentView: View {
     }
 
     private func stat(_ name: String, _ value: Int) -> some View {
-        HStack { Text(name); Spacer(); Text("\(value)").monospacedDigit() }
+        HStack {
+            Text(name)
+            Spacer()
+            Text("\(value)").monospacedDigit().foregroundStyle(.secondary)
+        }
     }
 
     private func format(_ d: Double) -> String { String(format: "%.1f", d) }
+
+    // MARK: - Inspector (right column)
+
+    /// Right column: tool-specific properties for the active tab.
+    /// macOS users expect this pane to mirror the current view (think
+    /// Xcode's attributes inspector). Tabs without contextual controls
+    /// show a brief placeholder so the column doesn't render empty when
+    /// the user toggles it on.
+    @ViewBuilder private var inspector: some View {
+        switch selectedTab {
+        case .preview:
+            ScrollView {
+                ManufacturingSettingsView(document: $document)
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        case .simulate:
+            if let state = simulationState {
+                ScrollView {
+                    SimulateControlsView(state: state)
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } else {
+                ContentUnavailableView(
+                    "Preparing simulator",
+                    systemImage: "hourglass",
+                    description: Text("Controls appear once the network is built.")
+                )
+            }
+        case .schematic, .physical:
+            ContentUnavailableView(
+                "No inspector",
+                systemImage: "sidebar.right",
+                description: Text("Switch to 3D Preview or Simulate for contextual settings.")
+            )
+        }
+    }
+
+    private func tabHasInspectorContent(_ tab: ViewTab) -> Bool {
+        tab == .preview || tab == .simulate
+    }
+
+    // MARK: - Toolbar
+
+    @ToolbarContentBuilder private var documentToolbar: some ToolbarContent {
+        ToolbarItem(placement: .primaryAction) {
+            Menu {
+                Button("Save STL file…") { triggerExport(.saveSTL) }
+                Button("Open in Bambu Studio") { triggerExport(.openInBambuStudio) }
+                    .disabled(!bambuStudioInstalled)
+                Button("Open in Flow Simulator") { triggerExport(.openInFlowSimulator) }
+                    .disabled(!flowSimulatorInstalled)
+            } label: {
+                Label(previewDirty ? "Build & Export…" : "Export…",
+                      systemImage: "square.and.arrow.up")
+            }
+            .disabled(isBuilding)
+        }
+        // Inspector toggle only appears on tabs that actually have
+        // contextual content (3D Preview, Simulate) — there's nothing to
+        // show on Schematic/Physical, so the button would be a dead end.
+        // ⌃⌘I from `InspectorCommands` still works regardless.
+        if tabHasInspectorContent(selectedTab) {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showInspector.toggle()
+                } label: {
+                    Label("Inspector", systemImage: "sidebar.right")
+                }
+                .help(showInspector ? "Hide inspector" : "Show inspector")
+            }
+        }
+    }
 
     // MARK: - Export
 

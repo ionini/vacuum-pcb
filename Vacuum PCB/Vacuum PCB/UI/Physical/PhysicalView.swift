@@ -65,6 +65,22 @@ struct PhysicalView: View {
     }
 
     private var bottomStrip: some View {
+        // The strip packs a lot of controls (visibility picker, per-layer
+        // pills, routing menu, board size, layer steppers…). Its intrinsic
+        // min width pushed the document window wide enough to overflow
+        // smaller displays — NavigationSplitView propagates child min sizes
+        // more strictly than the old HSplitView. Wrap in a horizontal
+        // ScrollView so the strip can overflow instead of forcing a resize.
+        ScrollView(.horizontal, showsIndicators: false) {
+            stripContent
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .frame(minHeight: 44)
+        }
+        .background(.regularMaterial)
+    }
+
+    private var stripContent: some View {
         HStack(spacing: 12) {
             // Plate-level visibility shortcut (legacy "All / Top / Bottom").
             // The per-layer multi-select pills appear after this, generated
@@ -142,10 +158,6 @@ struct PhysicalView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.regularMaterial)
-        .frame(minHeight: 44)
     }
 
     /// All layers currently configured on the board, in T0…Tn, B0…Bm order.

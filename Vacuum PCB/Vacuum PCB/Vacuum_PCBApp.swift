@@ -20,6 +20,10 @@ struct Vacuum_PCBApp: App {
             DocumentView(document: config.$document)
         }
         .commands {
+            // Adds the standard View > Show/Hide Inspector menu item with
+            // its ⌃⌘I shortcut, wired to the document's `.inspector(...)`.
+            InspectorCommands()
+
             CommandMenu("Library") {
                 Button("Reload Library") {
                     PartsLibrary.shared.reload()
