@@ -26,12 +26,12 @@ struct DocumentView: View {
     @State private var pendingExportAction: ExportAction?
 
     /// Split-view + inspector visibility, exposed so the toolbar toggles
-    /// match the system sidebar/inspector buttons. Inspector starts closed
-    /// because the default tab (.schematic) has no contextual content;
-    /// `onChange(of: selectedTab)` reveals it when switching to a tab that
-    /// does.
+    /// match the system sidebar/inspector buttons. Every tab now has
+    /// inspector content (component palette on Schematic, parking lot on
+    /// Physical, manufacturing constants on Preview, simulator controls
+    /// on Simulate), so the inspector defaults to open.
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
-    @State private var showInspector: Bool = false
+    @State private var showInspector: Bool = true
 
     enum ExportAction {
         case saveSTL
@@ -60,7 +60,6 @@ struct DocumentView: View {
             inspector
                 .inspectorColumnWidth(min: 240, ideal: 300, max: 420)
         }
-        .toolbar { documentToolbar }
         .onChange(of: document.circuit) { _, _ in
             previewDirty = true
             // When the user is already on the 3D Preview tab, rebuild
@@ -74,16 +73,12 @@ struct DocumentView: View {
             // the 3D preview. Avoids the per-edit Euclid CSG storm that was
             // producing the "batch:" log spam and pinning a core.
             if newTab == .preview, previewDirty, !isBuilding { rebuild() }
-            // Auto-open the inspector on every tab whose primary controls
-            // live there. Physical now hosts the parking lot (in addition
-            // to board / layer-count fields), so it needs the same
-            // treatment as Preview and Simulate — without the parking
-            // lot visible the user has no way to drag components onto
-            // the canvas.
-            switch newTab {
-            case .physical, .preview, .simulate: showInspector = true
-            case .schematic:                     showInspector = false
-            }
+            // Every tab now has contextual inspector content, so
+            // reveal the pane on every switch. Without it visible the
+            // user loses the schematic palette / parking lot /
+            // manufacturing constants / simulator controls depending on
+            // the tab.
+            showInspector = true
         }
         .fileExporter(
             isPresented: $showExporter,
@@ -105,7 +100,9 @@ struct DocumentView: View {
             SchematicView(
                 document: $document,
                 selection: $selection,
-                netDrawState: $netDrawState
+                netDrawState: $netDrawState,
+                showInspector: $showInspector,
+                exportMenu: exportMenu
             )
         case .physical:
             PhysicalView(
@@ -333,16 +330,13 @@ struct DocumentView: View {
         case .physical:
             PhysicalInspector(document: $document)
         case .schematic:
-            ContentUnavailableView(
-                "No inspector",
-                systemImage: "sidebar.right",
-                description: Text("Switch to Physical, 3D Preview, or Simulate for contextual settings.")
-            )
+            SchematicInspector(document: $document, selection: $selection)
         }
     }
 
     private func tabHasInspectorContent(_ tab: ViewTab) -> Bool {
-        tab == .physical || tab == .preview || tab == .simulate
+        // Every tab has inspector content now.
+        true
     }
 
     // MARK: - Toolbar
@@ -361,16 +355,6 @@ struct DocumentView: View {
             onOpenBambu: { triggerExport(.openInBambuStudio) },
             onOpenFlow: { triggerExport(.openInFlowSimulator) }
         )
-    }
-
-    /// Items DocumentView owns directly. Physical/Simulate/Preview place
-    /// their own Export + Inspector at the trailing edge (so the two stay
-    /// adjacent). Schematic has neither a per-view toolbar nor an
-    /// inspector, so we put Export here for that case.
-    @ToolbarContentBuilder private var documentToolbar: some ToolbarContent {
-        if selectedTab == .schematic {
-            ToolbarItem(placement: .primaryAction) { exportMenu }
-        }
     }
 
     // MARK: - Export

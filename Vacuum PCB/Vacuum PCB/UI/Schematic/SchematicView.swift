@@ -1,30 +1,54 @@
 import SwiftUI
 
-/// The Schematic tab content: palette on the left, canvas in the middle.
-/// The inspector strip is owned by DocumentView so it's shared with other tabs.
+/// The Schematic tab content: just the canvas plus the bottom
+/// selection-details strip. The component palette lives in the document
+/// inspector (right column) now.
 struct SchematicView: View {
     @Binding var document: VPCBDocument
     @Binding var selection: SchematicSelection
     @Binding var netDrawState: NetDrawState
+    /// Threaded down so this view can plant the Inspector toolbar toggle
+    /// as the rightmost toolbar item.
+    @Binding var showInspector: Bool
+    /// Passed in from DocumentView so the Export menu can sit immediately
+    /// before the Inspector toggle on the trailing edge.
+    let exportMenu: ExportMenuButton
+
+    var body: some View {
+        VStack(spacing: 0) {
+            SchematicCanvasView(
+                document: $document,
+                selection: $selection,
+                netDrawState: $netDrawState
+            )
+            Divider()
+            InspectorStrip(document: $document, selection: $selection)
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) { exportMenu }
+            ToolbarItem(placement: .primaryAction) {
+                InspectorToggleButton(showInspector: $showInspector)
+            }
+        }
+    }
+}
+
+/// Right-hand inspector content for the Schematic tab. Owns the
+/// component palette (was the leading column of the schematic before)
+/// plus the alert that surfaces "library part doesn't fit this board"
+/// when the user tries to drop an incompatible subpart.
+struct SchematicInspector: View {
+    @Binding var document: VPCBDocument
+    @Binding var selection: SchematicSelection
 
     @State private var alertMessage: String?
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                ComponentPaletteView(
-                    onAdd: addComponent,
-                    onAddLibraryPart: addLibraryPart
-                )
-                Divider()
-                SchematicCanvasView(
-                    document: $document,
-                    selection: $selection,
-                    netDrawState: $netDrawState
-                )
-            }
-            Divider()
-            InspectorStrip(document: $document, selection: $selection)
+        ScrollView {
+            ComponentPaletteView(
+                onAdd: addComponent,
+                onAddLibraryPart: addLibraryPart
+            )
         }
         .alert("Can't add part", isPresented: Binding(
             get: { alertMessage != nil },
@@ -51,10 +75,11 @@ struct SchematicView: View {
         selection = .component(id)
     }
 
-    /// Instantiates a library part. Enforces the layer-count check up front:
-    /// a part designed against more channel layers than the parent has would
-    /// land internal routes at invalid depths in the parent's stack, so we
-    /// refuse instead of silently bumping (per the v1 design decision).
+    /// Instantiates a library part. Enforces the layer-count check up
+    /// front: a part designed against more channel layers than the
+    /// parent has would land internal routes at invalid depths in the
+    /// parent's stack, so we refuse instead of silently bumping (per the
+    /// v1 design decision).
     private func addLibraryPart(_ part: PartsLibrary.Part) {
         let parentTop    = document.circuit.physical.topLayers
         let parentBottom = document.circuit.physical.bottomLayers
@@ -90,8 +115,9 @@ struct SchematicView: View {
         selection = .component(id)
     }
 
-    /// New components spawn in a loose grid so they don't all stack on the same
-    /// point. Uses current component count to compute next spawn slot.
+    /// New components spawn in a loose grid so they don't all stack on
+    /// the same point. Uses the current component count to compute the
+    /// next spawn slot.
     private func spawnPosition() -> Point {
         let n = document.circuit.logic.components.count
         let col = n % 5
