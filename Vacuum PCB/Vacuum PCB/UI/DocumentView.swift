@@ -74,11 +74,17 @@ struct DocumentView: View {
             // the 3D preview. Avoids the per-edit Euclid CSG storm that was
             // producing the "batch:" log spam and pinning a core.
             if newTab == .preview, previewDirty, !isBuilding { rebuild() }
-            // Show the inspector only on tabs that actually have contextual
-            // controls. The Physical bottom strip is wide; closing the
-            // inspector here keeps the window from being squeezed past the
-            // canvas's intrinsic minimum.
-            showInspector = tabHasInspectorContent(newTab)
+            // Auto-open the inspector on tabs whose primary controls live
+            // there (Preview, Simulate). Auto-close on Schematic (no
+            // content). Physical has inspector content (board / layer
+            // counts) but the user uses it infrequently, so we leave the
+            // pane state alone — they can pop it open via the toolbar
+            // toggle when they need to edit board dimensions.
+            switch newTab {
+            case .preview, .simulate: showInspector = true
+            case .schematic:          showInspector = false
+            case .physical:           break
+            }
         }
         .fileExporter(
             isPresented: $showExporter,
@@ -103,7 +109,12 @@ struct DocumentView: View {
                 netDrawState: $netDrawState
             )
         case .physical:
-            PhysicalView(document: $document, selection: $physicalSelection)
+            PhysicalView(
+                document: $document,
+                selection: $physicalSelection,
+                showInspector: $showInspector,
+                exportMenu: exportMenu
+            )
         case .preview:
             previewView
         case .simulate:
@@ -113,7 +124,12 @@ struct DocumentView: View {
 
     @ViewBuilder private var simulateView: some View {
         if let state = simulationState {
-            SimulateView(document: $document, state: state)
+            SimulateView(
+                document: $document,
+                state: state,
+                showInspector: $showInspector,
+                exportMenu: exportMenu
+            )
         } else {
             // Trampoline: spin up the state then re-render. This pattern
             // (vs. computing in onAppear) keeps the @State write off the
@@ -125,6 +141,18 @@ struct DocumentView: View {
     }
 
     @ViewBuilder private var previewView: some View {
+        previewContent
+            // Declared on the leaf so Export + Inspector end up rightmost
+            // (parent's toolbar items render before child's).
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) { exportMenu }
+                ToolbarItem(placement: .primaryAction) {
+                    InspectorToggleButton(showInspector: $showInspector)
+                }
+            }
+    }
+
+    @ViewBuilder private var previewContent: some View {
         if let built {
             // Keep Scene3DView mounted across rebuilds so its SCNView (and
             // therefore the user's orbit / zoom state) survives. The progress
@@ -303,48 +331,46 @@ struct DocumentView: View {
                     description: Text("Controls appear once the network is built.")
                 )
             }
-        case .schematic, .physical:
+        case .physical:
+            PhysicalInspector(document: $document)
+        case .schematic:
             ContentUnavailableView(
                 "No inspector",
                 systemImage: "sidebar.right",
-                description: Text("Switch to 3D Preview or Simulate for contextual settings.")
+                description: Text("Switch to Physical, 3D Preview, or Simulate for contextual settings.")
             )
         }
     }
 
     private func tabHasInspectorContent(_ tab: ViewTab) -> Bool {
-        tab == .preview || tab == .simulate
+        tab == .physical || tab == .preview || tab == .simulate
     }
 
     // MARK: - Toolbar
 
+    /// Constructed fresh each time the view re-renders so the menu
+    /// reflects the current build state (`previewDirty`, `isBuilding`,
+    /// installed helper apps). Passed down to per-view toolbars so they
+    /// can place Export right next to the Inspector toggle.
+    private var exportMenu: ExportMenuButton {
+        ExportMenuButton(
+            isBuilding: isBuilding,
+            previewDirty: previewDirty,
+            bambuStudioInstalled: bambuStudioInstalled,
+            flowSimulatorInstalled: flowSimulatorInstalled,
+            onSaveSTL: { triggerExport(.saveSTL) },
+            onOpenBambu: { triggerExport(.openInBambuStudio) },
+            onOpenFlow: { triggerExport(.openInFlowSimulator) }
+        )
+    }
+
+    /// Items DocumentView owns directly. Physical/Simulate/Preview place
+    /// their own Export + Inspector at the trailing edge (so the two stay
+    /// adjacent). Schematic has neither a per-view toolbar nor an
+    /// inspector, so we put Export here for that case.
     @ToolbarContentBuilder private var documentToolbar: some ToolbarContent {
-        ToolbarItem(placement: .primaryAction) {
-            Menu {
-                Button("Save STL file…") { triggerExport(.saveSTL) }
-                Button("Open in Bambu Studio") { triggerExport(.openInBambuStudio) }
-                    .disabled(!bambuStudioInstalled)
-                Button("Open in Flow Simulator") { triggerExport(.openInFlowSimulator) }
-                    .disabled(!flowSimulatorInstalled)
-            } label: {
-                Label(previewDirty ? "Build & Export…" : "Export…",
-                      systemImage: "square.and.arrow.up")
-            }
-            .disabled(isBuilding)
-        }
-        // Inspector toggle only appears on tabs that actually have
-        // contextual content (3D Preview, Simulate) — there's nothing to
-        // show on Schematic/Physical, so the button would be a dead end.
-        // ⌃⌘I from `InspectorCommands` still works regardless.
-        if tabHasInspectorContent(selectedTab) {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    showInspector.toggle()
-                } label: {
-                    Label("Inspector", systemImage: "sidebar.right")
-                }
-                .help(showInspector ? "Hide inspector" : "Show inspector")
-            }
+        if selectedTab == .schematic {
+            ToolbarItem(placement: .primaryAction) { exportMenu }
         }
     }
 
@@ -499,5 +525,51 @@ struct DocumentView: View {
                 }
             }
         }
+    }
+}
+
+/// Toolbar button that toggles the document inspector. Lives outside
+/// DocumentView so each tab's leaf toolbar can declare it as its last
+/// item — that's what makes it land as the rightmost toolbar button
+/// (parent's primaryAction items render before child's in SwiftUI's
+/// macOS toolbar merge).
+struct InspectorToggleButton: View {
+    @Binding var showInspector: Bool
+
+    var body: some View {
+        Button {
+            showInspector.toggle()
+        } label: {
+            Label("Inspector", systemImage: "sidebar.right")
+        }
+        .help(showInspector ? "Hide inspector" : "Show inspector")
+    }
+}
+
+/// Document-level Export menu, factored out so each per-view toolbar can
+/// declare it immediately before `InspectorToggleButton` — that keeps
+/// both rightmost and adjacent (Export → Inspector). The closure form
+/// avoids leaking DocumentView's `ExportAction` enum into call sites.
+struct ExportMenuButton: View {
+    let isBuilding: Bool
+    let previewDirty: Bool
+    let bambuStudioInstalled: Bool
+    let flowSimulatorInstalled: Bool
+    let onSaveSTL: () -> Void
+    let onOpenBambu: () -> Void
+    let onOpenFlow: () -> Void
+
+    var body: some View {
+        Menu {
+            Button("Save STL file…", action: onSaveSTL)
+            Button("Open in Bambu Studio", action: onOpenBambu)
+                .disabled(!bambuStudioInstalled)
+            Button("Open in Flow Simulator", action: onOpenFlow)
+                .disabled(!flowSimulatorInstalled)
+        } label: {
+            Label(previewDirty ? "Build & Export…" : "Export…",
+                  systemImage: "square.and.arrow.up")
+        }
+        .disabled(isBuilding)
     }
 }
