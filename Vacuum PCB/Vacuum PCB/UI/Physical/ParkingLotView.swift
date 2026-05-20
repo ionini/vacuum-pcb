@@ -60,9 +60,9 @@ struct ParkingLotView: View {
 
             Spacer()
         }
-        .frame(width: 160)
         .padding(.horizontal, 8)
-        .background(Color.paneBackground)
+        // Lives inside the document inspector now; no fixed width and no
+        // opaque background — the inspector column provides both.
     }
 
     private var unplaced: [Component] {

@@ -11,6 +11,12 @@ import SwiftUI
 struct SimulateView: View {
     @Binding var document: VPCBDocument
     @Bindable var state: SimulationState
+    /// Threaded down so this view can plant the Inspector toolbar toggle as
+    /// the rightmost toolbar item.
+    @Binding var showInspector: Bool
+    /// Passed in from DocumentView so the Export menu can sit immediately
+    /// before the Inspector toggle on the trailing edge.
+    let exportMenu: ExportMenuButton
 
     @State private var viewMode: ViewMode = .schematic
     /// Layer-visibility filter for the physical heatmap. Mirrors the editor's
@@ -24,17 +30,14 @@ struct SimulateView: View {
     enum ViewMode: Hashable { case schematic, physical }
 
     var body: some View {
-        VStack(spacing: 0) {
-            topBar
-            Divider()
-            content
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .onChange(of: document.circuit) { _, new in
-            // Rebuild the network whenever the document changes so newly
-            // added components / nets show up in the heatmap immediately.
-            state.rebuild(from: new)
-        }
+        content
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onChange(of: document.circuit) { _, new in
+                // Rebuild the network whenever the document changes so newly
+                // added components / nets show up in the heatmap immediately.
+                state.rebuild(from: new)
+            }
+            .toolbar { simulateToolbar }
     }
 
     @ViewBuilder private var content: some View {
@@ -65,83 +68,102 @@ struct SimulateView: View {
         }
     }
 
-    private var topBar: some View {
-        HStack(spacing: 12) {
-            Picker("View", selection: $viewMode) {
-                Text("Schematic").tag(ViewMode.schematic)
-                Text("Physical").tag(ViewMode.physical)
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 220)
-            .labelsHidden()
-
-            if viewMode == .physical {
-                Divider().frame(height: 18)
-                layerVisibilityControls
-            }
-
-            Divider().frame(height: 18)
-
+    /// All view-mode / transport / speed controls go in the window toolbar
+    /// rather than a hand-rolled strip — the system handles Liquid Glass
+    /// styling, overflow into a chevron menu when the window narrows, and
+    /// keyboard focus for free. Transport controls sit in `.navigation`
+    /// (leading) the way Xcode places its run/stop buttons.
+    @ToolbarContentBuilder private var simulateToolbar: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
             Button {
                 state.isPlaying.toggle()
             } label: {
                 Label(state.isPlaying ? "Pause" : "Play",
                       systemImage: state.isPlaying ? "pause.fill" : "play.fill")
             }
-            .controlSize(.small)
             .help(state.isPlaying ? "Pause the simulator" : "Resume the simulator")
+        }
 
+        ToolbarItem(placement: .navigation) {
             Button {
                 state.reset()
             } label: {
                 Label("Reset", systemImage: "arrow.counterclockwise")
             }
-            .controlSize(.small)
             .help("Snap every net back to atmosphere")
+        }
 
-            Divider().frame(height: 18)
-
-            HStack(spacing: 6) {
-                Text("Speed").font(.caption).foregroundStyle(.secondary)
+        ToolbarItem(placement: .navigation) {
+            HStack(spacing: 4) {
+                Image(systemName: "gauge.with.dots.needle.50percent")
+                    .foregroundStyle(.secondary)
                 Slider(value: $state.params.timeScale, in: 0.1...5.0)
-                    .controlSize(.small)
-                    .frame(width: 120)
+                    .frame(width: 100)
                 Text(String(format: "×%.1f", state.params.timeScale))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
-                    .frame(width: 36, alignment: .leading)
+                    .frame(width: 32, alignment: .leading)
             }
-
-            Spacer()
-
-            Text(legendText)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.regularMaterial)
+
+        ToolbarItem(placement: .principal) {
+            Picker("View", selection: $viewMode) {
+                Text("Schematic").tag(ViewMode.schematic)
+                Text("Physical").tag(ViewMode.physical)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+        }
+
+        // Layer visibility is only relevant on the physical heatmap.
+        if viewMode == .physical {
+            ToolbarItem(placement: .automatic) {
+                Picker("Plates", selection: $visible) {
+                    Text("All").tag(LayerVisibility.both)
+                    Text("Top").tag(LayerVisibility.topOnly)
+                    Text("Bottom").tag(LayerVisibility.bottomOnly)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 160)
+            }
+            ToolbarItem(placement: .automatic) {
+                LayerVisibilityPills(layers: allLayers, visible: $visible)
+            }
+        }
+
+        // Export and Inspector go on the trailing edge, in that order, so
+        // Inspector lands rightmost with Export immediately to its left.
+        ToolbarItem(placement: .primaryAction) { exportMenu }
+        ToolbarItem(placement: .primaryAction) {
+            InspectorToggleButton(showInspector: $showInspector)
+        }
     }
 
-    /// Plate-level segmented picker plus per-layer multi-select pills. Same
-    /// affordance as the physical editor's bottom strip so the user's muscle
-    /// memory carries over: tap T0/B1 to isolate a single channel layer, tap
-    /// "All" to bring everything back.
-    @ViewBuilder private var layerVisibilityControls: some View {
-        Picker("Visible plates", selection: $visible) {
-            Text("All").tag(LayerVisibility.both)
-            Text("Top").tag(LayerVisibility.topOnly)
-            Text("Bottom").tag(LayerVisibility.bottomOnly)
-        }
-        .pickerStyle(.segmented)
-        .frame(width: 180)
-        .labelsHidden()
+    /// All layers currently configured on the board, in T0…Tn, B0…Bm order.
+    private var allLayers: [Layer] {
+        document.circuit.physical.layers(in: .top) +
+        document.circuit.physical.layers(in: .bottom)
+    }
 
-        HStack(spacing: 4) {
-            ForEach(allLayers, id: \.self) { layer in
+}
+
+/// Horizontal row of T0/B1/… pill toggles for layer visibility. Used by
+/// both PhysicalView's toolbar (when editing) and SimulateView's toolbar
+/// (on the physical heatmap), so muscle memory carries over.
+struct LayerVisibilityPills: View {
+    let layers: [Layer]
+    @Binding var visible: LayerVisibility
+
+    var body: some View {
+        // Outer padding keeps the pills from touching the toolbar item's
+        // glass-effect capsule — without it the leading and trailing pill
+        // crash into the container edge and look cramped.
+        HStack(spacing: 6) {
+            ForEach(layers, id: \.self) { layer in
                 let on = visible.contains(layer)
                 Button {
-                    toggleLayer(layer)
+                    toggle(layer)
                 } label: {
                     Text(layer.uiLabel)
                         .font(.caption.monospacedDigit())
@@ -155,30 +177,19 @@ struct SimulateView: View {
                 .buttonStyle(.plain)
             }
         }
+        .padding(.horizontal, 6)
     }
 
-    /// All layers currently configured on the board, in T0…Tn, B0…Bm order.
-    private var allLayers: [Layer] {
-        document.circuit.physical.layers(in: .top) +
-        document.circuit.physical.layers(in: .bottom)
-    }
-
-    /// Promote whatever `visible` currently is to an explicit set, with the
-    /// tapped layer flipped. Mirrors `PhysicalView.toggleLayer` so the two
-    /// strips behave identically.
-    private func toggleLayer(_ layer: Layer) {
-        var set = Set(allLayers.filter { visible.contains($0) })
+    /// Promote whatever visibility is currently set to an explicit set, with
+    /// the tapped layer flipped. Tapping a chip moves into `.explicit` mode
+    /// unconditionally so subsequent taps behave predictably.
+    private func toggle(_ layer: Layer) {
+        var set = Set(layers.filter { visible.contains($0) })
         if set.contains(layer) {
             set.remove(layer)
         } else {
             set.insert(layer)
         }
         visible = .explicit(set)
-    }
-
-    private var legendText: String {
-        // Vacuum is the "active" signal on this device; calling it out keeps
-        // newcomers from defaulting to digital-logic intuition ("1 = on").
-        "Pressure: 0 vacuum (active) · 1 atmosphere · transistors open when gate sees vacuum"
     }
 }

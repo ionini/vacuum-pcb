@@ -133,8 +133,17 @@ final class SimulationState {
         var out: [UUID: Double] = [:]
         for net in network.nets { out[net.id] = 1.0 }
         for boundary in network.hardBoundaries { out[boundary.netId] = boundary.value }
+        // Pumps aren't hard boundaries any more, but the user's mental model
+        // is "the rail is at vacuum the moment I hit play". Seed each pump's
+        // net to the pump's deadhead pressure so the source starts primed.
+        for pump in network.pumps {
+            out[pump.netId] = params.pumpMaxVacuum
+        }
         for input in network.inputs {
-            out[input.netId] = inputPressures[input.id] ?? 1.0
+            // Inputs toggled to Vac join the pump manifold, so seed them at
+            // deadhead like the pumps above instead of starting from atm.
+            let v = inputPressures[input.id] ?? 1.0
+            out[input.netId] = v < 0.5 ? params.pumpMaxVacuum : 1.0
         }
         return out
     }

@@ -23,15 +23,30 @@ enum SimulationEngine {
         inputs: [UUID: Double],
         transistorOpenness: inout [UUID: Double]
     ) {
-        // Anchor table: net id → fixed pressure value. Inputs are looked up
-        // from the user-controlled `inputs` dict; missing keys default to
-        // atmosphere (1.0).
+        // Anchor table: net id → fixed pressure value. ATM vents and any
+        // input toggled to atmosphere pin their nets at 1.0. Inputs toggled
+        // to vacuum are *not* anchored — they join the shared pump manifold
+        // below, so they share the pump's finite Q-vs-P budget rather than
+        // acting as perfect infinite sources.
         var anchored: [UUID: Double] = [:]
         for boundary in network.hardBoundaries {
             anchored[boundary.netId] = boundary.value
         }
         for input in network.inputs {
-            anchored[input.netId] = inputs[input.id] ?? 1.0
+            if (inputs[input.id] ?? 1.0) >= 0.5 {
+                anchored[input.netId] = 1.0
+            }
+        }
+
+        // Manifold-tapped nets: every `vacuumSource` plus every input the
+        // user has toggled to Vac. In real hardware these all hang off one
+        // physical vacuum line, so they share a single Q-vs-P curve. We
+        // tie them together with a stiff conductance below and stamp a
+        // single pump edge on a canonical member.
+        var manifoldNets = Set<UUID>()
+        for pump in network.pumps { manifoldNets.insert(pump.netId) }
+        for input in network.inputs where (inputs[input.id] ?? 1.0) < 0.5 {
+            manifoldNets.insert(input.netId)
         }
 
         // Build free-net index. Pinned nets get pinned directly in
@@ -85,7 +100,33 @@ enum SimulationEngine {
                       net1: r.net1, net2: r.net2, g: g)
             }
 
-            // 3. Transistor edges. Conductance depends on gate net pressure
+            // 3. Shared pump. Every manifold-tapped net (VAC component or
+            // vacuum-toggled input) sits on the same physical vacuum line,
+            // so they share one Q-vs-P budget. Tie the non-canonical taps
+            // to a canonical one with a stiff edge — they collapse to one
+            // node in the matrix — then stamp a single pump edge from the
+            // canonical net to the virtual `pumpMaxVacuum` anchor.
+            let manifoldFreeOrdered: [UUID] = network.nets.compactMap {
+                manifoldNets.contains($0.id) && freeIndex[$0.id] != nil ? $0.id : nil
+            }
+            if let canonical = manifoldFreeOrdered.first {
+                // Stiff enough to dominate every other edge in the matrix
+                // (resistor G ~ 1, transistor on G = 5) without being so
+                // large that pivoting struggles.
+                let stiffG = max(params.transistorOnConductance * 200, 1000)
+                for netId in manifoldFreeOrdered where netId != canonical {
+                    stamp(&y, &rhs, n: n, freeIndex: freeIndex, anchored: anchored,
+                          net1: canonical, net2: netId, g: stiffG)
+                }
+                let manifoldP = pressures[canonical] ?? 1.0
+                let g = params.pumpConductance(forNetPressure: manifoldP)
+                if g > 0, let idx = freeIndex[canonical] {
+                    y[idx * n + idx] += g
+                    rhs[idx] += g * params.pumpMaxVacuum
+                }
+            }
+
+            // 4. Transistor edges. Conductance depends on gate net pressure
             // (whatever was last solved / anchored).
             for t in network.transistors {
                 let gatePressure = anchored[t.gateNet] ?? pressures[t.gateNet] ?? 1.0
@@ -95,7 +136,7 @@ enum SimulationEngine {
                       net1: t.aNet, net2: t.bNet, g: g)
             }
 
-            // 4. Solve. Dense Gaussian elimination — N is small (number of
+            // 5. Solve. Dense Gaussian elimination — N is small (number of
             // free nets, typically <30 for hobby designs).
             solve(matrix: &y, rhs: &rhs, n: n, into: &solution)
             for (idx, netId) in freeIds.enumerated() {

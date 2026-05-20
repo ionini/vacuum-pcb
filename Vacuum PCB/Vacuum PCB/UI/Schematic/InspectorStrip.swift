@@ -60,6 +60,7 @@ struct InspectorStrip: View {
                     Text("S").tag(ResistorSize.small)
                     Text("M").tag(ResistorSize.medium)
                     Text("L").tag(ResistorSize.large)
+                    Text("XL").tag(ResistorSize.extraLarge)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()

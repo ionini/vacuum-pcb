@@ -28,6 +28,7 @@ enum ResistorSize: String, Codable, CaseIterable {
     case small = "S"
     case medium = "M"
     case large = "L"
+    case extraLarge = "XL"
 }
 
 enum PortDirection: String, Codable, CaseIterable {

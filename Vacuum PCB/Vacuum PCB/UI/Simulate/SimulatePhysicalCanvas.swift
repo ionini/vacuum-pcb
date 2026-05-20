@@ -238,7 +238,7 @@ struct SimulatePhysicalCanvas: View {
             let rect = CGRect(x: center.x - r, y: center.y - r, width: 2 * r, height: 2 * r)
             ctx.fill(Path(ellipseIn: rect), with: .color(fill))
             ctx.stroke(Path(ellipseIn: rect), with: .color(stroke), lineWidth: 1.4)
-            let lit = max(0, 1 - pressure * 2)
+            let lit = state.params.gateOpenness(forPressure: pressure)
             if lit > 0 {
                 ctx.fill(Path(ellipseIn: rect.insetBy(dx: r * 0.25, dy: r * 0.25)),
                          with: .color(Color.yellow.opacity(0.4 + 0.5 * lit)))

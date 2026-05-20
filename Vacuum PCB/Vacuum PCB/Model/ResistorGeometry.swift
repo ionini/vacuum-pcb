@@ -12,9 +12,10 @@ enum ResistorGeometry {
     /// flow restriction.
     static func transitions(for size: ResistorSize) -> Int {
         switch size {
-        case .small:  return 0
-        case .medium: return 3
-        case .large:  return 10
+        case .small:      return 0
+        case .medium:     return 3
+        case .large:      return 10
+        case .extraLarge: return 15
         }
     }
 
