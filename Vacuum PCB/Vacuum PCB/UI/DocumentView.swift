@@ -74,16 +74,15 @@ struct DocumentView: View {
             // the 3D preview. Avoids the per-edit Euclid CSG storm that was
             // producing the "batch:" log spam and pinning a core.
             if newTab == .preview, previewDirty, !isBuilding { rebuild() }
-            // Auto-open the inspector on tabs whose primary controls live
-            // there (Preview, Simulate). Auto-close on Schematic (no
-            // content). Physical has inspector content (board / layer
-            // counts) but the user uses it infrequently, so we leave the
-            // pane state alone — they can pop it open via the toolbar
-            // toggle when they need to edit board dimensions.
+            // Auto-open the inspector on every tab whose primary controls
+            // live there. Physical now hosts the parking lot (in addition
+            // to board / layer-count fields), so it needs the same
+            // treatment as Preview and Simulate — without the parking
+            // lot visible the user has no way to drag components onto
+            // the canvas.
             switch newTab {
-            case .preview, .simulate: showInspector = true
-            case .schematic:          showInspector = false
-            case .physical:           break
+            case .physical, .preview, .simulate: showInspector = true
+            case .schematic:                     showInspector = false
             }
         }
         .fileExporter(
