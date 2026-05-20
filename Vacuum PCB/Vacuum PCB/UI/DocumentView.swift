@@ -204,8 +204,18 @@ struct DocumentView: View {
     /// simulator inputs) live in the right-hand inspector — the macOS
     /// convention for "properties of the current view" (Xcode, Pages,
     /// Keynote, Final Cut all do this).
+    /// iOS's `List(selection:)` only accepts a `Binding<Tab?>`; macOS accepts
+    /// both. Wrap our non-optional `@State` in an optional binding so the
+    /// same `List` works on both platforms.
+    private var sidebarSelection: Binding<ViewTab?> {
+        Binding(
+            get: { selectedTab },
+            set: { if let v = $0 { selectedTab = v } }
+        )
+    }
+
     private var sidebar: some View {
-        List(selection: $selectedTab) {
+        List(selection: sidebarSelection) {
             Section("Views") {
                 Label("Schematic", systemImage: "point.3.connected.trianglepath.dotted")
                     .tag(ViewTab.schematic)
