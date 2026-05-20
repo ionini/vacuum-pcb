@@ -140,7 +140,10 @@ final class SimulationState {
             out[pump.netId] = params.pumpMaxVacuum
         }
         for input in network.inputs {
-            out[input.netId] = inputPressures[input.id] ?? 1.0
+            // Inputs toggled to Vac join the pump manifold, so seed them at
+            // deadhead like the pumps above instead of starting from atm.
+            let v = inputPressures[input.id] ?? 1.0
+            out[input.netId] = v < 0.5 ? params.pumpMaxVacuum : 1.0
         }
         return out
     }
