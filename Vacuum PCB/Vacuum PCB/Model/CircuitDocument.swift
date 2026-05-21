@@ -214,9 +214,9 @@ extension CircuitDocument {
     ///    dependency doesn't change WHAT this doc is, just where its
     ///    dependencies are cached. Stripping lets the migration fill in
     ///    missing inner pins without invalidating the parent's pin)
-    /// One consequence to know: structural-only hashing means transitive
-    /// library edits (deps of deps) don't bump this hash; the "Update from
-    /// Library" UI only flags direct-edit changes. Acceptable for iter 1.
+    /// Used as the snapshot-dict key. For staleness comparison — does this
+    /// doc behave differently than another doc, including via transitive
+    /// dependency changes — use `effectiveHash()` instead.
     func contentHash() -> String {
         var stripped = self
         stripped.librarySnapshots = [:]
@@ -227,6 +227,53 @@ extension CircuitDocument {
         let data = (try? Self.jsonEncoder.encode(stripped)) ?? Data()
         let digest = SHA256.hash(data: data)
         return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Deep behavioural hash: covers everything that affects what this doc
+    /// resolves to at flatten/CAD time, including which version of each
+    /// nested library is pinned (`partRefHash`) and the actual content of
+    /// every snapshot in `librarySnapshots` (which gets serialised
+    /// recursively). Used for "Library has changes" staleness checks —
+    /// transitive edits (e.g., XOR was edited two levels down) bump this
+    /// hash even when the direct part's structural `contentHash()` is
+    /// unchanged.
+    func effectiveHash() -> String {
+        var stripped = self
+        stripped.schemaVersion = 0
+        let data = (try? Self.jsonEncoder.encode(stripped)) ?? Data()
+        let digest = SHA256.hash(data: data)
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Force-refresh every sub-part pin in this doc to point at the live
+    /// library's current snapshot, regardless of whether the hash already
+    /// matched. Used by `PartsLibrary.reload`'s second pass to propagate
+    /// transitive edits through the library cache: editing XOR refreshes
+    /// Half Adder's stored snapshot of XOR even though Half Adder's own
+    /// file on disk didn't change. Returns true if any pin or snapshot
+    /// value was rewritten, so the surrounding fixed-point loop knows when
+    /// to stop iterating.
+    @discardableResult
+    static func refreshAllSnapshots(_ doc: inout CircuitDocument, libraryLookup: LibraryLookup) -> Bool {
+        var didChange = false
+        for i in doc.logic.components.indices {
+            let comp = doc.logic.components[i]
+            guard comp.kind == .subpart,
+                  let filename = comp.partRef,
+                  let libDoc = libraryLookup(filename)
+            else { continue }
+            let liveHash = libDoc.contentHash()
+            // Compare deep state — `contentHash` strips partRefHash so two
+            // versions of the same library with different inner pins would
+            // look identical here and the loop would terminate early.
+            let prevSnap = doc.librarySnapshots[liveHash]
+            if comp.partRefHash != liveHash || prevSnap?.effectiveHash() != libDoc.effectiveHash() {
+                doc.logic.components[i].partRefHash = liveHash
+                doc.librarySnapshots[liveHash] = libDoc
+                didChange = true
+            }
+        }
+        return didChange
     }
 
     func encoded() throws -> Data {

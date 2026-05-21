@@ -127,6 +127,24 @@ final class PartsLibrary: ObservableObject {
             if !changed { break }
         }
 
+        // Force-refresh pass: unconditionally re-pin every subpart to the
+        // current library doc. The fill-in step above only writes nil
+        // pins — files whose on-disk pin is stale (e.g., Half Adder
+        // pinned to an XOR version that's since been edited) wouldn't be
+        // caught. This loop propagates transitive edits through the
+        // library cache so a single edit to XOR.vpcb flows up through
+        // Half Adder → Incrementor in memory before any design opens.
+        for _ in 0...inFlight.count {
+            var changed = false
+            for (filename, var doc) in inFlight {
+                if CircuitDocument.refreshAllSnapshots(&doc, libraryLookup: inFlightLookup) {
+                    inFlight[filename] = doc
+                    changed = true
+                }
+            }
+            if !changed { break }
+        }
+
         // Build the final `Part` list now that every doc has converged.
         var collected: [Part] = []
         for (filename, doc) in inFlight {
