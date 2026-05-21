@@ -89,6 +89,7 @@ struct PhysicalCanvasView: View {
     }
 
     private var manufacturing: ManufacturingConstants { document.circuit.manufacturing }
+    private var librarySnapshots: [String: CircuitDocument] { document.circuit.librarySnapshots }
     private var grid: Double { manufacturing.gridPitch }
 
     /// Keyboard handlers for the routing toolset. V = cross-silicone via
@@ -439,7 +440,7 @@ struct PhysicalCanvasView: View {
     /// using the bounding-rect midpoint keeps the hit zone over the visible
     /// body for both conventions.
     private func hitCenter(for placement: Placement, component: Component) -> CGPoint {
-        let b = component.footprint(manufacturing).boundingRect
+        let b = component.footprint(manufacturing, snapshots: librarySnapshots).boundingRect
         let lx = b.minX + b.size.width / 2
         let ly = b.minY + b.size.height / 2
         let r = placement.rotation.radians
@@ -607,7 +608,7 @@ struct PhysicalCanvasView: View {
             guard let placement = document.circuit.physical.placements.first(where: { $0.componentId == id }),
                   let component = component(for: id)
             else { continue }
-            for pin in component.footprint(manufacturing).pins {
+            for pin in component.footprint(manufacturing, snapshots: librarySnapshots).pins {
                 pinWorlds.append(placement.worldPosition(of: pin))
             }
         }
@@ -675,7 +676,7 @@ struct PhysicalCanvasView: View {
         // stay easy to grab. The arrowhead glyph for ports / rails extends
         // well past the pin anchor — and the tip is exactly what users aim
         // at — so give those kinds a generous minimum target.
-        let bounds = c.footprint(manufacturing).boundingRect
+        let bounds = c.footprint(manufacturing, snapshots: librarySnapshots).boundingRect
         let isArrowLike: Bool = (c.kind == .port || c.kind == .vacuumSource || c.kind == .atmVent)
         let minSize: Double = isArrowLike ? 60 : 40
         let w = max(minSize, bounds.size.width * transform.ptsPerMm + 12)
@@ -689,7 +690,7 @@ struct PhysicalCanvasView: View {
         ZStack {
             ForEach(document.circuit.physical.placements, id: \.componentId) { placement in
                 if let component = component(for: placement.componentId) {
-                    ForEach(component.footprint(manufacturing).pins, id: \.key) { pin in
+                    ForEach(component.footprint(manufacturing, snapshots: librarySnapshots).pins, id: \.key) { pin in
                         // Sub-part boundary pins carry their library-internal
                         // Layer in `FootprintPin.absoluteLayer`, so the same
                         // resolver call handles both primitives and sub-part
@@ -718,10 +719,7 @@ struct PhysicalCanvasView: View {
     /// boundary component's friendly label for tooltip display. Primitive
     /// pin keys ("gate", "a", "1", "p") pass through unchanged.
     private func pinDisplayLabel(component: Component, key: String) -> String {
-        guard component.kind == .subpart,
-              let filename = component.partRef,
-              let part = PartsLibrary.shared.part(named: filename),
-              let pin = part.pins.first(where: { $0.portId.uuidString == key })
+        guard let pin = component.subpartBoundaryPin(key: key, snapshots: document.circuit.librarySnapshots)
         else { return key }
         return pin.label
     }
@@ -731,7 +729,7 @@ struct PhysicalCanvasView: View {
               let firstWP = waypoints.first,
               let placement = document.circuit.physical.placements.first(where: { $0.componentId == componentId }),
               let component = component(for: componentId),
-              let pin = component.footprint(manufacturing).pin(key)
+              let pin = component.footprint(manufacturing, snapshots: librarySnapshots).pin(key)
         else { return false }
         let world = placement.worldPosition(of: pin)
         return abs(world.x - firstWP.x) < 0.001 && abs(world.y - firstWP.y) < 0.001
@@ -1224,7 +1222,7 @@ struct PhysicalCanvasView: View {
     private func handlePinTap(componentId: UUID, pinKey: String) {
         guard let placement = document.circuit.physical.placements.first(where: { $0.componentId == componentId }),
               let component = component(for: componentId),
-              let pin = component.footprint(manufacturing).pin(pinKey)
+              let pin = component.footprint(manufacturing, snapshots: librarySnapshots).pin(pinKey)
         else { return }
         let world = placement.worldPosition(of: pin)
         // Resistor pins inherit the resistor's depth (resistors are pure

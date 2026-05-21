@@ -25,11 +25,12 @@ struct SubpartExpandedView: View {
     /// A nested subpart whose `partRef` is already in this set is rendered
     /// as a red cycle placeholder instead of recursing.
     var visiting: Set<String> = []
+    @Environment(\.librarySnapshots) private var librarySnapshots
 
     var body: some View {
         if let filename = component.partRef, visiting.contains(filename) {
             cyclePlaceholder(filename: filename)
-        } else if let part = component.partRef.flatMap({ PartsLibrary.shared.part(named: $0) }) {
+        } else if let part = component.resolvedPart(snapshots: librarySnapshots) {
             let part = part
             ZStack {
                 if visible.isSiliconeSheet {
@@ -178,6 +179,12 @@ struct SubpartExpandedView: View {
                     if internalComponent.kind == .subpart {
                         // Nested subpart: recurse so the user sees the full
                         // hierarchy expanded (Half Adder → XOR → transistors).
+                        // Override the snapshot env to THIS layer's own
+                        // `librarySnapshots` — the top-level doc's dict only
+                        // has the direct subpart's snapshot, not its
+                        // transitive deps. Each recursion swaps to the
+                        // current snapshot's local dict so the next level
+                        // down resolves out of THIS file too.
                         SubpartExpandedView(
                             component: internalComponent,
                             placement: effective,
@@ -187,6 +194,7 @@ struct SubpartExpandedView: View {
                             isSelected: false,
                             visiting: childVisiting
                         )
+                        .environment(\.librarySnapshots, part.document.librarySnapshots)
                     } else if visible.shows(
                         componentKind: internalComponent.kind,
                         on: Layer(plate: effective.layer, depth: effective.depth)
@@ -366,8 +374,7 @@ struct SubpartExpandedView: View {
     /// corner sits at `placement.position`, then rotating about that corner
     /// by `placement.rotation`. Corner-anchored to match `subpartFootprint()`.
     private func transformWorld(_ libraryPoint: Point) -> Point {
-        let outline = component.partRef
-            .flatMap { PartsLibrary.shared.part(named: $0) }?
+        let outline = component.resolvedPart(snapshots: librarySnapshots)?
             .document.physical.boardOutline
             ?? Rect(origin: .zero, size: Size(width: 0, height: 0))
         let dx = libraryPoint.x - outline.minX

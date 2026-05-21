@@ -44,8 +44,8 @@ enum NetEdgeBuilder {
         var out: [PinRef: CGPoint] = [:]
         for component in document.logic.components {
             guard let center = document.schematic.position(for: component.id) else { continue }
-            let metrics = ComponentSymbolMetrics.metrics(for: component)
-            for key in component.pinKeys {
+            let metrics = ComponentSymbolMetrics.metrics(for: component, snapshots: document.librarySnapshots)
+            for key in component.pinKeys(snapshots: document.librarySnapshots) {
                 let off = metrics.pinOffset(key)
                 out[PinRef(componentId: component.id, pinKey: key)] =
                     CGPoint(x: center.x + off.x, y: center.y + off.y)

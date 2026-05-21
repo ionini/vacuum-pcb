@@ -133,7 +133,7 @@ enum DRC {
         for pinRef in net.pins {
             guard let placement = document.physical.placements.first(where: { $0.componentId == pinRef.componentId }),
                   let component = document.logic.components.first(where: { $0.id == pinRef.componentId }),
-                  let fpPin = component.footprint(document.manufacturing).pin(pinRef.pinKey)
+                  let fpPin = component.footprint(document.manufacturing, snapshots: document.librarySnapshots).pin(pinRef.pinKey)
             else {
                 issues.append(Issue(netId: net.id, netLabel: net.label, kind: .unplacedPin(pinRef)))
                 continue

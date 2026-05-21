@@ -94,11 +94,19 @@ struct SchematicInspector: View {
         }
         let label = document.circuit.logic.nextLabel(for: .subpart)
         let id = UUID()
+        // Pin the placed instance to the live library's current content
+        // hash and stash a snapshot in the document so later edits to the
+        // library don't cascade into this design.
+        let hash = part.document.contentHash()
+        if document.circuit.librarySnapshots[hash] == nil {
+            document.circuit.librarySnapshots[hash] = part.document
+        }
         let component = Component(
             id: id,
             kind: .subpart,
             label: label,
-            partRef: part.filename
+            partRef: part.filename,
+            partRefHash: hash
         )
         document.circuit.logic.components.append(component)
         document.circuit.schematic.setPosition(spawnPosition(), for: id)

@@ -95,12 +95,42 @@ final class PartsLibrary: ObservableObject {
             parts = []
             return
         }
-        var collected: [Part] = []
+        // Migration during reload MUST NOT reach into `PartsLibrary.shared`
+        // — we're inside its dispatch_once initialiser. Library files
+        // referencing each other resolve against this in-flight dict
+        // instead.
+        var inFlight: [String: CircuitDocument] = [:]
+        let inFlightLookup: CircuitDocument.LibraryLookup = { inFlight[$0] }
+
+        // First pass: decode + initial migration. Files iterated before
+        // their dependencies will leave partRefHash nil for the dependency
+        // — the fixed-point loop below fills those in once everyone is
+        // loaded.
         for entry in entries where entry.pathExtension.lowercased() == "vpcb" {
             guard let data = try? Data(contentsOf: entry) else { continue }
-            guard let doc = try? CircuitDocument.decoded(from: data) else { continue }
-            let pins = Self.boundaryPins(in: doc)
-            collected.append(Part(filename: entry.lastPathComponent, document: doc, pins: pins))
+            guard let doc = try? CircuitDocument.decoded(from: data, libraryLookup: inFlightLookup) else { continue }
+            inFlight[entry.lastPathComponent] = doc
+        }
+
+        // Fixed-point fill-in: each pass can only ADD partRefHashes (the
+        // populator is monotone), so this terminates in at most N passes
+        // where N is the longest dependency chain. The `+ 1` bound keeps
+        // it linear in the file count even for the worst case.
+        for _ in 0...inFlight.count {
+            var changed = false
+            for (filename, var doc) in inFlight {
+                if CircuitDocument.populatePartRefHashes(&doc, libraryLookup: inFlightLookup) {
+                    inFlight[filename] = doc
+                    changed = true
+                }
+            }
+            if !changed { break }
+        }
+
+        // Build the final `Part` list now that every doc has converged.
+        var collected: [Part] = []
+        for (filename, doc) in inFlight {
+            collected.append(Part(filename: filename, document: doc, pins: Self.boundaryPins(in: doc)))
         }
         // Stable order so the palette doesn't reshuffle on every reload.
         collected.sort { $0.filename.localizedCompare($1.filename) == .orderedAscending }
@@ -224,5 +254,53 @@ final class PartsLibrary: ObservableObject {
     /// callers handle the optional themselves.
     func boundaryPins(named filename: String) -> [BoundaryPin]? {
         part(named: filename)?.pins
+    }
+
+    /// Snapshot-first resolution for a sub-part instance. Returns the frozen
+    /// library document from the parent's `librarySnapshots` when the
+    /// component has a pinned hash that matches an entry; falls back to the
+    /// live on-disk library otherwise. The fallback path matters in two
+    /// cases: (1) a sub-part whose v2→v3 migration ran without the library
+    /// present, and (2) defensive callers that don't have a snapshots dict
+    /// handy (passing `[:]`).
+    static func resolve(
+        partRef filename: String,
+        hash: String?,
+        snapshots: [String: CircuitDocument]
+    ) -> Part? {
+        if let hash, let doc = snapshots[hash] {
+            return Part(
+                filename: filename,
+                document: doc,
+                pins: boundaryPins(in: doc)
+            )
+        }
+        return shared.part(named: filename)
+    }
+}
+
+extension Component {
+    /// Snapshot-first lookup for this sub-part instance. `nil` for non-subpart
+    /// kinds, components with no `partRef`, or when both the snapshot and the
+    /// live library are missing.
+    func resolvedPart(snapshots: [String: CircuitDocument]) -> PartsLibrary.Part? {
+        guard kind == .subpart, let filename = partRef else { return nil }
+        return PartsLibrary.resolve(partRef: filename, hash: partRefHash, snapshots: snapshots)
+    }
+}
+
+// Library snapshots flow from the open document down through every view that
+// needs to resolve a sub-part reference. SwiftUI's environment avoids
+// threading a parameter through dozens of intermediate views — the
+// `DocumentView` sets the value once per open document and every subpart
+// lookup site reads it.
+private struct LibrarySnapshotsKey: EnvironmentKey {
+    static let defaultValue: [String: CircuitDocument] = [:]
+}
+
+extension EnvironmentValues {
+    var librarySnapshots: [String: CircuitDocument] {
+        get { self[LibrarySnapshotsKey.self] }
+        set { self[LibrarySnapshotsKey.self] = newValue }
     }
 }

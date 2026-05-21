@@ -86,6 +86,11 @@ struct DocumentView: View {
             contentType: .stl,
             defaultFilename: stlFilename
         ) { _ in }
+        // Pinned library snapshots flow down to every sub-part-resolving view
+        // (schematic symbols, physical canvas, expanded subpart) so the UI
+        // matches what the CAD pipeline exports rather than reflecting
+        // post-pin edits to the user's parts folder.
+        .environment(\.librarySnapshots, document.circuit.librarySnapshots)
     }
 
     // MARK: - Detail content

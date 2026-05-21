@@ -141,8 +141,9 @@ struct ManufacturingSettingsView: View {
             guard let component = document.circuit.logic.components
                     .first(where: { $0.id == placement.componentId })
             else { continue }
-            let oldFp = component.footprint(oldMfg)
-            let newFp = component.footprint(newMfg)
+            let snapshots = document.circuit.librarySnapshots
+            let oldFp = component.footprint(oldMfg, snapshots: snapshots)
+            let newFp = component.footprint(newMfg, snapshots: snapshots)
             for newPin in newFp.pins {
                 guard let oldPin = oldFp.pin(newPin.key) else { continue }
                 let oldWorld = placement.worldPosition(of: oldPin)
