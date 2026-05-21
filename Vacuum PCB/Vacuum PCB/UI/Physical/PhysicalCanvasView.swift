@@ -143,8 +143,15 @@ struct PhysicalCanvasView: View {
                     visible: visible,
                     manufacturing: manufacturing
                 )
-                if showRatsnest {
+                if showRatsnest && !visible.isSiliconeSheet {
                     RatsnestOverlay(document: document.circuit, transform: transform)
+                }
+                if visible.isSiliconeSheet {
+                    SiliconeSheetViasOverlay(
+                        document: document.circuit,
+                        transform: transform,
+                        manufacturing: manufacturing
+                    )
                 }
 
                 placementBodies
@@ -378,8 +385,8 @@ struct PhysicalCanvasView: View {
         ZStack {
             ForEach(document.circuit.physical.placements, id: \.componentId) { placement in
                 if let component = component(for: placement.componentId),
-                   component.kind == .screw
-                    || visible.contains(Layer(plate: placement.layer, depth: placement.depth)) {
+                   visible.shows(componentKind: component.kind,
+                                 on: Layer(plate: placement.layer, depth: placement.depth)) {
                     PlacementBodyView(
                         component: component,
                         placement: placement,
@@ -401,8 +408,8 @@ struct PhysicalCanvasView: View {
         ZStack {
             ForEach(document.circuit.physical.placements, id: \.componentId) { placement in
                 if let component = component(for: placement.componentId),
-                   component.kind == .screw
-                    || visible.contains(Layer(plate: placement.layer, depth: placement.depth)) {
+                   visible.shows(componentKind: component.kind,
+                                 on: Layer(plate: placement.layer, depth: placement.depth)) {
                     let pos = hitCenter(for: placement, component: component)
                     let size = hitSize(for: component)
                     Rectangle()
@@ -1114,14 +1121,16 @@ struct PhysicalCanvasView: View {
 
         var placementHits: Set<UUID> = []
         for placement in document.circuit.physical.placements {
-            let kind = document.circuit.logic.components
+            guard let kind = document.circuit.logic.components
                 .first(where: { $0.id == placement.componentId })?.kind
+            else { continue }
             // Screws aren't bound to any channel layer; let them marquee
             // through the layer filter so they can be selected even when
-            // both plates' chips are off.
-            let layerOK = kind == .screw
-                || visible.contains(Layer(plate: placement.layer, depth: placement.depth))
-            guard layerOK else { continue }
+            // both plates' chips are off. Silicone-sheet mode extends the
+            // same courtesy to transistors (their gate is on the sheet).
+            guard visible.shows(componentKind: kind,
+                                on: Layer(plate: placement.layer, depth: placement.depth))
+            else { continue }
             let p = placement.position
             if p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y {
                 placementHits.insert(placement.componentId)

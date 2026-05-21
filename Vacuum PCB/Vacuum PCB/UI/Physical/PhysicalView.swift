@@ -59,13 +59,19 @@ struct PhysicalView: View {
                 Text("All").tag(LayerVisibility.both)
                 Text("Top").tag(LayerVisibility.topOnly)
                 Text("Bottom").tag(LayerVisibility.bottomOnly)
+                Text("Sheet").tag(LayerVisibility.siliconeSheet)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 160)
+            .frame(width: 220)
         }
-        ToolbarItem(placement: .automatic) {
-            LayerVisibilityPills(layers: allLayers, visible: $visible)
+        // The per-layer pills toggle into `.explicit`, which would
+        // immediately leave silicone-sheet mode — hide them while that
+        // mode is active so the toolbar reads cleanly.
+        if !visible.isSiliconeSheet {
+            ToolbarItem(placement: .automatic) {
+                LayerVisibilityPills(layers: allLayers, visible: $visible)
+            }
         }
         ToolbarItem(placement: .automatic) {
             Picker("Route", selection: $routingLayer) {

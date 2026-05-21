@@ -71,10 +71,19 @@ enum RoutingState: Hashable {
 /// Which layers are visible in the physical editor. With multi-layer plates
 /// this generalises to either "everything", "everything on one plate", or an
 /// explicit pick of layers (the per-layer pills with multi-select).
+///
+/// `.siliconeSheet` is the odd one out: it's a feature-filtered preview of
+/// just the silicone sheet sandwiched between the plates — the board
+/// outline, screw through-holes, cross-silicone (T0↔B0) vias, and
+/// transistor gate circumferences. No channel layer "contains" anything in
+/// this mode, so routes / pin handles / per-depth components fall away
+/// automatically; callers that want to surface a feature in silicone-sheet
+/// mode opt in explicitly via `isSiliconeSheet` or `shows(componentKind:on:)`.
 enum LayerVisibility: Hashable {
     case all
     case plateOnly(Plate)
     case explicit(Set<Layer>)
+    case siliconeSheet
 
     /// Legacy three-pill aliases. Existing code uses these as the canonical
     /// values; UI extensions can swap in the multi-select variant later.
@@ -87,6 +96,22 @@ enum LayerVisibility: Hashable {
         case .all: return true
         case .plateOnly(let plate): return layer.plate == plate
         case .explicit(let set): return set.contains(layer)
+        case .siliconeSheet: return false
         }
+    }
+
+    var isSiliconeSheet: Bool {
+        if case .siliconeSheet = self { return true } else { return false }
+    }
+
+    /// Whether a placement of `kind` sitting on `layer` should be drawn at
+    /// all. Screws are mechanical-only and always show; silicone-sheet
+    /// mode additionally surfaces transistors and LEDs (their gate /
+    /// dimple punctures the sheet); otherwise visibility follows the
+    /// per-layer filter.
+    func shows(componentKind kind: ComponentKind, on layer: Layer) -> Bool {
+        if kind == .screw { return true }
+        if case .siliconeSheet = self { return kind == .transistor || kind == .led }
+        return contains(layer)
     }
 }

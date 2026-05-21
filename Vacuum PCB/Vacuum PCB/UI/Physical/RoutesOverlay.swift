@@ -165,6 +165,66 @@ struct ViasOverlay: View {
     }
 }
 
+/// Renders only the vias that punch through the silicone sheet — the
+/// (T0, B0) pairs created by the "V" key. Same-plate vias (a route stepping
+/// between depths on one plate) never touch the sheet and are skipped.
+///
+/// A via XY is considered cross-silicone when the same net has a `.via`
+/// waypoint at that XY on a T0 segment *and* on a B0 segment. Approximate
+/// matching (0.05 mm) mirrors the tolerance used elsewhere for paired-via
+/// bookkeeping.
+struct SiliconeSheetViasOverlay: View {
+    let document: CircuitDocument
+    let transform: CanvasTransform
+    let manufacturing: ManufacturingConstants
+
+    var body: some View {
+        Canvas { ctx, _ in
+            let radius = max(4, manufacturing.channelDiameter / 2 * transform.ptsPerMm)
+            for position in crossSiliconeViaPositions() {
+                let center = transform.toScreen(position)
+                let rect = CGRect(
+                    x: center.x - radius, y: center.y - radius,
+                    width: radius * 2, height: radius * 2
+                )
+                ctx.stroke(
+                    Path(ellipseIn: rect),
+                    with: .color(Color.primary.opacity(0.85)),
+                    lineWidth: 1.5
+                )
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func crossSiliconeViaPositions() -> [Point] {
+        var result: [Point] = []
+        for route in document.physical.routes {
+            var topPositions: [Point] = []
+            var bottomPositions: [Point] = []
+            for segment in route.segments where segment.layer.depth == 0 {
+                for wp in segment.waypoints where wp.kind == .via {
+                    switch segment.layer.plate {
+                    case .top:    topPositions.append(wp.position)
+                    case .bottom: bottomPositions.append(wp.position)
+                    }
+                }
+            }
+            for p in topPositions {
+                let matched = bottomPositions.contains {
+                    abs($0.x - p.x) < 0.05 && abs($0.y - p.y) < 0.05
+                }
+                guard matched else { continue }
+                let alreadyAdded = result.contains {
+                    abs($0.x - p.x) < 0.05 && abs($0.y - p.y) < 0.05
+                }
+                if !alreadyAdded { result.append(p) }
+            }
+        }
+        return result
+    }
+}
+
 /// Overlay showing the in-progress polyline while the user is routing.
 /// Drawn as a dashed line; previews the auto-elbow that will be inserted on next click.
 struct RoutingPreviewOverlay: View {
