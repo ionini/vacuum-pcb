@@ -1165,6 +1165,19 @@ struct PhysicalCanvasView: View {
     private func handleBackgroundTap(at pt: CGPoint) {
         switch routingState {
         case .idle:
+            // Vias on visible segments are clickable so the user can pick up a
+            // route at one — handy when a mid-route segment got deleted and
+            // its sibling via is now stranded.
+            if let via = viaAtTap(at: pt) {
+                routingLayer = via.layer
+                routingState = .routing(
+                    netId: via.netId, waypoints: [via.position],
+                    layer: via.layer, startsAtVia: true
+                )
+                selection = .none
+                routingError = nil
+                return
+            }
             // Hit-test route segments before deselecting. RoutesOverlay is a
             // Canvas (cheap render, no per-segment hit testing), so we test
             // here by computing point-to-polyline distance.
@@ -1177,6 +1190,34 @@ struct PhysicalCanvasView: View {
                 selection = .none
             }
         case .routing(let netId, var wps, let layer, let startsAtVia):
+            // Click an existing via to close the in-progress route into it —
+            // mirrors clicking a pin, but the closing waypoint is marked
+            // `.via` so the via XY stays a via in both segments.
+            if let via = viaAtTap(at: pt) {
+                if let first = wps.first, approximatelyEqual(first, via.position), wps.count == 1 {
+                    routingState = .idle
+                    return
+                }
+                guard via.netId == netId else {
+                    routingError = "Via is on a different net — connections must stay within a single net."
+                    routingState = .idle
+                    return
+                }
+                var finalPath = wps
+                if let last = finalPath.last {
+                    let elbow = elbow(from: last, to: via.position)
+                    if !approximatelyEqual(elbow, last) { finalPath.append(elbow) }
+                    if !approximatelyEqual(via.position, finalPath.last ?? last) {
+                        finalPath.append(via.position)
+                    }
+                }
+                appendRouteSegment(
+                    netId: netId, points: finalPath, layer: layer,
+                    startsAtVia: startsAtVia, endsAtVia: true
+                )
+                routingState = .idle
+                return
+            }
             let world = transform.snap(transform.toWorld(pt), grid: grid)
             guard let last = wps.last else { return }
             let elbow = elbow(from: last, to: world)
@@ -1184,6 +1225,32 @@ struct PhysicalCanvasView: View {
             if !approximatelyEqual(world, wps.last ?? last) { wps.append(world) }
             routingState = .routing(netId: netId, waypoints: wps, layer: layer, startsAtVia: startsAtVia)
         }
+    }
+
+    /// Hit-tests via waypoints on visible segments. Returns the nearest via
+    /// within the dot's outer radius, so clicking the via dot wins over the
+    /// underlying segment polyline.
+    private func viaAtTap(at pt: CGPoint) -> (netId: UUID, layer: Layer, position: Point)? {
+        // Mirrors ViasOverlay's outer-radius computation plus a small slop so
+        // a click on the dot's rim still hits.
+        let radius = max(8, manufacturing.channelDiameter * transform.ptsPerMm * 0.85)
+        let radiusSq = radius * radius
+        var best: (netId: UUID, layer: Layer, position: Point, distSq: Double)?
+        for route in document.circuit.physical.routes {
+            for segment in route.segments {
+                guard visible.contains(segment.layer) else { continue }
+                for wp in segment.waypoints where wp.kind == .via {
+                    let screen = transform.toScreen(wp.position)
+                    let dx = Double(pt.x - screen.x)
+                    let dy = Double(pt.y - screen.y)
+                    let d2 = dx * dx + dy * dy
+                    if d2 <= radiusSq, d2 < (best?.distSq ?? .greatestFiniteMagnitude) {
+                        best = (route.netId, segment.layer, wp.position, d2)
+                    }
+                }
+            }
+        }
+        return best.map { ($0.netId, $0.layer, $0.position) }
     }
 
     /// Returns the closest visible route segment whose polyline passes within
@@ -1334,10 +1401,19 @@ struct PhysicalCanvasView: View {
         routingState = .routing(netId: netId, waypoints: [cursorWorld], layer: target, startsAtVia: true)
     }
 
-    private func appendRouteSegment(netId: UUID, points: [Point], layer: Layer, startsAtVia: Bool) {
+    private func appendRouteSegment(
+        netId: UUID, points: [Point], layer: Layer,
+        startsAtVia: Bool, endsAtVia: Bool = false
+    ) {
         guard points.count >= 2 else { return }
-        let waypoints = points.enumerated().map { i, p in
-            Waypoint(position: p, kind: (i == 0 && startsAtVia) ? .via : .point)
+        let lastIdx = points.count - 1
+        let waypoints = points.enumerated().map { i, p -> Waypoint in
+            let kind: WaypointKind = {
+                if i == 0, startsAtVia { return .via }
+                if i == lastIdx, endsAtVia { return .via }
+                return .point
+            }()
+            return Waypoint(position: p, kind: kind)
         }
         let segment = Segment(waypoints: waypoints, layer: layer)
         if let i = document.circuit.physical.routes.firstIndex(where: { $0.netId == netId }) {
