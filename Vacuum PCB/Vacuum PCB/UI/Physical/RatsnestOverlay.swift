@@ -7,10 +7,16 @@ import SwiftUI
 struct RatsnestOverlay: View {
     let document: CircuitDocument
     let transform: CanvasTransform
+    let visible: LayerVisibility
 
     var body: some View {
         Canvas { ctx, _ in
             for edge in Ratsnest.missingEdges(document) {
+                // Hide edges whose endpoint pin sits on a hidden layer — the
+                // pin handles themselves disappear under that filter, so a
+                // dangling dashed line would mislead more than help.
+                guard visible.contains(edge.layerA),
+                      visible.contains(edge.layerB) else { continue }
                 let a = transform.toScreen(edge.a)
                 let b = transform.toScreen(edge.b)
                 var path = Path()

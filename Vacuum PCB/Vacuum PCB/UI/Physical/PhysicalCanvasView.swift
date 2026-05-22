@@ -145,7 +145,11 @@ struct PhysicalCanvasView: View {
                     manufacturing: manufacturing
                 )
                 if showRatsnest && !visible.isSiliconeSheet {
-                    RatsnestOverlay(document: document.circuit, transform: transform)
+                    RatsnestOverlay(
+                        document: document.circuit,
+                        transform: transform,
+                        visible: visible
+                    )
                 }
                 if visible.isSiliconeSheet {
                     SiliconeSheetViasOverlay(
