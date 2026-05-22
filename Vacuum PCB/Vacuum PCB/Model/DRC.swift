@@ -217,12 +217,17 @@ enum DRC {
 
         // Every via must appear at the *same* XY on at least one segment per
         // layer; otherwise the cross-plate bore is one-sided.
-        issues.append(contentsOf: viaIssues(net: net, segments: segments))
+        issues.append(contentsOf: viaIssues(
+            net: net, segments: segments,
+            pinPositions: Array(pinPositions.values)
+        ))
 
         return issues
     }
 
-    private static func viaIssues(net: Net, segments: [Segment]) -> [Issue] {
+    private static func viaIssues(
+        net: Net, segments: [Segment], pinPositions: [Point]
+    ) -> [Issue] {
         // Group via waypoints by approximate XY → which layers carry one,
         // and which segments hold them so the sidebar can select the
         // offending segment when the user clicks the issue.
@@ -245,8 +250,16 @@ enum DRC {
                 }
             }
         }
+        // A `.via` marker that sits on top of a placed pin of the same net is
+        // decorative: the pin already anchors the channel at that XY, and
+        // PlateBuilder skips single-layer via groups so no stray bore is
+        // produced. Suppress those — true mid-route orphans (no pin nearby)
+        // still report.
+        func coincidesWithPin(_ p: Point) -> Bool {
+            pinPositions.contains { abs($0.x - p.x) < eps && abs($0.y - p.y) < eps }
+        }
         return groups
-            .filter { $0.layers.count < 2 }
+            .filter { $0.layers.count < 2 && !coincidesWithPin($0.position) }
             .map { Issue(
                 netId: net.id, netLabel: net.label,
                 kind: .orphanVia(position: $0.position, segmentIndex: $0.segmentIndices.first ?? 0)
