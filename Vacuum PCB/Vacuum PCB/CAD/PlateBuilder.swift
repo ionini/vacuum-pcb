@@ -527,6 +527,20 @@ enum PlateBuilder {
                 netByPin[pinRef] = net.id
             }
         }
+        // A channel approaching the pad perpendicular to the source-drain axis
+        // would end at the pin XY (distance `padsOffset` from the gate). At the
+        // defaults that puts the cylinder's gate-side wall exactly on the pad
+        // lobe's flat face (`padsSeparation / 2` from the gate), and Euclid's
+        // BSP union leaves a hairline sliver at any tangent surface — see the
+        // sphere-radius bump in `channelMesh` for the same family of glitch.
+        // Pulling the inserted endpoint slightly toward the gate makes the
+        // cylinder pierce past the flat face cleanly. Only apply when the gap
+        // between lobes is wide enough that the overshoot can't graze the
+        // opposite lobe's flat face on the other side.
+        let channelRadius = m.channelDiameter / 2
+        let safetyMargin = 0.2
+        let mergeDistanceFromGate = m.padsSeparation / 2 + channelRadius - safetyMargin
+        let canOvershoot = m.padsSeparation > 2 * safetyMargin
         var out: [Layer: [UUID: [Point]]] = [:]
         for placement in doc.physical.placements {
             guard let component = componentsById[placement.componentId],
@@ -536,7 +550,19 @@ enum PlateBuilder {
                 let pinRef = PinRef(componentId: placement.componentId, pinKey: pin.key)
                 guard let netId = netByPin[pinRef] else { continue }
                 let layer = placement.resolvedLayer(of: pin, on: component)
-                out[layer, default: [:]][netId, default: []].append(placement.worldPosition(of: pin))
+                let pinWorld = placement.worldPosition(of: pin)
+                let gateWorld = placement.position
+                let dx = pinWorld.x - gateWorld.x
+                let dy = pinWorld.y - gateWorld.y
+                let dist = (dx * dx + dy * dy).squareRoot()
+                let snapTarget: Point
+                if canOvershoot, dist > mergeDistanceFromGate, dist > 0 {
+                    let t = (dist - mergeDistanceFromGate) / dist
+                    snapTarget = Point(x: pinWorld.x - dx * t, y: pinWorld.y - dy * t)
+                } else {
+                    snapTarget = pinWorld
+                }
+                out[layer, default: [:]][netId, default: []].append(snapTarget)
             }
         }
         return out
