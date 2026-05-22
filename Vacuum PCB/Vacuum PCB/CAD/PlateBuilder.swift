@@ -167,14 +167,19 @@ enum PlateBuilder {
 
                 // Viewing hole — cylinder through the *opposite* plate, 1 mm
                 // wider than the dimple, so the deflected silicone is
-                // visible from outside.
+                // visible from outside. Overshoots the outer face by the
+                // worst-case volcano-dome height so a screw placed near the
+                // LED doesn't cap the hole on its way out of the plate.
                 let oppositePlate = placement.layer.opposite
                 let oppositeThickness = oppositePlate == .top ? topThickness : bottomThickness
                 let viewHole = ledViewHoleMesh(
                     at: placement.position, onPlate: oppositePlate,
                     diameter: m.ledDimpleDiameter + 1.0,
                     topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ,
-                    topThickness: topThickness, bottomThickness: bottomThickness
+                    topThickness: topThickness, bottomThickness: bottomThickness,
+                    outerOvershoot: m.screwProtrusion > 0
+                        ? m.screwProtrusion + ScrewGeometry.domeCeilingMargin + 0.5
+                        : 0
                 )
                 appendCutter(viewHole, plate: oppositePlate,
                              top: &topCutters, bottom: &bottomCutters)
@@ -795,7 +800,8 @@ enum PlateBuilder {
     private static func ledViewHoleMesh(
         at center: Point, onPlate plate: Plate, diameter: Double,
         topInnerZ: Double, bottomInnerZ: Double,
-        topThickness: Double, bottomThickness: Double
+        topThickness: Double, bottomThickness: Double,
+        outerOvershoot: Double = 0
     ) -> Mesh {
         let radius = diameter / 2
         let eps = 0.1
@@ -803,9 +809,9 @@ enum PlateBuilder {
         switch plate {
         case .top:
             zLo = topInnerZ - eps
-            zHi = topInnerZ + topThickness + eps
+            zHi = topInnerZ + topThickness + eps + outerOvershoot
         case .bottom:
-            zLo = bottomInnerZ - bottomThickness - eps
+            zLo = bottomInnerZ - bottomThickness - eps - outerOvershoot
             zHi = bottomInnerZ + eps
         }
         let len = zHi - zLo
