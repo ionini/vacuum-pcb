@@ -194,7 +194,7 @@ enum DRC {
         // Pin-snap tolerance: matches PlateBuilder.extendedWaypointPositions
         // so a route end that drifts away from its pin (because padsOffset
         // moved) still counts as connected here.
-        let pinSnapTol = document.manufacturing.dimpleDiameter / 2 + 0.5
+        let pinSnapTol = document.manufacturing.dimpleDiameter / 2 + 0.01
         for segment in segments {
             let positions = PlateBuilder.extendedWaypointPositions(
                 for: segment,

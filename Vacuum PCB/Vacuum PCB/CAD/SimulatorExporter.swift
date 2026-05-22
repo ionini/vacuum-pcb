@@ -184,7 +184,7 @@ enum SimulatorExporter {
                 let midZ = m.midZ(for: segment.layer)
                 let positions = PlateBuilder.extendedWaypointPositions(
                     for: segment,
-                    pinsOnLayer: pinsPerLayer[segment.layer] ?? [],
+                    pinsOnLayer: pinsPerLayer[segment.layer]?[route.netId] ?? [],
                     tolerance: pinSnapTol
                 )
                 fluidParts.append(channelMesh(

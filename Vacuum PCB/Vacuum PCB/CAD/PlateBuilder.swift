@@ -78,7 +78,8 @@ enum PlateBuilder {
             for segment in route.segments {
                 let midZ = m.midZ(for: segment.layer)
                 let positions = extendedWaypointPositions(
-                    for: segment, pinsOnLayer: pinsPerLayer[segment.layer] ?? [],
+                    for: segment,
+                    pinsOnLayer: pinsPerLayer[segment.layer]?[route.netId] ?? [],
                     tolerance: pinSnapTol
                 )
                 let channel = channelMesh(
@@ -492,11 +493,17 @@ enum PlateBuilder {
 
     // MARK: - Pin-snap extension
 
-    /// Per-layer map of pin positions the channel build is allowed to extend
-    /// a segment endpoint to. Restricted to transistor source/drain pins —
-    /// they're the only pins whose world position can drift after a route was
-    /// drawn (the user nudges `padsOffset` and the pads move outward), so
-    /// they're the only pins that need the snap.
+    /// Per-layer, per-net map of pin positions the channel build is allowed
+    /// to extend a segment endpoint to. Restricted to transistor source/drain
+    /// pins — they're the only pins whose world position can drift after a
+    /// route was drawn (the user nudges `padsOffset` and the pads move
+    /// outward), so they're the only pins that need the snap.
+    ///
+    /// Keyed by `route.netId` within each layer so a segment can only snap to
+    /// a pin on its own net. Without that filter a route end that happened to
+    /// drift near a *foreign* transistor's a/b pin would silently bridge the
+    /// two nets in the CAD output even when the 2D connectivity check sees
+    /// them as separate.
     ///
     /// Resistor / port / vent pins are fixed in world coordinates the moment
     /// they were placed, and snapping to them is actively harmful: a via that
@@ -513,15 +520,23 @@ enum PlateBuilder {
     static func collectPinPositions(
         doc: CircuitDocument, m: ManufacturingConstants,
         componentsById: [UUID: Component]
-    ) -> [Layer: [Point]] {
-        var out: [Layer: [Point]] = [:]
+    ) -> [Layer: [UUID: [Point]]] {
+        var netByPin: [PinRef: UUID] = [:]
+        for net in doc.logic.nets {
+            for pinRef in net.pins {
+                netByPin[pinRef] = net.id
+            }
+        }
+        var out: [Layer: [UUID: [Point]]] = [:]
         for placement in doc.physical.placements {
             guard let component = componentsById[placement.componentId],
                   component.kind == .transistor
             else { continue }
             for pin in component.footprint(m).pins where pin.key == "a" || pin.key == "b" {
+                let pinRef = PinRef(componentId: placement.componentId, pinKey: pin.key)
+                guard let netId = netByPin[pinRef] else { continue }
                 let layer = placement.resolvedLayer(of: pin, on: component)
-                out[layer, default: []].append(placement.worldPosition(of: pin))
+                out[layer, default: [:]][netId, default: []].append(placement.worldPosition(of: pin))
             }
         }
         return out
