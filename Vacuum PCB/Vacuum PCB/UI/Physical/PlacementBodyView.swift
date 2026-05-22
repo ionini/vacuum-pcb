@@ -185,14 +185,20 @@ struct PlacementBodyView: View {
     private func drawScrew(in ctx: inout GraphicsContext) {
         // Three concentric features matching the CAD cutters: outer ring =
         // head countersink (5.1 mm), middle dashed circle = clearance hole,
-        // hex outline indicates the nut pocket orientation on the bottom.
+        // hex outline indicates the nut pocket orientation on the opposite
+        // plate. `placement.layer` is the head's plate; the hex ring takes
+        // the opposite plate's tint so the user can see at a glance which
+        // side the screw is oriented to.
         let headR = ScrewGeometry.headDiameter / 2 * transform.ptsPerMm
         let throughR = ScrewGeometry.throughDiameter / 2 * transform.ptsPerMm
         let hexCircumR = (ScrewGeometry.hexAcrossFlats / sqrt(3.0)) * transform.ptsPerMm
 
+        let headColor = plateColor(placement.layer)
+        let hexColor = plateColor(placement.layer.opposite)
+
         let headRect = CGRect(x: -headR, y: -headR, width: 2 * headR, height: 2 * headR)
-        ctx.fill(Path(ellipseIn: headRect), with: .color(Color.gray.opacity(0.18)))
-        ctx.stroke(Path(ellipseIn: headRect), with: .color(.gray), lineWidth: 1.2)
+        ctx.fill(Path(ellipseIn: headRect), with: .color(headColor.opacity(0.20)))
+        ctx.stroke(Path(ellipseIn: headRect), with: .color(headColor), lineWidth: 1.2)
 
         let throughRect = CGRect(x: -throughR, y: -throughR, width: 2 * throughR, height: 2 * throughR)
         ctx.fill(Path(ellipseIn: throughRect), with: .color(Color.primary.opacity(0.55)))
@@ -210,7 +216,7 @@ struct PlacementBodyView: View {
         hex.closeSubpath()
         ctx.stroke(
             hex,
-            with: .color(Color.primary.opacity(0.55)),
+            with: .color(hexColor.opacity(0.75)),
             style: StrokeStyle(lineWidth: 0.8, dash: [3, 2])
         )
     }

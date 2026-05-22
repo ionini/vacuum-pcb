@@ -45,13 +45,18 @@ enum ScrewGeometry {
     /// Builds the cutters and dome additions one screw contributes,
     /// partitioned by plate.
     ///
-    /// `protrusion` is the distance the head's top (and the nut's bottom)
-    /// stick past the plate's outer face. 0 keeps the legacy geometry —
-    /// head flush with the top plate's outer surface, nut flush with the
-    /// bottom plate's. Positive values reduce the inlay and rise a
-    /// spherical-cap "volcano" around the protruding portion; the cavity
-    /// cylinder continues through the dome so the screwdriver / hex driver
-    /// still reaches the fastener.
+    /// `protrusion` is the distance the head's outer face (and the nut's
+    /// outer face) stick past the plate's outer surface. 0 keeps the
+    /// legacy geometry — head flush with its plate's outer surface, nut
+    /// flush with the opposite plate's. Positive values reduce the inlay
+    /// and rise a spherical-cap "volcano" around the protruding portion;
+    /// the cavity cylinder continues through the dome so the screwdriver /
+    /// hex driver still reaches the fastener.
+    ///
+    /// `headSide` chooses which plate hosts the countersink (and which
+    /// hosts the hex-nut pocket on the opposite plate). `.top` is the
+    /// legacy orientation; `.bottom` flips the screw upside down so the
+    /// head sinks into the bottom plate and the nut into the top.
     static func meshes(
         at p: Point, rotation: Rotation,
         topInnerZ: Double, topThickness: Double,
@@ -59,22 +64,33 @@ enum ScrewGeometry {
         protrusion: Double,
         domeBaseDiameter: Double,
         headDepth: Double,
-        nutDepth: Double
+        nutDepth: Double,
+        headSide: Plate = .top
     ) -> CSG {
         let eps = 0.05
         let topFace = topInnerZ + topThickness
         let bottomFace = bottomInnerZ - bottomThickness
         let prot = max(0, protrusion)
-        let topDomeHeight = prot > 0 ? prot + domeCeilingMargin : 0
-        let bottomDomeHeight = topDomeHeight
+        let domeHeight = prot > 0 ? prot + domeCeilingMargin : 0
 
-        // Head cavity: a cylinder whose length is always `headDepth` (the
-        // physical head's height). With `prot` > 0 the cylinder is shifted
-        // up so the head's top sits `prot` above `topFace`; the cylinder
-        // then continues through the volcano dome above so the head stays
-        // reachable.
-        let countersinkZLo = (topFace + prot - headDepth) - eps
-        let countersinkZHi = topFace + topDomeHeight + eps
+        let hexSide = headSide.opposite
+        // Outer face Z of the head's / nut's host plate, plus the unit Z
+        // direction that points *out* of the assembly through that face
+        // (+1 for the top plate, -1 for the bottom). Using the outward
+        // sign lets the same expressions describe both orientations.
+        let headFace = (headSide == .top) ? topFace : bottomFace
+        let hexFace = (hexSide == .top) ? topFace : bottomFace
+        let headOut: Double = (headSide == .top) ? 1 : -1
+        let hexOut: Double = (hexSide == .top) ? 1 : -1
+
+        // Head cavity: cylinder of length `headDepth`. With `prot` > 0 it
+        // shifts outward so the head's outer surface sits `prot` past
+        // `headFace`; the cylinder continues through the volcano dome
+        // beyond that so the head stays reachable.
+        let headInner = headFace - headOut * (headDepth - prot)
+        let headOuter = headFace + headOut * domeHeight
+        let countersinkZLo = min(headInner, headOuter) - eps
+        let countersinkZHi = max(headInner, headOuter) + eps
         let countersink = verticalCylinder(
             radius: headDiameter / 2,
             zLo: countersinkZLo,
@@ -82,12 +98,11 @@ enum ScrewGeometry {
             slices: 24
         ).translated(by: Vector(p.x, p.y, 0))
 
-        // Hex pocket: mirror of the head cavity on the bottom plate. With
-        // `prot` > 0 the prism shifts down so the nut's bottom sits `prot`
-        // below `bottomFace`, and the prism continues through the bottom
-        // dome so a hex driver can still seat the nut.
-        let hexZLo = bottomFace - bottomDomeHeight - eps
-        let hexZHi = (bottomFace - prot + nutDepth) + eps
+        // Hex pocket: mirror of the head cavity on the opposite plate.
+        let hexInner = hexFace - hexOut * (nutDepth - prot)
+        let hexOuter = hexFace + hexOut * domeHeight
+        let hexZLo = min(hexInner, hexOuter) - eps
+        let hexZHi = max(hexInner, hexOuter) + eps
         let hexPrismMesh = hexPrism(
             acrossFlats: hexAcrossFlats,
             zLo: hexZLo,
@@ -102,16 +117,24 @@ enum ScrewGeometry {
         // the nut's top sit outside the plate (protrusion > headDepth /
         // nutDepth), the through-hole provides the narrow shaft tube
         // connecting the cavities through the dome material.
+        let throughZLo = min(countersinkZLo, hexZLo)
+        let throughZHi = max(countersinkZHi, hexZHi)
         let through = verticalCylinder(
             radius: throughDiameter / 2,
-            zLo: hexZLo,
-            zHi: countersinkZHi,
+            zLo: throughZLo,
+            zHi: throughZHi,
             slices: 16
         ).translated(by: Vector(p.x, p.y, 0))
 
         var csg = CSG()
-        csg.topCutters = [countersink, through]
-        csg.bottomCutters = [through, hexPrismMesh]
+        switch headSide {
+        case .top:
+            csg.topCutters = [countersink, through]
+            csg.bottomCutters = [through, hexPrismMesh]
+        case .bottom:
+            csg.bottomCutters = [countersink, through]
+            csg.topCutters = [through, hexPrismMesh]
+        }
 
         if prot > 0 {
             let hexCircumR = hexAcrossFlats / sqrt(3.0)
@@ -121,22 +144,26 @@ enum ScrewGeometry {
             // strictly inside the base by at least 0.05 mm).
             let baseR = max(domeBaseDiameter / 2,
                             max(headR, hexCircumR) + domeRimMargin + 0.05)
-            csg.topAdditions.append(
-                volcanoDome(
-                    at: p, baseZ: topFace, side: .top,
-                    height: topDomeHeight,
-                    baseRadius: baseR,
-                    topRadius: headR + domeRimMargin
-                )
+            let headDome = volcanoDome(
+                at: p, baseZ: headFace, side: headSide,
+                height: domeHeight,
+                baseRadius: baseR,
+                topRadius: headR + domeRimMargin
             )
-            csg.bottomAdditions.append(
-                volcanoDome(
-                    at: p, baseZ: bottomFace, side: .bottom,
-                    height: bottomDomeHeight,
-                    baseRadius: baseR,
-                    topRadius: hexCircumR + domeRimMargin
-                )
+            let hexDome = volcanoDome(
+                at: p, baseZ: hexFace, side: hexSide,
+                height: domeHeight,
+                baseRadius: baseR,
+                topRadius: hexCircumR + domeRimMargin
             )
+            switch headSide {
+            case .top:
+                csg.topAdditions.append(headDome)
+                csg.bottomAdditions.append(hexDome)
+            case .bottom:
+                csg.bottomAdditions.append(headDome)
+                csg.topAdditions.append(hexDome)
+            }
         }
 
         return csg

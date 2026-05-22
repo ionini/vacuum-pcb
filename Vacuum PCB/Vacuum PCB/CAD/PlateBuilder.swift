@@ -201,6 +201,10 @@ enum PlateBuilder {
                 }
 
             case .screw:
+                // `placement.layer` tracks which plate hosts the screw
+                // head (the nut sinks into the opposite plate). F flips
+                // it, swapping head and nut sides without moving the
+                // through-hole.
                 let screw = ScrewGeometry.meshes(
                     at: placement.position, rotation: placement.rotation,
                     topInnerZ: topInnerZ, topThickness: topThickness,
@@ -208,7 +212,8 @@ enum PlateBuilder {
                     protrusion: m.screwProtrusion,
                     domeBaseDiameter: m.screwDomeBaseDiameter,
                     headDepth: m.screwHeadDepth,
-                    nutDepth: m.screwNutDepth
+                    nutDepth: m.screwNutDepth,
+                    headSide: placement.layer
                 )
                 topCutters.append(contentsOf: screw.topCutters)
                 bottomCutters.append(contentsOf: screw.bottomCutters)
