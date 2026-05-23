@@ -29,6 +29,9 @@ DerivedData/
 Packages/
 Package.resolved
 
+# xcode-build-server (per-user BSP config; absolute DerivedData paths)
+buildServer.json
+
 # CocoaPods (in case)
 Pods/
 
