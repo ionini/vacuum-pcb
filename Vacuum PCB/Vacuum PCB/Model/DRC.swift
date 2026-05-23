@@ -17,6 +17,16 @@ import Foundation
 /// - resistor serpentines and port bores in the clearance check (route
 ///   segments only for now).
 enum DRC {
+    /// Transient "you clicked this issue, here's where it lives on the
+    /// canvas" marker, animated as a fading pulse by the canvas overlay.
+    /// `id` changes per click so SwiftUI re-mounts the overlay and restarts
+    /// its animation even when the user re-clicks the same issue.
+    struct Focus: Hashable {
+        let id: UUID
+        let position: Point
+        let layer: Layer
+    }
+
     struct Issue: Identifiable, Hashable {
         let id = UUID()
         let netId: UUID
@@ -55,6 +65,20 @@ enum DRC {
                 selfSegmentIndex: Int,
                 otherSegmentIndex: Int
             )
+            /// Two electrically distinct nets are CSG-merged in the printed
+            /// plate — channel centerlines pass within `channelDiameter`
+            /// (the bores' tubes overlap) or a via on one net punches
+            /// through the other's channel at the same XY. Detected on the
+            /// flattened doc, so sub-part-internal routes participate too
+            /// (which is what the user-visible `channelClearance` check
+            /// misses). `otherNetLabel` is prefixed with the sub-part
+            /// instance chain for routes hoisted out of a sub-part.
+            case crossNetMerge(
+                otherNetId: UUID,
+                otherNetLabel: String,
+                layer: Layer,
+                position: Point
+            )
         }
 
         var summary: String {
@@ -71,6 +95,9 @@ enum DRC {
                 let where_ = layer.uiLabel
                 let gapTxt = gap < 0.01 ? "crossing" : "\(String(format: "%.2f", gap)) mm gap"
                 return "\(netLabel) ↔ \(other) on \(where_): \(gapTxt)"
+            case .crossNetMerge(_, let other, let layer, let p):
+                return "\(netLabel) ↔ \(other) merge on \(layer.uiLabel)"
+                    + " near (\(String(format: "%.1f", p.x)), \(String(format: "%.1f", p.y)))"
             }
         }
     }
@@ -107,6 +134,65 @@ enum DRC {
                 }
             }
             return sel
+        case .crossNetMerge(let otherNetId, let otherLabel, _, _):
+            // For each side of the merge, highlight whatever the user can
+            // act on in the unflattened canvas:
+            //   * net at the parent level → all its pins (placements set)
+            //   * net hoisted out of a sub-part → that instance's placement,
+            //     identified by the label prefix ("U1.n3" → component
+            //     labelled "U1"). Lets the user jump into the sub-part view
+            //     where the actual offending segment lives.
+            let parentNets = Set(document.logic.nets.map(\.id))
+            var sel = PhysicalSelection()
+            func selectSide(netId: UUID, label: String) {
+                if parentNets.contains(netId),
+                   let net = document.logic.nets.first(where: { $0.id == netId }) {
+                    sel.placements.formUnion(net.pins.map(\.componentId))
+                    return
+                }
+                if let dot = label.firstIndex(of: "."),
+                   let instance = document.logic.components.first(where: {
+                       $0.kind == .subpart && $0.label == String(label[..<dot])
+                   }) {
+                    sel.placements.insert(instance.id)
+                }
+            }
+            selectSide(netId: issue.netId, label: issue.netLabel)
+            selectSide(netId: otherNetId, label: otherLabel)
+            return sel.isEmpty ? nil : sel
+        }
+    }
+
+    /// Position to drop a transient focus marker on when the user clicks an
+    /// issue in the sidebar. Returns nil for issues that don't have a clear
+    /// single point (unplaced pin / no-route nets exist in logical state, not
+    /// on the canvas). The companion overlay only renders when the layer is
+    /// currently visible — issues on a hidden layer still select the right
+    /// placements, just without the ping.
+    static func focusPosition(for issue: Issue, in document: CircuitDocument) -> (Point, Layer)? {
+        switch issue.kind {
+        case .crossNetMerge(_, _, let layer, let pos):
+            return (pos, layer)
+        case let .orphanVia(pos, segIdx):
+            guard let route = document.physical.routes.first(where: { $0.netId == issue.netId }),
+                  segIdx < route.segments.count
+            else { return nil }
+            return (pos, route.segments[segIdx].layer)
+        case let .channelClearance(_, _, layer, _, selfSeg, _):
+            guard let route = document.physical.routes.first(where: { $0.netId == issue.netId }),
+                  selfSeg < route.segments.count
+            else { return nil }
+            let pts = route.segments[selfSeg].waypoints.map(\.position)
+            guard !pts.isEmpty else { return nil }
+            return (pts[pts.count / 2], layer)
+        case .disconnectedPin(let ref):
+            guard let placement = document.physical.placements.first(where: { $0.componentId == ref.componentId }),
+                  let comp = document.logic.components.first(where: { $0.id == ref.componentId }),
+                  let pin = comp.footprint(document.manufacturing, snapshots: document.librarySnapshots).pin(ref.pinKey)
+            else { return nil }
+            return (placement.worldPosition(of: pin), placement.resolvedLayer(of: pin, on: comp))
+        case .unplacedPin, .noRouteDrawn:
+            return nil
         }
     }
 
@@ -116,6 +202,7 @@ enum DRC {
             issues.append(contentsOf: checkNet(net, in: document))
         }
         issues.append(contentsOf: clearanceIssues(in: document))
+        issues.append(contentsOf: crossNetMergeIssues(in: document))
         return issues
     }
 
@@ -375,5 +462,87 @@ enum DRC {
         let d4 = cross(p1, p2, p4)
         return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0))
             && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))
+    }
+
+    // MARK: - Cross-net electrical merge
+
+    /// Flags pairs of channel edges from different nets whose centerlines
+    /// pass within `channelDiameter` on the same layer — at that distance the
+    /// two cylindrical bores share volume in CSG and become one continuous
+    /// void in the printed plate, electrically merging the nets. Runs on the
+    /// flattened doc so sub-part-internal routes are visible (the user-side
+    /// `clearanceIssues` walks the unflattened doc and misses them).
+    ///
+    /// Includes the via-vs-foreign-channel case implicitly: a `.via` waypoint
+    /// at XY on layer L appears as a degenerate (length-0) edge at that XY,
+    /// and `segmentDistance` reduces to point-to-segment for it.
+    private static func crossNetMergeIssues(in doc: CircuitDocument) -> [Issue] {
+        let (flat, labels) = doc.flattenedWithLabels()
+        let threshold = flat.manufacturing.channelDiameter
+
+        struct E {
+            let netId: UUID
+            let label: String
+            let layer: Layer
+            let a: Point
+            let b: Point
+        }
+        var edges: [E] = []
+        for route in flat.physical.routes {
+            let label = labels[route.netId] ?? "?"
+            for seg in route.segments {
+                let pts = seg.waypoints.map(\.position)
+                guard pts.count >= 2 else { continue }
+                for i in 0..<(pts.count - 1) {
+                    edges.append(E(
+                        netId: route.netId, label: label, layer: seg.layer,
+                        a: pts[i], b: pts[i + 1]
+                    ))
+                }
+            }
+        }
+
+        struct PairKey: Hashable {
+            let first: UUID, second: UUID, layer: Layer
+            init(_ a: UUID, _ b: UUID, _ layer: Layer) {
+                let ord = a.uuidString < b.uuidString ? (a, b) : (b, a)
+                self.first = ord.0; self.second = ord.1; self.layer = layer
+            }
+        }
+        var reported: Set<PairKey> = []
+        var issues: [Issue] = []
+        for i in 0..<edges.count {
+            for j in (i + 1)..<edges.count {
+                let a = edges[i], b = edges[j]
+                if a.netId == b.netId { continue }
+                if a.layer != b.layer { continue }
+                let key = PairKey(a.netId, b.netId, a.layer)
+                if reported.contains(key) { continue }
+                let d = segmentDistance(a.a, a.b, b.a, b.b)
+                guard d < threshold else { continue }
+                reported.insert(key)
+                issues.append(Issue(
+                    netId: a.netId, netLabel: a.label,
+                    kind: .crossNetMerge(
+                        otherNetId: b.netId, otherNetLabel: b.label,
+                        layer: a.layer,
+                        position: approachPoint(a.a, a.b, b.a, b.b)
+                    )
+                ))
+            }
+        }
+        return issues
+    }
+
+    /// Midpoint of the two segments' midpoints. Good enough to drop a marker
+    /// near the offending area — the user inspects the canvas for the exact
+    /// crossing, and a closest-point solve would be heavier than the rest of
+    /// this check combined.
+    private static func approachPoint(
+        _ a: Point, _ b: Point, _ c: Point, _ d: Point
+    ) -> Point {
+        let m1 = Point(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+        let m2 = Point(x: (c.x + d.x) / 2, y: (c.y + d.y) / 2)
+        return Point(x: (m1.x + m2.x) / 2, y: (m1.y + m2.y) / 2)
     }
 }

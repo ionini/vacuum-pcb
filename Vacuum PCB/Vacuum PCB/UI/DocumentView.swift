@@ -10,6 +10,11 @@ struct DocumentView: View {
     /// Lifted up from PhysicalView so the sidebar's DRC list can jump to a
     /// selection (and switch tabs) when the user clicks an issue.
     @State private var physicalSelection: PhysicalSelection = .none
+    /// Transient ping marker on the physical canvas, set when the user
+    /// clicks a DRC issue with a focal point (crossNetMerge, orphanVia,
+    /// channelClearance, disconnectedPin). The canvas overlay animates it
+    /// and we self-clear after ~2 seconds so the marker doesn't linger.
+    @State private var issueFocus: DRC.Focus?
 
     @State private var built: PlateBuilder.Output?
     @State private var isBuilding = false
@@ -113,6 +118,7 @@ struct DocumentView: View {
             PhysicalView(
                 document: $document,
                 selection: $physicalSelection,
+                issueFocus: $issueFocus,
                 showInspector: $showInspector,
                 exportMenu: exportMenu
             )
@@ -286,11 +292,29 @@ struct DocumentView: View {
     /// Click handler for an issue row in the sidebar. Asks DRC for the
     /// physical-canvas selection that highlights the offending element(s),
     /// applies it, and jumps to the physical tab if we have a target there.
+    /// Also drops a transient pulse marker at the issue's focal point so
+    /// the user's eye lands on the offending area even when several
+    /// placements light up across the board.
     private func focusIssue(_ issue: DRC.Issue) {
-        guard let sel = DRC.physicalSelection(for: issue, in: document.circuit)
-        else { return }
-        physicalSelection = sel
+        let sel = DRC.physicalSelection(for: issue, in: document.circuit)
+        let focal = DRC.focusPosition(for: issue, in: document.circuit)
+        // Either side may be missing (e.g. an unplaced-pin issue has no
+        // canvas position, a both-sub-part-internal merge has no parent-side
+        // selection). Bail only if we have neither.
+        guard sel != nil || focal != nil else { return }
+        if let sel { physicalSelection = sel }
         selectedTab = .physical
+        if let (pos, layer) = focal {
+            let token = DRC.Focus(id: UUID(), position: pos, layer: layer)
+            issueFocus = token
+            // Self-clear after the animation runs its course so a stale
+            // marker doesn't sit around forever. The id check skips the
+            // clear if the user clicked another issue in the meantime.
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(2))
+                if issueFocus?.id == token.id { issueFocus = nil }
+            }
+        }
     }
 
     private func stat(_ name: String, _ value: Int) -> some View {

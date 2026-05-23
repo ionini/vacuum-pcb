@@ -11,6 +11,11 @@ struct PhysicalCanvasView: View {
     @Binding var routingLayer: Layer
     @Binding var routingError: String?
     var showRatsnest: Bool
+    /// Transient pulse marker dropped when the user clicks a DRC issue with
+    /// a focal point. Read-only — DocumentView owns the value and the
+    /// auto-clear timer. We re-mount the overlay on each new focus via
+    /// `.id(focus.id)` so the animation restarts.
+    var issueFocus: DRC.Focus?
 
     @State private var transform: CanvasTransform = .default
     @State private var mouseLocation: CGPoint = .zero
@@ -173,6 +178,15 @@ struct PhysicalCanvasView: View {
                     transform: transform,
                     gridMm: grid
                 )
+
+                if let focus = issueFocus, visible.contains(focus.layer) {
+                    IssueFocusPing(
+                        position: focus.position,
+                        transform: transform
+                    )
+                    .id(focus.id)
+                    .allowsHitTesting(false)
+                }
 
                 // NSEvent-monitor key catcher. Replaces the hidden-Button
                 // approach which would silently lose its shortcut when
@@ -1680,5 +1694,37 @@ struct ParkingDropDelegate: DropDelegate {
         if let d = item as? Data { return String(data: d, encoding: .utf8) }
         if let url = item as? URL { return url.absoluteString }
         return nil
+    }
+}
+
+/// Sonar-style pulse drawn at a DRC issue's focal point. Single ring that
+/// scales outward and fades to zero opacity over ~1.5 s. Mounting it with a
+/// fresh `id` per click restarts the animation, so re-clicking the same
+/// issue still pings.
+private struct IssueFocusPing: View {
+    let position: Point
+    let transform: CanvasTransform
+    @State private var animate = false
+
+    var body: some View {
+        let screen = transform.toScreen(position)
+        // Two stacked rings: the outer ring carries the pulse motion; the
+        // inner ring stays put as a fixed crosshair so the user's eye can
+        // still find the exact spot after the pulse has faded out.
+        ZStack {
+            Circle()
+                .stroke(Color.orange, lineWidth: 3)
+                .frame(width: 18, height: 18)
+                .scaleEffect(animate ? 5 : 1)
+                .opacity(animate ? 0 : 1)
+            Circle()
+                .stroke(Color.orange, lineWidth: 2)
+                .frame(width: 12, height: 12)
+                .opacity(animate ? 0.4 : 1)
+        }
+        .position(screen)
+        .onAppear {
+            withAnimation(.easeOut(duration: 1.5)) { animate = true }
+        }
     }
 }

@@ -9,6 +9,10 @@ struct PhysicalView: View {
     /// Lifted to DocumentView so the sidebar's DRC list can drive
     /// highlight-on-click.
     @Binding var selection: PhysicalSelection
+    /// Transient ping marker for the DRC focus-on-click affordance. Owned
+    /// by DocumentView (it's also the one that schedules the auto-clear);
+    /// we pass it through to the canvas overlay.
+    @Binding var issueFocus: DRC.Focus?
     /// Threaded down so this view can plant the Inspector toolbar toggle as
     /// the rightmost toolbar item.
     @Binding var showInspector: Bool
@@ -33,7 +37,8 @@ struct PhysicalView: View {
             visible: $visible,
             routingLayer: $routingLayer,
             routingError: $routingError,
-            showRatsnest: showRatsnest
+            showRatsnest: showRatsnest,
+            issueFocus: issueFocus
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .toolbar { physicalToolbar }

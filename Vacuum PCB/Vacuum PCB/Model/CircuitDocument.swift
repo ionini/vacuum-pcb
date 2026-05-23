@@ -78,13 +78,39 @@ extension CircuitDocument {
     /// Subparts whose library file is missing are silently dropped (already
     /// surfaced as a red placeholder in the canvas).
     func flattened() -> CircuitDocument {
-        flattened(visiting: [])
+        flattenedWithLabels(visiting: [], prefix: nil).doc
     }
 
     /// Recursive worker for `flattened()`. `visiting` holds the chain of
     /// library filenames currently being expanded; a subpart whose `partRef`
     /// is already in that set is skipped (cycle).
     func flattened(visiting: Set<String>) -> CircuitDocument {
+        flattenedWithLabels(visiting: visiting, prefix: nil).doc
+    }
+
+    /// Same as `flattened()` but also returns a `[routeNetId → label]` map.
+    /// Parent-level routes get their net's own label (e.g., "n9"); routes
+    /// hoisted out of a sub-part instance are prefixed with the instance
+    /// chain (e.g., "U1.n3", "U1.U2.n5"). DRC uses this to attribute a
+    /// cross-net merge to the originating sub-part net by name — without
+    /// the prefix the user couldn't tell which net inside which instance
+    /// is colliding.
+    func flattenedWithLabels() -> (doc: CircuitDocument, routeLabels: [UUID: String]) {
+        flattenedWithLabels(visiting: [], prefix: nil)
+    }
+
+    private func flattenedWithLabels(
+        visiting: Set<String>, prefix: String?
+    ) -> (doc: CircuitDocument, routeLabels: [UUID: String]) {
+        var labels: [UUID: String] = [:]
+        var ownNetLabels: [UUID: String] = [:]
+        for net in self.logic.nets {
+            ownNetLabels[net.id] = prefix.map { "\($0).\(net.label)" } ?? net.label
+        }
+        for route in self.physical.routes {
+            labels[route.netId] = ownNetLabels[route.netId] ?? "?"
+        }
+
         var primitives = self
         var components = primitives.logic.components.filter { $0.kind != .subpart }
         var placements: [Placement] = primitives.physical.placements.filter { p in
@@ -103,7 +129,32 @@ extension CircuitDocument {
             // Pre-flatten the child so any subparts inside it are already
             // expanded to primitives in the child's coordinate system. The
             // parent then only needs a single rotation/translation step.
-            let childFlat = part.document.flattened(visiting: visiting.union([filename]))
+            let childPrefix = prefix.map { "\($0).\(comp.label)" } ?? comp.label
+            let (childFlat, childLabels) = part.document.flattenedWithLabels(
+                visiting: visiting.union([filename]),
+                prefix: childPrefix
+            )
+
+            // Boundary-pin net unification: for each parent net that has a
+            // PinRef into this sub-part instance, find the matching boundary
+            // component inside the library doc, then the sub-part's interior
+            // net that contains that boundary component. Map: interior net id
+            // → parent net id. Hoisted routes on those interior nets adopt
+            // the parent's net id instead of a fresh UUID — so DRC's
+            // cross-net-merge check doesn't mistake the intended channel-meeting
+            // at the boundary pin for an electrical short between distinct
+            // nets.
+            var netUnification: [UUID: UUID] = [:]
+            for parentNet in self.logic.nets {
+                for parentPin in parentNet.pins where parentPin.componentId == comp.id {
+                    guard let boundaryUUID = UUID(uuidString: parentPin.pinKey) else { continue }
+                    if let interiorNet = part.document.logic.nets.first(where: { interior in
+                        interior.pins.contains(where: { $0.componentId == boundaryUUID })
+                    }) {
+                        netUnification[interiorNet.id] = parentNet.id
+                    }
+                }
+            }
 
             let outline = part.document.physical.boardOutline
             let ox = outline.minX
@@ -146,9 +197,21 @@ extension CircuitDocument {
                 ))
             }
 
-            // Internal routes. NetId is regenerated — PlateBuilder ignores
-            // it, and reusing the library's netId could collide with a
-            // parent net's id and confuse downstream code that does care.
+            // Internal routes. NetId is normally regenerated to avoid
+            // colliding with parent nets — except for interior nets that
+            // unify with a parent net through a boundary pin (see
+            // `netUnification` above), where we deliberately reuse the
+            // parent's net id so they read as one electrical net downstream.
+            //
+            // Key invariant: all routes that shared a netId inside the
+            // sub-part must share a single new netId after flatten too.
+            // Minting per-route would split one logical net into N
+            // unrelated-looking nets, and the cross-net-merge DRC check
+            // would then flag every same-net route pair as a phantom short.
+            var newNetIds: [UUID: UUID] = [:]
+            for route in childFlat.physical.routes where newNetIds[route.netId] == nil {
+                newNetIds[route.netId] = netUnification[route.netId] ?? UUID()
+            }
             for route in childFlat.physical.routes {
                 let newSegments = route.segments.map { seg -> Segment in
                     let newWaypoints = seg.waypoints.map {
@@ -156,14 +219,17 @@ extension CircuitDocument {
                     }
                     return Segment(waypoints: newWaypoints, layer: seg.layer)
                 }
-                routes.append(Route(netId: UUID(), segments: newSegments))
+                routes.append(Route(netId: newNetIds[route.netId]!, segments: newSegments))
+            }
+            for (origId, newId) in newNetIds where netUnification[origId] == nil {
+                labels[newId] = childLabels[origId] ?? "?"
             }
         }
 
         primitives.logic.components = components
         primitives.physical.placements = placements
         primitives.physical.routes = routes
-        return primitives
+        return (primitives, labels)
     }
 
     private static func composeRotation(_ first: Rotation, then second: Rotation) -> Rotation {
