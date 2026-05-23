@@ -66,9 +66,21 @@ struct SchematicCanvasView: View {
                 Color(NSColor.controlBackgroundColor)
                     .ignoresSafeArea(edges: [])
 
+                // `scaledContent` carries the 100k×100k background tap target
+                // (so deselect clicks still register at any zoom). Without
+                // clamping, that intrinsic size propagates up to the outer
+                // ZStack, blowing the host NSView frame way past the visible
+                // canvas — which made the ScrollEventCatcher's bounds gate
+                // pass for cursors over the sidebar/inspector and steal
+                // their scroll events. Pinning the wrapper to `geo.size`
+                // (and clipping the overflow) keeps every sibling — and the
+                // ZStack itself — at the canvas's true frame.
                 scaledContent
                     .scaleEffect(zoom, anchor: .topLeading)
                     .offset(pan)
+                    .frame(width: geo.size.width, height: geo.size.height,
+                           alignment: .topLeading)
+                    .clipped()
                     .environment(\.schematicZoom, zoom)
 
                 // NSEvent-monitor key catcher. Outside the scaled subtree
