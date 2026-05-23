@@ -73,6 +73,21 @@ struct DocumentView: View {
             // bumps `buildToken`, so any in-flight build is superseded.
             if selectedTab == .preview { rebuild() }
         }
+        .onChange(of: document.circuit.librarySnapshots) { _, _ in
+            // `CircuitDocument.==` deliberately ignores `librarySnapshots`
+            // (the snapshot dict is bookkeeping, not identity). That means
+            // a transitive library update — Update from Library on a part
+            // whose own `contentHash` didn't change but whose nested
+            // dependency did — flips the snapshot content under an unchanged
+            // key, leaves `partRefHash` alone, and so doesn't fire the
+            // primary `.onChange` above. The schematic and physical views
+            // still refresh because they read snapshots via `.environment`,
+            // but `previewDirty` stays false and the cached `built` is
+            // exported until the next real diff arrives. Mirror the doc
+            // handler so snapshot-only changes still invalidate the preview.
+            previewDirty = true
+            if selectedTab == .preview { rebuild() }
+        }
         .onChange(of: selectedTab) { _, newTab in
             // Only rebuild the CSG when the user actually wants to look at
             // the 3D preview. Avoids the per-edit Euclid CSG storm that was
