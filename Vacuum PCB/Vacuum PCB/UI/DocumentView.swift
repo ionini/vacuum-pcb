@@ -78,6 +78,11 @@ struct DocumentView: View {
             // the 3D preview. Avoids the per-edit Euclid CSG storm that was
             // producing the "batch:" log spam and pinning a core.
             if newTab == .preview, previewDirty, !isBuilding { rebuild() }
+            // SimulateView's `.onChange(of: document.circuit)` only fires
+            // while it's in the hierarchy. Edits made on other tabs leave
+            // the cached SimulationState pointing at a stale network, so
+            // re-sync on entry.
+            if newTab == .simulate { simulationState?.rebuild(from: document.circuit) }
             // Every tab now has contextual inspector content, so
             // reveal the pane on every switch. Without it visible the
             // user loses the schematic palette / parking lot /
