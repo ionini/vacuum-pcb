@@ -92,6 +92,25 @@ struct SchematicInspector: View {
                 "Bump the channel-layer counts in settings before adding this part."
             return
         }
+        // Grid-pitch check. Child routes/placements snap to multiples of
+        // the child's pitch; they only land on the parent's grid when the
+        // child pitch is an integer multiple of the parent's. A finer
+        // child in a coarser parent would strand routes between parent
+        // cells, so refuse and tell the user how far to drop the parent.
+        let parentPitch = document.circuit.manufacturing.gridPitch
+        let partPitch   = part.document.manufacturing.gridPitch
+        if parentPitch > 0, partPitch > 0 {
+            let ratio = partPitch / parentPitch
+            let rounded = ratio.rounded()
+            let alignsToGrid = rounded >= 1 && abs(ratio - rounded) < 1e-6
+            if !alignsToGrid {
+                alertMessage = "\"\(part.displayName)\" was designed at " +
+                    "grid pitch \(formatPitch(partPitch)) mm. " +
+                    "Current document has \(formatPitch(parentPitch)) mm — " +
+                    "bump it to \(formatPitch(partPitch)) mm before adding this part."
+                return
+            }
+        }
         let label = document.circuit.logic.nextLabel(for: .subpart)
         let id = UUID()
         // Pin the placed instance to the live library's current content
@@ -131,5 +150,11 @@ struct SchematicInspector: View {
         let col = n % 5
         let row = n / 5
         return Point(x: 120 + Double(col) * 120, y: 100 + Double(row) * 110)
+    }
+
+    /// Compact mm formatting for alert text — `%g` trims trailing zeros so
+    /// 1.0 reads as "1" and 0.5 as "0.5" instead of "1.000000".
+    private func formatPitch(_ pitch: Double) -> String {
+        String(format: "%g", pitch)
     }
 }
