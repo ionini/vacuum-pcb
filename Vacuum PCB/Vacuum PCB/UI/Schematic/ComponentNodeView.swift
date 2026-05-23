@@ -17,6 +17,7 @@ struct ComponentNodeView: View {
     @State private var dragOffset: CGSize = .zero
     @State private var isRenaming = false
     @State private var renameDraft: String = ""
+    @FocusState private var renameFieldFocused: Bool
 
     /// Scale factor the canvas applies via .scaleEffect. We divide every
     /// `.global`-coord drag translation by this so the offset we render in
@@ -286,6 +287,8 @@ struct ComponentNodeView: View {
         TextField("Label", text: $renameDraft, onCommit: commitRename)
             .textFieldStyle(.roundedBorder)
             .frame(width: 80)
+            .focused($renameFieldFocused)
+            .onAppear { renameFieldFocused = true }
             .onExitCommand { isRenaming = false }
     }
 
