@@ -1,5 +1,22 @@
 # Euclid CSG perf — notes & optimization plan
 
+## Fork setup
+
+- **GitHub:** https://github.com/ioni-shape/Euclid (public fork of nicklockwood/Euclid)
+  - `baseline` tag → upstream `0409eab` (v0.8.14, the version Vacuum PCB was pinned to before this work)
+  - `perf` branch → optimizations on top of baseline
+- **Local checkout:** `~/Documents/dev/Euclid` (sibling to `vacuum_pcb`)
+  - `origin` → ioni-shape/Euclid (the fork)
+  - `upstream` → nicklockwood/Euclid (for pulling future upstream changes)
+- **Xcode wiring:** the Vacuum PCB project uses `XCLocalSwiftPackageReference "../../Euclid"`, so all builds pick up local edits immediately. No GitHub round-trip needed during iteration.
+
+**Onboarding a new machine:** clone the fork to `~/Documents/dev/Euclid` next to `vacuum_pcb`, check out `perf`, and Xcode will resolve the local package on first open.
+
+**Sending changes upstream:** push individual commits or cherry-picks to a topic branch on the fork, then `gh pr create --repo nicklockwood/Euclid`.
+
+---
+
+
 Baseline: Time Profiler trace of the 3D preview rebuild (before the object appears
 on screen). 130 s wall-clock, 76.6 s of aggregate CPU time across cores
 (≈59 % utilization → parallelism is itself a bottleneck before any algorithmic
@@ -42,6 +59,23 @@ Mesh.union closure                             88.6 %  67.9 s
 `inParallel(_:_:)` accounts for 88 % of CPU but is only `DispatchQueue.concurrentPerform(iterations: 2)` — two-way parallelism. The leaf work (`BSP.insert`) is single-threaded.
 
 ---
+
+## Status — measured after items 1, 3, 4 landed
+
+Comparing baseline trace to `Trace after all changes.trace` (May 2026):
+
+| Metric | Baseline | After | Δ |
+|---|---:|---:|---:|
+| Wallclock (trace duration) | 130 s | 10.6 s | **12.3× faster** |
+| Total CPU work | 76.6 s | 10.8 s | **7.1× less** |
+| App self-time | 36.3 s | 4.2 s | -88 % |
+| libswiftCore (ARC) | 24.9 s | 4.1 s | -84 % |
+| libsystem_malloc | 10.8 s | 1.4 s | -87 % |
+
+The 7× CPU work reduction is larger than the per-change estimates because tree
+reduction has an asymptotic effect (O(K²n) → O(Kn log K) for K-mesh unions) on
+top of the constant-factor wins from inlining and capacity reservation. For
+K=94 (the channel-mesh case in `PlateBuilder`) that alone is ~14× less work.
 
 ## Optimization candidates
 
@@ -95,7 +129,7 @@ func union(_ other: PlaneComparison) -> PlaneComparison {
 }
 ```
 
-- [ ] **Applied.** Post-fix self-time of `PlaneComparison.*`: ___ ms (was 6.4 s)
+- [x] **Applied** in fork commit `527aed3`. Post-fix self-time of `PlaneComparison.*` combined: **0.53 s** (was 6.4 s, -92 %). `Collection<>.compare(with:)` self also dropped from 6.2 s to 0.35 s (-94 %) because the inlined inner calls fold into the loop.
 
 ### 2. `Collection.compare(with:)` should be inlined and Bool-based
 
@@ -111,8 +145,7 @@ short-circuit on both true, and inline directly into `Polygon.compare`. After
 option 1 lands, this is partly addressed — but inlining the loop kills the
 remaining allocation/dispatch.
 
-- [ ] **Applied.** Post-fix self-time of `Collection<>.compare(with:)`: ___ ms
-  (was 6.1 s)
+- [x] **Subsumed by item 1.** After inlining, `Collection<>.compare(with:)` self-time fell from 6.1 s to 0.35 s — no further rewrite needed for now.
 
 ### 3. `BSP.insert` allocates `front` / `back` buffers in the hot loop
 
@@ -140,9 +173,8 @@ Proposed:
   frames and copy out the slice when we push to the stack. (More invasive,
   requires care because the stack stores `polygons` references.)
 
-- [ ] **Reserved capacity.** Post-fix `Array._createNewBuffer` total: ___ ms
-  (was 13.7 s)
-- [ ] **Hoisted buffers.** Delta: ___
+- [x] **Reserved capacity** in fork commit `a92ec48`. `Array._createNewBuffer` total dropped from **13.7 s to 1.0 s (-92 %)**. Skipped the hoisted-buffer variant — diminishing returns at this point.
+- [ ] **Hoisted buffers.** Not attempted; current delta already saturates this hotspot.
 
 ### 4. `inParallel` is 2-way — leaving cores idle
 
@@ -168,8 +200,8 @@ Options (increasing scope):
   Currently serial: walks meshes one at a time and unions intersecting ones in.
   Could partition into independent groups and union each group in parallel.
 
-- [ ] **BSP subtree parallelism.** Delta in `inParallel` total time: ___
-- [ ] **Mesh.merge parallelism.** Delta in `Mesh.merge` total time: ___
+- [ ] **BSP subtree parallelism.** Not attempted — would lift the per-`Mesh.union` 2-core ceiling that still bites the final phases of tree reduction. Real refactor: ~100–200 LOC, needs node-index renumbering when subtree forests get spliced. Left for a future round.
+- [x] **`Mesh.merge` parallelism** in fork commits `f0587ed` (component partitioning — superseded) and `1aae8cb` (**tree-style pairwise reduction**, the version that actually shipped). The first attempt produced no parallelism because every call in the real workload had all meshes in a single bounds-overlap component (e.g. the 94-mesh channel-mesh case). The tree-reduction variant breaks the K-mesh union into ⌈log₂ K⌉ parallel phases and also has a smaller asymptotic CSG cost (O(K n log K) vs O(K² n) for the sequential left-fold). Post-fix: `static Mesh.merge` total dropped from **9.7 s to 0.22 s (-98 %)**, `closure #3 in Mesh.union` total from **67.7 s to 6.8 s (-90 %)**.
 
 ### 5. `Polygon.split(spanning:)` constructs degenerate polygons before discarding
 
