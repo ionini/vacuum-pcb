@@ -53,10 +53,15 @@ struct ZoomToolbar: View {
     }
 
     private func button(systemName: String, help: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        // 22 pt is fine for a mouse cursor but well below the iOS HIG touch
+        // target. Bump on touch so iPad fingers can land each control without
+        // hitting its neighbour.
+        let side: CGFloat = InputPlatform.isTouch ? 32 : 22
+        let glyph: CGFloat = InputPlatform.isTouch ? 16 : 12
+        return Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 12, weight: .medium))
-                .frame(width: 22, height: 22)
+                .font(.system(size: glyph, weight: .medium))
+                .frame(width: side, height: side)
         }
         .buttonStyle(.plain)
         .help(help)

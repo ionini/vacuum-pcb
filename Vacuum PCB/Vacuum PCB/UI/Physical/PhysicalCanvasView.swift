@@ -573,7 +573,11 @@ struct PhysicalCanvasView: View {
         // .offset() above — a `.local` translation would collapse as the
         // view moves under the gesture, same pattern as the schematic
         // component drag.
-        DragGesture(minimumDistance: 2, coordinateSpace: .global)
+        // 2 pt is right for a precise trackpad cursor but turns finger
+        // micro-twitches into accidental drags on iPad — raise the
+        // threshold there.
+        let minDistance: Double = InputPlatform.isTouch ? 6 : 2
+        return DragGesture(minimumDistance: minDistance, coordinateSpace: .global)
             .onChanged { value in
                 if draggingPlacement == nil {
                     startPlacementDrag(grabbed: placement, translation: value.translation)
@@ -862,7 +866,8 @@ struct PhysicalCanvasView: View {
         // `.global` mirrors the schematic drag fix: the handle is positioned
         // by a view that moves with the gesture's local coord space, so local
         // translations collapse to zero.
-        DragGesture(minimumDistance: 1, coordinateSpace: .global)
+        let minDistance: Double = InputPlatform.isTouch ? 4 : 1
+        return DragGesture(minimumDistance: minDistance, coordinateSpace: .global)
             .onChanged { value in
                 if draggingWaypoint == nil {
                     draggingWaypoint = DraggingWaypoint(
@@ -984,8 +989,9 @@ struct PhysicalCanvasView: View {
         else { return nil }
         let segment = route.segments[segIdx]
         let n = segment.waypoints.count
-        // Match the handle's hit area (~22pt square → ~11pt radius).
-        let threshold: Double = 11
+        // Match the handle's hit area (~22pt square → ~11pt radius on
+        // macOS, 28pt → ~14pt radius on iPad — see WaypointHandle).
+        let threshold: Double = InputPlatform.isTouch ? 14 : 11
         var best: (idx: Int, distance: Double)?
         for (i, wp) in segment.waypoints.enumerated() {
             guard i > 0, i < n - 1 else { continue }
@@ -1331,9 +1337,12 @@ struct PhysicalCanvasView: View {
     /// the channel-stroke width of `pt` (screen pts). Nil if nothing is close.
     private func routeSegmentHit(at pt: CGPoint) -> (netId: UUID, segmentIndex: Int)? {
         // Match RoutesOverlay's stroke width and add a small slop so a click
-        // near the edge of the rendered channel still hits.
+        // near the edge of the rendered channel still hits. Fingers are
+        // less precise than a cursor, so the touch floor is a few pt wider.
         let channelStroke = max(1.5, manufacturing.channelDiameter * transform.ptsPerMm * 0.85)
-        let threshold = max(6.0, channelStroke / 2 + 3.0)
+        let slop: Double = InputPlatform.isTouch ? 5.0 : 3.0
+        let floor: Double = InputPlatform.isTouch ? 10.0 : 6.0
+        let threshold = max(floor, channelStroke / 2 + slop)
         var best: (netId: UUID, segmentIndex: Int, distance: Double)?
         for route in document.circuit.physical.routes {
             for (segIdx, segment) in route.segments.enumerated() {
@@ -1760,16 +1769,66 @@ struct PhysicalPinHandle: View {
     let onTap: () -> Void
 
     @State private var hovered = false
+    /// On touch platforms the pin label briefly pops on tap, so the user
+    /// can confirm which pin they hit (the `.help()` tooltip is hidden on
+    /// iPad and `.onHover` never fires).
+    @State private var touchChipUntil: Date?
 
     var body: some View {
-        Circle()
+        // The macOS dot is intentionally tiny because the cursor can land
+        // it precisely; on iPad bump the dot and hit zone above the touch
+        // HIG floor.
+        let dot: CGFloat = InputPlatform.isTouch ? 11 : 9
+        let hit: CGFloat = InputPlatform.isTouch ? 26 : 20
+        return Circle()
             .fill(fillColor)
             .overlay(Circle().stroke(strokeColor, lineWidth: 1.0))
-            .frame(width: 9, height: 9)
-            .contentShape(Rectangle().size(width: 20, height: 20))
+            .frame(width: dot, height: dot)
+            .contentShape(Rectangle().size(width: hit, height: hit))
             .onHover { hovered = $0 }
-            .onTapGesture { onTap() }
+            .onTapGesture {
+                if InputPlatform.isTouch { flashTouchChip() }
+                onTap()
+            }
+            .overlay(alignment: .bottom) {
+                if showChip {
+                    pinLabelChip
+                        .fixedSize()
+                        .offset(y: -16)
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+                }
+            }
+            .animation(.easeOut(duration: 0.08), value: hovered)
+            .animation(.easeOut(duration: 0.12), value: touchChipUntil)
             .help(pinKey)
+    }
+
+    private var showChip: Bool {
+        if hovered { return true }
+        if let until = touchChipUntil, until > .now { return true }
+        return false
+    }
+
+    private var pinLabelChip: some View {
+        Text(pinKey)
+            .font(.system(size: 10, weight: .semibold))
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 4))
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(Color.primary.opacity(0.25), lineWidth: 0.5)
+            )
+    }
+
+    private func flashTouchChip() {
+        let deadline = Date.now.addingTimeInterval(1.4)
+        touchChipUntil = deadline
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.4))
+            if touchChipUntil == deadline { touchChipUntil = nil }
+        }
     }
 
     private var fillColor: Color {
@@ -1797,11 +1856,19 @@ struct WaypointHandle: View {
     @State private var hovered = false
 
     var body: some View {
-        Circle()
+        // On touch the hover-grow affordance never fires, so the handle is
+        // permanently a bit bigger and the hit rect grows past the touch HIG
+        // floor. Macs keep the dainty default so dense routes don't look
+        // like a polka-dot pattern.
+        let base: CGFloat = InputPlatform.isTouch ? 12 : 10
+        let active: CGFloat = InputPlatform.isTouch ? 14 : 13
+        let hit: CGFloat = InputPlatform.isTouch ? 28 : 22
+        let size = hovered ? active : base
+        return Circle()
             .fill(Color.accentColor)
             .overlay(Circle().stroke(Color.white, lineWidth: 1.2))
-            .frame(width: hovered ? 13 : 10, height: hovered ? 13 : 10)
-            .contentShape(Rectangle().size(width: 22, height: 22))
+            .frame(width: size, height: size)
+            .contentShape(Rectangle().size(width: hit, height: hit))
             .onHover { hovered = $0 }
             .help("Drag to reshape route")
             .animation(.easeOut(duration: 0.08), value: hovered)

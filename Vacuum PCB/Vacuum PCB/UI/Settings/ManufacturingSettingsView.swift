@@ -269,7 +269,11 @@ struct ManufacturingSettingsView: View {
     }
 
     private func row(_ label: String, _ value: Binding<Double>) -> some View {
-        HStack(spacing: 8) {
+        // The 64 pt field is comfortable next to a mouse-driven inspector
+        // on macOS; on iPad the soft keyboard pushes the row up and the
+        // narrow column becomes hard to verify, so widen it there.
+        let fieldWidth: CGFloat = InputPlatform.isTouch ? 96 : 64
+        return HStack(spacing: 8) {
             Text(label).font(.caption)
             Spacer(minLength: 4)
             // NumberFormatter (vs. the newer .number FormatStyle) parses
@@ -279,7 +283,7 @@ struct ManufacturingSettingsView: View {
             TextField("", value: value, formatter: Self.mmFormatter)
                 .textFieldStyle(.roundedBorder)
                 .multilineTextAlignment(.trailing)
-                .frame(width: 64)
+                .frame(width: fieldWidth)
             Text("mm").font(.caption2).foregroundStyle(.tertiary)
         }
     }

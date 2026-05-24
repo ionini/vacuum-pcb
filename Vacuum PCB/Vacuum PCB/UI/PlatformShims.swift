@@ -32,6 +32,17 @@ extension Color {
     }
 }
 
+/// True when the platform's primary input is a finger rather than a
+/// cursor. Used by views that need to grow hit targets, drop hover-only
+/// affordances, or raise drag thresholds on iPad.
+enum InputPlatform {
+    #if canImport(AppKit)
+    static let isTouch = false
+    #else
+    static let isTouch = true
+    #endif
+}
+
 /// Modifier-key probe used by gesture handlers that branch on Cmd/Option.
 /// On macOS this peeks at the current `NSEvent.modifierFlags`; on iPad
 /// touches don't carry modifiers, so every probe is `false`. The code paths

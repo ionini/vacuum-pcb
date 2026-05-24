@@ -99,19 +99,33 @@ struct SimulateControlsView: View {
         range: ClosedRange<Double>,
         format: String
     ) -> some View {
-        HStack(spacing: 6) {
+        // `.controlSize(.small)` and the tight label/value frames work for
+        // a cursor on macOS but make the thumb almost unhittable with a
+        // finger. On iPad we keep the regular control size and give the
+        // text columns a bit more room.
+        let labelWidth: CGFloat = InputPlatform.isTouch ? 60 : 46
+        let valueWidth: CGFloat = InputPlatform.isTouch ? 48 : 36
+        return HStack(spacing: 6) {
             Text(label)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .frame(width: 46, alignment: .leading)
-            Slider(value: value, in: range)
-                .controlSize(.small)
+                .frame(width: labelWidth, alignment: .leading)
+            slider(value: value, in: range)
             Text(String(format: format, value.wrappedValue))
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.secondary)
-                .frame(width: 36, alignment: .trailing)
+                .frame(width: valueWidth, alignment: .trailing)
         }
         .help(help)
+    }
+
+    @ViewBuilder
+    private func slider(value: Binding<Double>, in range: ClosedRange<Double>) -> some View {
+        if InputPlatform.isTouch {
+            Slider(value: value, in: range)
+        } else {
+            Slider(value: value, in: range).controlSize(.small)
+        }
     }
 
     @ViewBuilder private var inputs: some View {

@@ -34,15 +34,28 @@ struct InspectorStrip: View {
     }
 
     private var hint: some View {
+        // Strip the cursor/keyboard idioms (`⌫`, `⌘-click`, "Double-click")
+        // out of the hint on iPad, where the only way to delete is the
+        // editor toolbars/menus and there's no Cmd-click. Leaves a slightly
+        // tighter sentence rather than misleading the user.
+        let touch = InputPlatform.isTouch
         let text: String
         if selection.isEmpty {
-            text = "Click a palette button to add. Drag empty canvas to box-select. ⌫ to delete."
+            text = touch
+                ? "Tap a palette button to add. Drag empty canvas to box-select."
+                : "Click a palette button to add. Drag empty canvas to box-select. ⌫ to delete."
         } else if selection.net != nil {
-            text = "⌫ to delete this net. Click pin pair to extend or break it."
+            text = touch
+                ? "Tap a pin pair to extend or break this net."
+                : "⌫ to delete this net. Click pin pair to extend or break it."
         } else if selection.singleComponent != nil {
-            text = "Double-click label to rename. Drag to move. ⌘-click to multi-select. ⌫ to delete."
+            text = touch
+                ? "Drag to move. Double-tap label to rename."
+                : "Double-click label to rename. Drag to move. ⌘-click to multi-select. ⌫ to delete."
         } else {
-            text = "\(selection.components.count) components selected. Drag any to move them together. ⌫ to delete."
+            text = touch
+                ? "\(selection.components.count) components selected. Drag any to move them together."
+                : "\(selection.components.count) components selected. Drag any to move them together. ⌫ to delete."
         }
         return Text(text)
             .font(.caption)
