@@ -241,6 +241,21 @@ struct PhysicalCanvasView: View {
                 )
                 .allowsHitTesting(true)
 
+                // iPad: two-finger drag pans, leaving one-finger drag for
+                // marquee / component move / pin route. macOS pan is
+                // handled by ScrollEventCatcher and Option-drag; this
+                // catcher no-ops there.
+                TwoFingerPanCatcher { dx, dy in
+                    transform = CanvasTransform(
+                        ptsPerMm: transform.ptsPerMm,
+                        offset: CGSize(
+                            width: transform.offset.width  + Double(dx),
+                            height: transform.offset.height + Double(dy)
+                        )
+                    )
+                    userAdjustedView = true
+                }
+
                 // Zoom controls floating in the top-right corner. Sits on
                 // top of all canvas content; ignores hits otherwise.
                 ZoomToolbar(

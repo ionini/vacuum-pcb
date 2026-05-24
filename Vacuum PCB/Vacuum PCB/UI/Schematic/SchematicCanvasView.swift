@@ -126,6 +126,18 @@ struct SchematicCanvasView: View {
                 )
                 .allowsHitTesting(true)
 
+                // iPad: two-finger drag pans, leaving one-finger drag for
+                // marquee / component move / pin net-draw. Pan coords are
+                // in window pts, applied directly to `pan` which is also
+                // window-pt space.
+                TwoFingerPanCatcher { dx, dy in
+                    pan = CGSize(
+                        width: pan.width  + Double(dx),
+                        height: pan.height + Double(dy)
+                    )
+                    userAdjustedView = true
+                }
+
                 ZoomToolbar(
                     zoomPercent: zoom,
                     onZoomOut: { zoomBy(1 / 1.25, atWindowPoint: windowCursor, viewSize: geo.size) },
