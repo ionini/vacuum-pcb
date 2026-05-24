@@ -31,6 +31,12 @@ struct PhysicalView: View {
     @State private var showPressureMap: Bool = false
     @State private var pressureSigma: Double = 10.0
     @State private var pressurePopover: Bool = false
+    /// Sticky-mode equivalent of holding Cmd while dragging a placement on
+    /// macOS — when on, the routes attached to a dragged placement's pins
+    /// rubber-band along with it. Lives here so it persists between drags
+    /// (the modifier-key version only applies if Cmd is held *at drag
+    /// start*, which iPad has no analogue for).
+    @State private var dragWithRoutes: Bool = false
 
     var body: some View {
         // The parking lot now lives in the right-hand inspector (along
@@ -46,6 +52,7 @@ struct PhysicalView: View {
             showRatsnest: showRatsnest,
             showPressureMap: showPressureMap,
             pressureSigma: pressureSigma,
+            dragWithRoutes: dragWithRoutes,
             issueFocus: issueFocus
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -102,6 +109,17 @@ struct PhysicalView: View {
             }
             .toggleStyle(.button)
             .help("Show dashed hint lines between pins on the same net that aren't routed yet")
+        }
+        ToolbarItem(placement: .automatic) {
+            // Sticky equivalent of Cmd-drag on macOS. With this on, every
+            // placement drag carries along the route waypoints attached
+            // to that placement's pins — handy on iPad where there's no
+            // modifier key to gate the rubber-band per drag.
+            Toggle(isOn: $dragWithRoutes) {
+                Label("Drag with routes", systemImage: "link")
+            }
+            .toggleStyle(.button)
+            .help("Drag a placement to also drag the routes attached to its pins")
         }
         ToolbarItem(placement: .automatic) {
             // Single toolbar control hosts both the on/off toggle and the σ

@@ -18,6 +18,11 @@ struct PhysicalCanvasView: View {
     /// Larger values spread the influence further — calibrate against the
     /// stiffness of the actual board+silicone stackup.
     var pressureSigma: Double
+    /// Sticky-mode equivalent of holding Cmd at drag start. When on, every
+    /// placement drag carries connected route waypoints along with it.
+    /// OR'd with `ModifierKeys.commandHeld` in `startPlacementDrag` so the
+    /// keyboard path on macOS keeps working independently.
+    var dragWithRoutes: Bool
     /// Transient pulse marker dropped when the user clicks a DRC issue with
     /// a focal point. Read-only — DocumentView owns the value and the
     /// auto-clear timer. We re-mount the overlay on each new focus via
@@ -677,7 +682,10 @@ struct PhysicalCanvasView: View {
     /// route waypoint sitting on any pin of any dragged placement on top of
     /// whatever the selection already carries.
     private func startPlacementDrag(grabbed placement: Placement, translation: CGSize) {
-        let withRoutes = ModifierKeys.commandHeld
+        // Either the per-drag modifier (Cmd on macOS) or the sticky
+        // toolbar toggle opt in to the rubber-band carry. They compose so
+        // a power user on macOS who's also flipped the toggle still works.
+        let withRoutes = ModifierKeys.commandHeld || dragWithRoutes
         let dragSet: Set<UUID>
         var carriedWaypoints: Set<RouteWaypointAddress> = []
         if selection.contains(placement: placement.componentId), selection.placements.count > 1 {

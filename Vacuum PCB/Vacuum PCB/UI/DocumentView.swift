@@ -3,6 +3,12 @@ import Euclid
 
 struct DocumentView: View {
     @Binding var document: VPCBDocument
+    /// Document-scoped UndoManager that SwiftUI's DocumentGroup
+    /// publishes through the environment. macOS already routes the
+    /// Edit > Undo menu and ⌘Z through it; this lets us mirror the
+    /// same actions in toolbar buttons that iPad can reach without a
+    /// menu bar or hardware keyboard.
+    @Environment(\.undoManager) private var undoManager
 
     @State private var selectedTab: ViewTab = .schematic
     @State private var selection: SchematicSelection = .none
@@ -68,6 +74,33 @@ struct DocumentView: View {
         .inspector(isPresented: $showInspector) {
             inspector
                 .inspectorColumnWidth(min: 240, ideal: 300, max: 420)
+        }
+        .toolbar {
+            // Undo / redo on the leading edge so they sit next to the
+            // document title on iPad (the Notes/Pages convention) and
+            // out of the way of the per-tab Export / Inspector items on
+            // the trailing edge. macOS keeps the Edit > Undo menu as well;
+            // these buttons are just a second route.
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    undoManager?.undo()
+                } label: {
+                    Label("Undo", systemImage: "arrow.uturn.backward")
+                }
+                .keyboardShortcut("z", modifiers: .command)
+                .disabled(undoManager?.canUndo != true)
+                .help("Undo (⌘Z)")
+            }
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    undoManager?.redo()
+                } label: {
+                    Label("Redo", systemImage: "arrow.uturn.forward")
+                }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+                .disabled(undoManager?.canRedo != true)
+                .help("Redo (⇧⌘Z)")
+            }
         }
         .onChange(of: document.circuit) { _, _ in
             previewDirty = true
