@@ -179,6 +179,7 @@ struct SimulateControlsView: View {
             ProgressView(value: pressure)
                 .progressViewStyle(.linear)
                 .tint(PressureColor.strokeColor(for: pressure))
+                .animation(nil, value: pressure)
         }
     }
 
