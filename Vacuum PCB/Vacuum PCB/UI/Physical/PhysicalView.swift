@@ -25,6 +25,9 @@ struct PhysicalView: View {
     @State private var routingLayer: Layer = .top
     @State private var routingError: String?
     @State private var showRatsnest: Bool = true
+    @State private var showPressureMap: Bool = false
+    @State private var pressureSigma: Double = 10.0
+    @State private var pressurePopover: Bool = false
 
     var body: some View {
         // The parking lot now lives in the right-hand inspector (along
@@ -38,6 +41,8 @@ struct PhysicalView: View {
             routingLayer: $routingLayer,
             routingError: $routingError,
             showRatsnest: showRatsnest,
+            showPressureMap: showPressureMap,
+            pressureSigma: pressureSigma,
             issueFocus: issueFocus
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -94,6 +99,31 @@ struct PhysicalView: View {
             }
             .toggleStyle(.button)
             .help("Show dashed hint lines between pins on the same net that aren't routed yet")
+        }
+        ToolbarItem(placement: .automatic) {
+            // Single toolbar control hosts both the on/off toggle and the σ
+            // slider — the button shows enabled state at a glance, the
+            // popover opens the slider when the user wants to tune the
+            // spread. Plain click toggles the map; long-press / right-click
+            // would be nicer here but SwiftUI's Button doesn't expose a
+            // primary+secondary action cleanly, so we use a Menu fallback:
+            // a click opens the popover; the toggle inside is the on switch.
+            Button {
+                pressurePopover.toggle()
+            } label: {
+                Label("Pressure Map",
+                      systemImage: showPressureMap
+                          ? "thermometer.sun.fill"
+                          : "thermometer.medium")
+            }
+            .help("Pressure uniformity heatmap from screw placement")
+            .foregroundStyle(showPressureMap ? Color.accentColor : Color.primary)
+            .popover(isPresented: $pressurePopover, arrowEdge: .bottom) {
+                PressureHeatmapControls(
+                    enabled: $showPressureMap,
+                    sigma: $pressureSigma
+                )
+            }
         }
         ToolbarItem(placement: .automatic) {
             Button(action: addScrew) {

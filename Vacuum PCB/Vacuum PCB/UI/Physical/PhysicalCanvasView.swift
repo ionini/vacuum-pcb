@@ -11,6 +11,13 @@ struct PhysicalCanvasView: View {
     @Binding var routingLayer: Layer
     @Binding var routingError: String?
     var showRatsnest: Bool
+    /// Whether to overlay the sum-of-Gaussians pressure heatmap from screw
+    /// placement. Off by default; toggled from the toolbar popover.
+    var showPressureMap: Bool
+    /// Gaussian σ (mm) controlling each screw's pressure-influence radius.
+    /// Larger values spread the influence further — calibrate against the
+    /// stiffness of the actual board+silicone stackup.
+    var pressureSigma: Double
     /// Transient pulse marker dropped when the user clicks a DRC issue with
     /// a focal point. Read-only — DocumentView owns the value and the
     /// auto-clear timer. We re-mount the overlay on each new focus via
@@ -132,6 +139,13 @@ struct PhysicalCanvasView: View {
 
                 gridLines(in: geo.size)
                 boardOutline
+                if showPressureMap {
+                    PressureHeatmapOverlay(
+                        document: document.circuit,
+                        transform: transform,
+                        sigma: pressureSigma
+                    )
+                }
                 subpartExpansions
 
                 RoutesOverlay(
