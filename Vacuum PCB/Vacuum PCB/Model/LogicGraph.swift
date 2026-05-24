@@ -46,6 +46,12 @@ struct Component: Codable, Identifiable, Hashable {
     /// instance references. Only meaningful for `.subpart`. Filename-only is
     /// deliberate: rename = relink.
     var partRef: String?
+    /// Content hash (hex SHA-256) of the library document this instance was
+    /// pinned to. The matching snapshot lives in `CircuitDocument.librarySnapshots`
+    /// — flatten/render reads the snapshot, never the live library, so edits to
+    /// the user's parts folder don't silently cascade into saved designs. Nil
+    /// only for sub-parts whose library file was missing at migration time.
+    var partRefHash: String?
 
     init(
         id: UUID = UUID(),
@@ -53,7 +59,8 @@ struct Component: Codable, Identifiable, Hashable {
         label: String,
         resistorSize: ResistorSize? = nil,
         portDirection: PortDirection? = nil,
-        partRef: String? = nil
+        partRef: String? = nil,
+        partRefHash: String? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -61,6 +68,7 @@ struct Component: Codable, Identifiable, Hashable {
         self.resistorSize = resistorSize
         self.portDirection = portDirection
         self.partRef = partRef
+        self.partRefHash = partRefHash
     }
 }
 

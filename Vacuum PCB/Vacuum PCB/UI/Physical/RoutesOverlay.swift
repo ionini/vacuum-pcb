@@ -51,6 +51,42 @@ extension RoutesOverlay {
     var body: some View {
         Canvas { ctx, _ in
             let channelStroke = max(1.5, manufacturing.channelDiameter * transform.ptsPerMm * 0.85)
+            // When a route segment is selected, every other segment on the
+            // same net renders a translucent accent-coloured halo below the
+            // normal stroke so the user can see the whole net as one shape —
+            // useful for catching stranded segments and confirming routing
+            // is actually complete.
+            let highlightedNetId: UUID? = selection.routeSegment?.netId
+            if let netId = highlightedNetId {
+                for route in document.physical.routes where route.netId == netId {
+                    for (segIdx, segment) in route.segments.enumerated() {
+                        guard visible.contains(segment.layer) else { continue }
+                        // Skip the selected segment itself — its existing
+                        // accent-coloured wider stroke is already the visual
+                        // anchor; stacking a halo on top adds nothing.
+                        if selectionMatches(netId: route.netId, segmentIndex: segIdx) { continue }
+                        let positions = waypoints(
+                            for: route.netId, segmentIndex: segIdx,
+                            fallback: segment.waypoints.map(\.position)
+                        )
+                        let pts = positions.map { transform.toScreen($0) }
+                        guard pts.count >= 2 else { continue }
+                        var path = Path()
+                        path.move(to: pts[0])
+                        for p in pts.dropFirst() { path.addLine(to: p) }
+                        ctx.stroke(
+                            path,
+                            with: .color(Color.accentColor.opacity(0.35)),
+                            style: StrokeStyle(
+                                lineWidth: channelStroke + 5,
+                                lineCap: .round,
+                                lineJoin: .round
+                            )
+                        )
+                    }
+                }
+            }
+
             for route in document.physical.routes {
                 for (segIdx, segment) in route.segments.enumerated() {
                     guard visible.contains(segment.layer) else { continue }
@@ -163,6 +199,40 @@ struct ViasOverlay: View {
         }
         .allowsHitTesting(false)
     }
+}
+
+/// Renders only the vias that punch through the silicone sheet — the
+/// (T0, B0) pairs created by the "V" key. Same-plate vias (a route stepping
+/// between depths on one plate) never touch the sheet and are skipped.
+///
+/// A via XY is considered cross-silicone when the same net has a `.via`
+/// waypoint at that XY on a T0 segment *and* on a B0 segment. Approximate
+/// matching (0.05 mm) mirrors the tolerance used elsewhere for paired-via
+/// bookkeeping.
+struct SiliconeSheetViasOverlay: View {
+    let document: CircuitDocument
+    let transform: CanvasTransform
+    let manufacturing: ManufacturingConstants
+
+    var body: some View {
+        Canvas { ctx, _ in
+            let radius = max(4, manufacturing.channelDiameter / 2 * transform.ptsPerMm)
+            for position in document.physical.crossSiliconeViaPositions() {
+                let center = transform.toScreen(position)
+                let rect = CGRect(
+                    x: center.x - radius, y: center.y - radius,
+                    width: radius * 2, height: radius * 2
+                )
+                ctx.stroke(
+                    Path(ellipseIn: rect),
+                    with: .color(Color.primary.opacity(0.85)),
+                    lineWidth: 1.5
+                )
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
 }
 
 /// Overlay showing the in-progress polyline while the user is routing.

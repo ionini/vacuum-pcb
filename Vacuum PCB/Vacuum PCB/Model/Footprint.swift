@@ -215,12 +215,15 @@ extension Component {
     /// Resolves the footprint for this component using the document's
     /// manufacturing constants. Transistor pin offsets and the gate dome's
     /// bounding box track the manufacturing config; resistor and port
-    /// footprints don't depend on it. Subparts resolve their library file via
-    /// `PartsLibrary.shared` and synthesize a footprint from the library's
-    /// boundary pins.
-    func footprint(_ m: ManufacturingConstants) -> Footprint {
+    /// footprints don't depend on it. Subparts resolve via
+    /// `Component.resolvedPart(snapshots:)` — pass the parent doc's
+    /// `librarySnapshots` so a v3 pinned instance uses its frozen library
+    /// copy rather than whatever's on disk now. Defaulting to `[:]` falls
+    /// through to the live library (correct for unpinned / missing-hash
+    /// cases, plus call sites that haven't been threaded yet).
+    func footprint(_ m: ManufacturingConstants, snapshots: [String: CircuitDocument] = [:]) -> Footprint {
         if kind == .subpart {
-            return subpartFootprint() ?? kind.footprint(resistorSize: resistorSize, manufacturing: m)
+            return subpartFootprint(snapshots: snapshots) ?? kind.footprint(resistorSize: resistorSize, manufacturing: m)
         }
         return kind.footprint(resistorSize: resistorSize, manufacturing: m)
     }
@@ -230,7 +233,7 @@ extension Component {
     /// geometry — it'll be wrong as soon as the user changes the manufacturing.
     var footprint: Footprint {
         if kind == .subpart {
-            return subpartFootprint() ?? kind.footprint(resistorSize: resistorSize)
+            return subpartFootprint(snapshots: [:]) ?? kind.footprint(resistorSize: resistorSize)
         }
         return kind.footprint(resistorSize: resistorSize)
     }
@@ -238,8 +241,8 @@ extension Component {
     /// Subpart pin keys = the library file's boundary pin UUID strings, in
     /// the order PartsLibrary returns them. Primitive kinds fall back to
     /// `ComponentKind.pinKeys`.
-    var pinKeys: [String] {
-        if kind == .subpart, let part = partRef.flatMap({ PartsLibrary.shared.part(named: $0) }) {
+    func pinKeys(snapshots: [String: CircuitDocument] = [:]) -> [String] {
+        if kind == .subpart, let part = resolvedPart(snapshots: snapshots) {
             return part.pins.map { $0.portId.uuidString }
         }
         return kind.pinKeys
@@ -249,11 +252,8 @@ extension Component {
     /// Useful for callers that need the pin's library plate (visibility
     /// filtering) or its friendly label without going through the footprint
     /// system. Returns nil for primitives and missing parts.
-    func subpartBoundaryPin(key: String) -> BoundaryPin? {
-        guard kind == .subpart,
-              let filename = partRef,
-              let part = PartsLibrary.shared.part(named: filename)
-        else { return nil }
+    func subpartBoundaryPin(key: String, snapshots: [String: CircuitDocument] = [:]) -> BoundaryPin? {
+        guard let part = resolvedPart(snapshots: snapshots) else { return nil }
         return part.pins.first(where: { $0.portId.uuidString == key })
     }
 
@@ -268,10 +268,8 @@ extension Component {
     ///
     /// Returns nil when the library file isn't loaded (missing-part case).
     /// Callers should treat that as "render placeholder".
-    func subpartFootprint() -> Footprint? {
-        guard let filename = partRef,
-              let part = PartsLibrary.shared.part(named: filename)
-        else { return nil }
+    func subpartFootprint(snapshots: [String: CircuitDocument] = [:]) -> Footprint? {
+        guard let part = resolvedPart(snapshots: snapshots) else { return nil }
         let outline = part.document.physical.boardOutline
         let ox = outline.minX
         let oy = outline.minY

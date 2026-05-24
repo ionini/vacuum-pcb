@@ -20,6 +20,11 @@ enum PlateBuilder {
         /// "features only" mode to show the routing solids without the plate.
         let topFeatures: Mesh
         let bottomFeatures: Mesh
+        /// Flat printed sheet sitting at z=0 (the silicone gap), matching the
+        /// board outline and punched through at every cross-silicone via and
+        /// screw shaft. Used at assembly as a 1:1 cutting template for the
+        /// silicone sheet. Empty when `stencilThickness` is 0.
+        let stencil: Mesh
     }
 
     static func build(_ doc: CircuitDocument) -> Output {
@@ -78,7 +83,8 @@ enum PlateBuilder {
             for segment in route.segments {
                 let midZ = m.midZ(for: segment.layer)
                 let positions = extendedWaypointPositions(
-                    for: segment, pinsOnLayer: pinsPerLayer[segment.layer] ?? [],
+                    for: segment,
+                    pinsOnLayer: pinsPerLayer[segment.layer]?[route.netId] ?? [],
                     tolerance: pinSnapTol
                 )
                 let channel = channelMesh(
@@ -166,14 +172,19 @@ enum PlateBuilder {
 
                 // Viewing hole — cylinder through the *opposite* plate, 1 mm
                 // wider than the dimple, so the deflected silicone is
-                // visible from outside.
+                // visible from outside. Overshoots the outer face by the
+                // worst-case volcano-dome height so a screw placed near the
+                // LED doesn't cap the hole on its way out of the plate.
                 let oppositePlate = placement.layer.opposite
                 let oppositeThickness = oppositePlate == .top ? topThickness : bottomThickness
                 let viewHole = ledViewHoleMesh(
                     at: placement.position, onPlate: oppositePlate,
                     diameter: m.ledDimpleDiameter + 1.0,
                     topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ,
-                    topThickness: topThickness, bottomThickness: bottomThickness
+                    topThickness: topThickness, bottomThickness: bottomThickness,
+                    outerOvershoot: m.screwProtrusion > 0
+                        ? m.screwProtrusion + ScrewGeometry.domeCeilingMargin + 0.5
+                        : 0
                 )
                 appendCutter(viewHole, plate: oppositePlate,
                              top: &topCutters, bottom: &bottomCutters)
@@ -195,6 +206,10 @@ enum PlateBuilder {
                 }
 
             case .screw:
+                // `placement.layer` tracks which plate hosts the screw
+                // head (the nut sinks into the opposite plate). F flips
+                // it, swapping head and nut sides without moving the
+                // through-hole.
                 let screw = ScrewGeometry.meshes(
                     at: placement.position, rotation: placement.rotation,
                     topInnerZ: topInnerZ, topThickness: topThickness,
@@ -202,7 +217,8 @@ enum PlateBuilder {
                     protrusion: m.screwProtrusion,
                     domeBaseDiameter: m.screwDomeBaseDiameter,
                     headDepth: m.screwHeadDepth,
-                    nutDepth: m.screwNutDepth
+                    nutDepth: m.screwNutDepth,
+                    headSide: placement.layer
                 )
                 topCutters.append(contentsOf: screw.topCutters)
                 bottomCutters.append(contentsOf: screw.bottomCutters)
@@ -284,6 +300,27 @@ enum PlateBuilder {
             }
         }
 
+        // Stencil: a flat sheet centred on the silicone gap with the same
+        // outline as the plates, punched through at every cross-silicone via
+        // and screw shaft. CSG is small (~one slab minus a handful of short
+        // cylinders) so it runs sequentially rather than fanning out — the
+        // two-plate parallelism above already saturates the typical Euclid
+        // pass that costs anything.
+        var stencilCutters: [(position: Point, diameter: Double)] = []
+        for position in doc.physical.crossSiliconeViaPositions() {
+            stencilCutters.append((position, m.channelDiameter))
+        }
+        for placement in doc.physical.placements {
+            guard let component = componentsById[placement.componentId],
+                  component.kind == .screw
+            else { continue }
+            stencilCutters.append((placement.position, ScrewGeometry.throughDiameter))
+        }
+        let stencil = buildStencil(
+            outline: outline, thickness: m.stencilThickness,
+            cornerRadius: m.plateCornerFillet, cutters: stencilCutters
+        )
+
         // `makeWatertight()` is intentionally NOT called here. Euclid's BSP
         // CSG can leave hairline cracks where curved surfaces meet flat
         // ones; slicers refuse to print non-manifold STLs, so the export
@@ -293,8 +330,40 @@ enum PlateBuilder {
         // operations and the preview is the hot path.
         return Output(
             topPlate: topOut.plate, bottomPlate: bottomOut.plate,
-            topFeatures: topOut.preview, bottomFeatures: bottomOut.preview
+            topFeatures: topOut.preview, bottomFeatures: bottomOut.preview,
+            stencil: stencil
         )
+    }
+
+    // MARK: - Stencil
+
+    /// Builds a thin sheet centred on z=0, matching the board outline (with
+    /// the plates' corner fillet so all three bodies stack cleanly in the
+    /// preview), then subtracts a cylinder at every cutter XY. Returns the
+    /// empty mesh when thickness ≤ 0 — the user has disabled stencil export.
+    private static func buildStencil(
+        outline: Rect, thickness: Double, cornerRadius: Double,
+        cutters: [(position: Point, diameter: Double)]
+    ) -> Mesh {
+        guard thickness > 0 else { return .empty }
+        let half = thickness / 2
+        // `plateBase(side: .top, innerZ: -half, thickness: thickness)` puts
+        // the lower face at z = -half and the upper face at z = +half, which
+        // is exactly the centred-on-zero slab we want. The polygon winding
+        // it produces is correct for an exterior solid.
+        let slab = plateBase(
+            outline: outline, thickness: thickness,
+            innerZ: -half, side: .top, edgeChamfer: cornerRadius
+        )
+        guard !cutters.isEmpty else { return slab }
+        let eps = 0.1
+        let cylHeight = thickness + 2 * eps
+        let cutterMeshes = cutters.map { c in
+            Mesh.cylinder(radius: c.diameter / 2, height: cylHeight, slices: 24)
+                .rotated(by: Euclid.Rotation.pitch(.halfPi))
+                .translated(by: Vector(c.position.x, c.position.y, 0))
+        }
+        return slab.subtracting(Mesh.union(cutterMeshes))
     }
 
     /// Per-plate CSG pipeline: union the additive domes onto the base
@@ -492,11 +561,17 @@ enum PlateBuilder {
 
     // MARK: - Pin-snap extension
 
-    /// Per-layer map of pin positions the channel build is allowed to extend
-    /// a segment endpoint to. Restricted to transistor source/drain pins —
-    /// they're the only pins whose world position can drift after a route was
-    /// drawn (the user nudges `padsOffset` and the pads move outward), so
-    /// they're the only pins that need the snap.
+    /// Per-layer, per-net map of pin positions the channel build is allowed
+    /// to extend a segment endpoint to. Restricted to transistor source/drain
+    /// pins — they're the only pins whose world position can drift after a
+    /// route was drawn (the user nudges `padsOffset` and the pads move
+    /// outward), so they're the only pins that need the snap.
+    ///
+    /// Keyed by `route.netId` within each layer so a segment can only snap to
+    /// a pin on its own net. Without that filter a route end that happened to
+    /// drift near a *foreign* transistor's a/b pin would silently bridge the
+    /// two nets in the CAD output even when the 2D connectivity check sees
+    /// them as separate.
     ///
     /// Resistor / port / vent pins are fixed in world coordinates the moment
     /// they were placed, and snapping to them is actively harmful: a via that
@@ -513,15 +588,49 @@ enum PlateBuilder {
     static func collectPinPositions(
         doc: CircuitDocument, m: ManufacturingConstants,
         componentsById: [UUID: Component]
-    ) -> [Layer: [Point]] {
-        var out: [Layer: [Point]] = [:]
+    ) -> [Layer: [UUID: [Point]]] {
+        var netByPin: [PinRef: UUID] = [:]
+        for net in doc.logic.nets {
+            for pinRef in net.pins {
+                netByPin[pinRef] = net.id
+            }
+        }
+        // A channel approaching the pad perpendicular to the source-drain axis
+        // would end at the pin XY (distance `padsOffset` from the gate). At the
+        // defaults that puts the cylinder's gate-side wall exactly on the pad
+        // lobe's flat face (`padsSeparation / 2` from the gate), and Euclid's
+        // BSP union leaves a hairline sliver at any tangent surface — see the
+        // sphere-radius bump in `channelMesh` for the same family of glitch.
+        // Pulling the inserted endpoint slightly toward the gate makes the
+        // cylinder pierce past the flat face cleanly. Only apply when the gap
+        // between lobes is wide enough that the overshoot can't graze the
+        // opposite lobe's flat face on the other side.
+        let channelRadius = m.channelDiameter / 2
+        let safetyMargin = 0.2
+        let mergeDistanceFromGate = m.padsSeparation / 2 + channelRadius - safetyMargin
+        let canOvershoot = m.padsSeparation > 2 * safetyMargin
+        var out: [Layer: [UUID: [Point]]] = [:]
         for placement in doc.physical.placements {
             guard let component = componentsById[placement.componentId],
                   component.kind == .transistor
             else { continue }
             for pin in component.footprint(m).pins where pin.key == "a" || pin.key == "b" {
+                let pinRef = PinRef(componentId: placement.componentId, pinKey: pin.key)
+                guard let netId = netByPin[pinRef] else { continue }
                 let layer = placement.resolvedLayer(of: pin, on: component)
-                out[layer, default: []].append(placement.worldPosition(of: pin))
+                let pinWorld = placement.worldPosition(of: pin)
+                let gateWorld = placement.position
+                let dx = pinWorld.x - gateWorld.x
+                let dy = pinWorld.y - gateWorld.y
+                let dist = (dx * dx + dy * dy).squareRoot()
+                let snapTarget: Point
+                if canOvershoot, dist > mergeDistanceFromGate, dist > 0 {
+                    let t = (dist - mergeDistanceFromGate) / dist
+                    snapTarget = Point(x: pinWorld.x - dx * t, y: pinWorld.y - dy * t)
+                } else {
+                    snapTarget = pinWorld
+                }
+                out[layer, default: [:]][netId, default: []].append(snapTarget)
             }
         }
         return out
@@ -754,7 +863,8 @@ enum PlateBuilder {
     private static func ledViewHoleMesh(
         at center: Point, onPlate plate: Plate, diameter: Double,
         topInnerZ: Double, bottomInnerZ: Double,
-        topThickness: Double, bottomThickness: Double
+        topThickness: Double, bottomThickness: Double,
+        outerOvershoot: Double = 0
     ) -> Mesh {
         let radius = diameter / 2
         let eps = 0.1
@@ -762,9 +872,9 @@ enum PlateBuilder {
         switch plate {
         case .top:
             zLo = topInnerZ - eps
-            zHi = topInnerZ + topThickness + eps
+            zHi = topInnerZ + topThickness + eps + outerOvershoot
         case .bottom:
-            zLo = bottomInnerZ - bottomThickness - eps
+            zLo = bottomInnerZ - bottomThickness - eps - outerOvershoot
             zHi = bottomInnerZ + eps
         }
         let len = zHi - zLo

@@ -10,6 +10,11 @@ struct DocumentView: View {
     /// Lifted up from PhysicalView so the sidebar's DRC list can jump to a
     /// selection (and switch tabs) when the user clicks an issue.
     @State private var physicalSelection: PhysicalSelection = .none
+    /// Transient ping marker on the physical canvas, set when the user
+    /// clicks a DRC issue with a focal point (crossNetMerge, orphanVia,
+    /// channelClearance, disconnectedPin). The canvas overlay animates it
+    /// and we self-clear after ~2 seconds so the marker doesn't linger.
+    @State private var issueFocus: DRC.Focus?
 
     @State private var built: PlateBuilder.Output?
     @State private var isBuilding = false
@@ -68,11 +73,31 @@ struct DocumentView: View {
             // bumps `buildToken`, so any in-flight build is superseded.
             if selectedTab == .preview { rebuild() }
         }
+        .onChange(of: document.circuit.librarySnapshots) { _, _ in
+            // `CircuitDocument.==` deliberately ignores `librarySnapshots`
+            // (the snapshot dict is bookkeeping, not identity). That means
+            // a transitive library update — Update from Library on a part
+            // whose own `contentHash` didn't change but whose nested
+            // dependency did — flips the snapshot content under an unchanged
+            // key, leaves `partRefHash` alone, and so doesn't fire the
+            // primary `.onChange` above. The schematic and physical views
+            // still refresh because they read snapshots via `.environment`,
+            // but `previewDirty` stays false and the cached `built` is
+            // exported until the next real diff arrives. Mirror the doc
+            // handler so snapshot-only changes still invalidate the preview.
+            previewDirty = true
+            if selectedTab == .preview { rebuild() }
+        }
         .onChange(of: selectedTab) { _, newTab in
             // Only rebuild the CSG when the user actually wants to look at
             // the 3D preview. Avoids the per-edit Euclid CSG storm that was
             // producing the "batch:" log spam and pinning a core.
             if newTab == .preview, previewDirty, !isBuilding { rebuild() }
+            // SimulateView's `.onChange(of: document.circuit)` only fires
+            // while it's in the hierarchy. Edits made on other tabs leave
+            // the cached SimulationState pointing at a stale network, so
+            // re-sync on entry.
+            if newTab == .simulate { simulationState?.rebuild(from: document.circuit) }
             // Every tab now has contextual inspector content, so
             // reveal the pane on every switch. Without it visible the
             // user loses the schematic palette / parking lot /
@@ -86,6 +111,11 @@ struct DocumentView: View {
             contentType: .stl,
             defaultFilename: stlFilename
         ) { _ in }
+        // Pinned library snapshots flow down to every sub-part-resolving view
+        // (schematic symbols, physical canvas, expanded subpart) so the UI
+        // matches what the CAD pipeline exports rather than reflecting
+        // post-pin edits to the user's parts folder.
+        .environment(\.librarySnapshots, document.circuit.librarySnapshots)
     }
 
     // MARK: - Detail content
@@ -108,6 +138,7 @@ struct DocumentView: View {
             PhysicalView(
                 document: $document,
                 selection: $physicalSelection,
+                issueFocus: $issueFocus,
                 showInspector: $showInspector,
                 exportMenu: exportMenu
             )
@@ -160,6 +191,7 @@ struct DocumentView: View {
                     bottom: built.bottomPlate,
                     topFeatures: built.topFeatures,
                     bottomFeatures: built.bottomFeatures,
+                    stencil: built.stencil,
                     boardOutline: document.circuit.physical.boardOutline,
                     displayMode: previewMode
                 )
@@ -291,11 +323,29 @@ struct DocumentView: View {
     /// Click handler for an issue row in the sidebar. Asks DRC for the
     /// physical-canvas selection that highlights the offending element(s),
     /// applies it, and jumps to the physical tab if we have a target there.
+    /// Also drops a transient pulse marker at the issue's focal point so
+    /// the user's eye lands on the offending area even when several
+    /// placements light up across the board.
     private func focusIssue(_ issue: DRC.Issue) {
-        guard let sel = DRC.physicalSelection(for: issue, in: document.circuit)
-        else { return }
-        physicalSelection = sel
+        let sel = DRC.physicalSelection(for: issue, in: document.circuit)
+        let focal = DRC.focusPosition(for: issue, in: document.circuit)
+        // Either side may be missing (e.g. an unplaced-pin issue has no
+        // canvas position, a both-sub-part-internal merge has no parent-side
+        // selection). Bail only if we have neither.
+        guard sel != nil || focal != nil else { return }
+        if let sel { physicalSelection = sel }
         selectedTab = .physical
+        if let (pos, layer) = focal {
+            let token = DRC.Focus(id: UUID(), position: pos, layer: layer)
+            issueFocus = token
+            // Self-clear after the animation runs its course so a stale
+            // marker doesn't sit around forever. The id check skips the
+            // clear if the user clicked another issue in the meantime.
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(2))
+                if issueFocus?.id == token.id { issueFocus = nil }
+            }
+        }
     }
 
     private func stat(_ name: String, _ value: Int) -> some View {
@@ -371,7 +421,7 @@ struct DocumentView: View {
 
     private var stlExport: STLExportDocument? {
         guard let built else { return nil }
-        return STLExportDocument(meshes: [built.topPlate, built.bottomPlate])
+        return STLExportDocument(meshes: [built.topPlate, built.bottomPlate, built.stencil])
     }
 
     private var stlFilename: String {
@@ -489,6 +539,7 @@ struct DocumentView: View {
         let combined = Mesh.merge([
             built.topPlate.makeWatertight(),
             built.bottomPlate.makeWatertight(),
+            built.stencil.makeWatertight(),
         ])
         let data = combined.stlData()
         let url = FileManager.default.temporaryDirectory

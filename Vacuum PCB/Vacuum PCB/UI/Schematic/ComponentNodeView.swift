@@ -17,6 +17,7 @@ struct ComponentNodeView: View {
     @State private var dragOffset: CGSize = .zero
     @State private var isRenaming = false
     @State private var renameDraft: String = ""
+    @FocusState private var renameFieldFocused: Bool
 
     /// Scale factor the canvas applies via .scaleEffect. We divide every
     /// `.global`-coord drag translation by this so the offset we render in
@@ -26,7 +27,7 @@ struct ComponentNodeView: View {
     @Environment(\.schematicZoom) private var schematicZoom: Double
 
     private var metrics: ComponentSymbolMetrics {
-        ComponentSymbolMetrics.metrics(for: component)
+        ComponentSymbolMetrics.metrics(for: component, snapshots: document.circuit.librarySnapshots)
     }
 
     private var isSelected: Bool {
@@ -58,7 +59,7 @@ struct ComponentNodeView: View {
                 .gesture(dragGesture)
 
             // Pin handles
-            ForEach(component.pinKeys, id: \.self) { key in
+            ForEach(component.pinKeys(snapshots: document.circuit.librarySnapshots), id: \.self) { key in
                 let offset = metrics.pinOffset(key)
                 PinHandleView(
                     pinKey: pinDisplayLabel(key),
@@ -174,10 +175,7 @@ struct ComponentNodeView: View {
     /// we resolve them back to the boundary component's label via the
     /// library lookup.
     private func pinDisplayLabel(_ key: String) -> String {
-        if component.kind == .subpart,
-           let filename = component.partRef,
-           let part = PartsLibrary.shared.part(named: filename),
-           let pin = part.pins.first(where: { $0.portId.uuidString == key }) {
+        if let pin = component.subpartBoundaryPin(key: key, snapshots: document.circuit.librarySnapshots) {
             return pin.label
         }
         return key
@@ -204,9 +202,7 @@ struct ComponentNodeView: View {
             case nil:     return "Port"
             }
         case .subpart:
-            guard let filename = component.partRef,
-                  let part = PartsLibrary.shared.part(named: filename),
-                  let pin = part.pins.first(where: { $0.portId.uuidString == key })
+            guard let pin = component.subpartBoundaryPin(key: key, snapshots: document.circuit.librarySnapshots)
             else { return nil }
             switch pin.kind {
             case .port:
@@ -291,6 +287,8 @@ struct ComponentNodeView: View {
         let field = TextField("Label", text: $renameDraft, onCommit: commitRename)
             .textFieldStyle(.roundedBorder)
             .frame(width: 80)
+            .focused($renameFieldFocused)
+            .onAppear { renameFieldFocused = true }
         #if canImport(AppKit)
         return field.onExitCommand { isRenaming = false }
         #else

@@ -93,7 +93,7 @@ extension CircuitDocument {
                   parentComp.kind == .subpart,
                   let filename = parentComp.partRef,
                   !visiting.contains(filename),
-                  let part = PartsLibrary.shared.part(named: filename)
+                  let part = parentComp.resolvedPart(snapshots: self.librarySnapshots)
             else { continue }
 
             let child = part.document.flattenedForSimulation(visiting: visiting.union([filename]))

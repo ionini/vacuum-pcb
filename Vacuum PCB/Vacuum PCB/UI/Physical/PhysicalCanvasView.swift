@@ -11,11 +11,28 @@ struct PhysicalCanvasView: View {
     @Binding var routingLayer: Layer
     @Binding var routingError: String?
     var showRatsnest: Bool
+    /// Whether to overlay the sum-of-Gaussians pressure heatmap from screw
+    /// placement. Off by default; toggled from the toolbar popover.
+    var showPressureMap: Bool
+    /// Gaussian σ (mm) controlling each screw's pressure-influence radius.
+    /// Larger values spread the influence further — calibrate against the
+    /// stiffness of the actual board+silicone stackup.
+    var pressureSigma: Double
+    /// Transient pulse marker dropped when the user clicks a DRC issue with
+    /// a focal point. Read-only — DocumentView owns the value and the
+    /// auto-clear timer. We re-mount the overlay on each new focus via
+    /// `.id(focus.id)` so the animation restarts.
+    var issueFocus: DRC.Focus?
 
     @State private var transform: CanvasTransform = .default
     @State private var mouseLocation: CGPoint = .zero
     @State private var draggingWaypoint: DraggingWaypoint?
     @State private var draggingPlacement: DraggingPlacement?
+    /// Click-and-hold disambiguator state. When non-nil, a popover anchored
+    /// at `screenPoint` lists every selectable element under that point so
+    /// the user can pick through a stack (a placement covering a route, a
+    /// route under a via, etc.) — Fusion 360's "select under" pattern.
+    @State private var disambiguator: DisambigState?
     /// Whether the user has interacted with zoom/pan since the last fit. If
     /// not, view-size changes re-fit to keep the board centred; once the
     /// user has taken control, size changes leave the transform alone so
@@ -89,6 +106,7 @@ struct PhysicalCanvasView: View {
     }
 
     private var manufacturing: ManufacturingConstants { document.circuit.manufacturing }
+    private var librarySnapshots: [String: CircuitDocument] { document.circuit.librarySnapshots }
     private var grid: Double { manufacturing.gridPitch }
 
     /// Keyboard handlers for the routing toolset. V = cross-silicone via
@@ -126,6 +144,13 @@ struct PhysicalCanvasView: View {
 
                 gridLines(in: geo.size)
                 boardOutline
+                if showPressureMap {
+                    PressureHeatmapOverlay(
+                        document: document.circuit,
+                        transform: transform,
+                        sigma: pressureSigma
+                    )
+                }
                 subpartExpansions
 
                 RoutesOverlay(
@@ -143,8 +168,19 @@ struct PhysicalCanvasView: View {
                     visible: visible,
                     manufacturing: manufacturing
                 )
-                if showRatsnest {
-                    RatsnestOverlay(document: document.circuit, transform: transform)
+                if showRatsnest && !visible.isSiliconeSheet {
+                    RatsnestOverlay(
+                        document: document.circuit,
+                        transform: transform,
+                        visible: visible
+                    )
+                }
+                if visible.isSiliconeSheet {
+                    SiliconeSheetViasOverlay(
+                        document: document.circuit,
+                        transform: transform,
+                        manufacturing: manufacturing
+                    )
                 }
 
                 placementBodies
@@ -161,6 +197,15 @@ struct PhysicalCanvasView: View {
                     transform: transform,
                     gridMm: grid
                 )
+
+                if let focus = issueFocus, visible.contains(focus.layer) {
+                    IssueFocusPing(
+                        position: focus.position,
+                        transform: transform
+                    )
+                    .id(focus.id)
+                    .allowsHitTesting(false)
+                }
 
                 // NSEvent-monitor key catcher. Replaces the hidden-Button
                 // approach which would silently lose its shortcut when
@@ -215,6 +260,47 @@ struct PhysicalCanvasView: View {
                 if case .active(let p) = phase { mouseLocation = p }
             }
             .gesture(magnifyGesture(viewSize: geo.size))
+            // Click-and-hold over any stacked content (placement on top of a
+            // route, route under a via, etc.) opens a SwiftUI popover listing
+            // every selectable item at the cursor. `.simultaneousGesture` so
+            // plain clicks, drags, and pin taps still work; the long-press
+            // only wins when the user actively holds without moving.
+            .simultaneousGesture(disambigGesture)
+            // Anchor for the popover. `.position()` doesn't change the source
+            // rect the popover reads — SwiftUI calculates it from the modified
+            // view's intrinsic bounds, ignoring the position-induced offset,
+            // which is what pinned the menu to the canvas's right edge.
+            // Instead, attach the popover to a transparent overlay that
+            // covers the whole canvas and compute the press location as a
+            // UnitPoint via the inner GeometryReader. The `attachmentAnchor`
+            // recomputes whenever `disambiguator` changes.
+            .overlay {
+                GeometryReader { overlayGeo in
+                    let anchor: UnitPoint = disambiguator.map { d in
+                        UnitPoint(
+                            x: d.screenPoint.x / max(1, overlayGeo.size.width),
+                            y: d.screenPoint.y / max(1, overlayGeo.size.height)
+                        )
+                    } ?? .center
+                    Color.clear
+                        .allowsHitTesting(false)
+                        .popover(
+                            isPresented: Binding(
+                                get: { disambiguator != nil },
+                                set: { if !$0 { disambiguator = nil } }
+                            ),
+                            attachmentAnchor: .point(anchor),
+                            arrowEdge: .top
+                        ) {
+                            if let d = disambiguator {
+                                DisambigPopover(
+                                    candidates: d.candidates,
+                                    dismiss: { disambiguator = nil }
+                                )
+                            }
+                        }
+                }
+            }
             .onAppear {
                 lastViewSize = geo.size
                 recomputeTransform(viewSize: geo.size)
@@ -378,8 +464,8 @@ struct PhysicalCanvasView: View {
         ZStack {
             ForEach(document.circuit.physical.placements, id: \.componentId) { placement in
                 if let component = component(for: placement.componentId),
-                   component.kind == .screw
-                    || visible.contains(Layer(plate: placement.layer, depth: placement.depth)) {
+                   visible.shows(componentKind: component.kind,
+                                 on: Layer(plate: placement.layer, depth: placement.depth)) {
                     PlacementBodyView(
                         component: component,
                         placement: placement,
@@ -401,8 +487,8 @@ struct PhysicalCanvasView: View {
         ZStack {
             ForEach(document.circuit.physical.placements, id: \.componentId) { placement in
                 if let component = component(for: placement.componentId),
-                   component.kind == .screw
-                    || visible.contains(Layer(plate: placement.layer, depth: placement.depth)) {
+                   visible.shows(componentKind: component.kind,
+                                 on: Layer(plate: placement.layer, depth: placement.depth)) {
                     let pos = hitCenter(for: placement, component: component)
                     let size = hitSize(for: component)
                     Rectangle()
@@ -432,7 +518,7 @@ struct PhysicalCanvasView: View {
     /// using the bounding-rect midpoint keeps the hit zone over the visible
     /// body for both conventions.
     private func hitCenter(for placement: Placement, component: Component) -> CGPoint {
-        let b = component.footprint(manufacturing).boundingRect
+        let b = component.footprint(manufacturing, snapshots: librarySnapshots).boundingRect
         let lx = b.minX + b.size.width / 2
         let ly = b.minY + b.size.height / 2
         let r = placement.rotation.radians
@@ -600,7 +686,7 @@ struct PhysicalCanvasView: View {
             guard let placement = document.circuit.physical.placements.first(where: { $0.componentId == id }),
                   let component = component(for: id)
             else { continue }
-            for pin in component.footprint(manufacturing).pins {
+            for pin in component.footprint(manufacturing, snapshots: librarySnapshots).pins {
                 pinWorlds.append(placement.worldPosition(of: pin))
             }
         }
@@ -668,7 +754,7 @@ struct PhysicalCanvasView: View {
         // stay easy to grab. The arrowhead glyph for ports / rails extends
         // well past the pin anchor — and the tip is exactly what users aim
         // at — so give those kinds a generous minimum target.
-        let bounds = c.footprint(manufacturing).boundingRect
+        let bounds = c.footprint(manufacturing, snapshots: librarySnapshots).boundingRect
         let isArrowLike: Bool = (c.kind == .port || c.kind == .vacuumSource || c.kind == .atmVent)
         let minSize: Double = isArrowLike ? 60 : 40
         let w = max(minSize, bounds.size.width * transform.ptsPerMm + 12)
@@ -682,7 +768,7 @@ struct PhysicalCanvasView: View {
         ZStack {
             ForEach(document.circuit.physical.placements, id: \.componentId) { placement in
                 if let component = component(for: placement.componentId) {
-                    ForEach(component.footprint(manufacturing).pins, id: \.key) { pin in
+                    ForEach(component.footprint(manufacturing, snapshots: librarySnapshots).pins, id: \.key) { pin in
                         // Sub-part boundary pins carry their library-internal
                         // Layer in `FootprintPin.absoluteLayer`, so the same
                         // resolver call handles both primitives and sub-part
@@ -711,10 +797,7 @@ struct PhysicalCanvasView: View {
     /// boundary component's friendly label for tooltip display. Primitive
     /// pin keys ("gate", "a", "1", "p") pass through unchanged.
     private func pinDisplayLabel(component: Component, key: String) -> String {
-        guard component.kind == .subpart,
-              let filename = component.partRef,
-              let part = PartsLibrary.shared.part(named: filename),
-              let pin = part.pins.first(where: { $0.portId.uuidString == key })
+        guard let pin = component.subpartBoundaryPin(key: key, snapshots: document.circuit.librarySnapshots)
         else { return key }
         return pin.label
     }
@@ -724,7 +807,7 @@ struct PhysicalCanvasView: View {
               let firstWP = waypoints.first,
               let placement = document.circuit.physical.placements.first(where: { $0.componentId == componentId }),
               let component = component(for: componentId),
-              let pin = component.footprint(manufacturing).pin(key)
+              let pin = component.footprint(manufacturing, snapshots: librarySnapshots).pin(key)
         else { return false }
         let world = placement.worldPosition(of: pin)
         return abs(world.x - firstWP.x) < 0.001 && abs(world.y - firstWP.y) < 0.001
@@ -1114,14 +1197,16 @@ struct PhysicalCanvasView: View {
 
         var placementHits: Set<UUID> = []
         for placement in document.circuit.physical.placements {
-            let kind = document.circuit.logic.components
+            guard let kind = document.circuit.logic.components
                 .first(where: { $0.id == placement.componentId })?.kind
+            else { continue }
             // Screws aren't bound to any channel layer; let them marquee
             // through the layer filter so they can be selected even when
-            // both plates' chips are off.
-            let layerOK = kind == .screw
-                || visible.contains(Layer(plate: placement.layer, depth: placement.depth))
-            guard layerOK else { continue }
+            // both plates' chips are off. Silicone-sheet mode extends the
+            // same courtesy to transistors (their gate is on the sheet).
+            guard visible.shows(componentKind: kind,
+                                on: Layer(plate: placement.layer, depth: placement.depth))
+            else { continue }
             let p = placement.position
             if p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y {
                 placementHits.insert(placement.componentId)
@@ -1154,6 +1239,19 @@ struct PhysicalCanvasView: View {
     private func handleBackgroundTap(at pt: CGPoint) {
         switch routingState {
         case .idle:
+            // Vias on visible segments are clickable so the user can pick up a
+            // route at one — handy when a mid-route segment got deleted and
+            // its sibling via is now stranded.
+            if let via = viaAtTap(at: pt) {
+                routingLayer = via.layer
+                routingState = .routing(
+                    netId: via.netId, waypoints: [via.position],
+                    layer: via.layer, startsAtVia: true
+                )
+                selection = .none
+                routingError = nil
+                return
+            }
             // Hit-test route segments before deselecting. RoutesOverlay is a
             // Canvas (cheap render, no per-segment hit testing), so we test
             // here by computing point-to-polyline distance.
@@ -1166,6 +1264,34 @@ struct PhysicalCanvasView: View {
                 selection = .none
             }
         case .routing(let netId, var wps, let layer, let startsAtVia):
+            // Click an existing via to close the in-progress route into it —
+            // mirrors clicking a pin, but the closing waypoint is marked
+            // `.via` so the via XY stays a via in both segments.
+            if let via = viaAtTap(at: pt) {
+                if let first = wps.first, approximatelyEqual(first, via.position), wps.count == 1 {
+                    routingState = .idle
+                    return
+                }
+                guard via.netId == netId else {
+                    routingError = "Via is on a different net — connections must stay within a single net."
+                    routingState = .idle
+                    return
+                }
+                var finalPath = wps
+                if let last = finalPath.last {
+                    let elbow = elbow(from: last, to: via.position)
+                    if !approximatelyEqual(elbow, last) { finalPath.append(elbow) }
+                    if !approximatelyEqual(via.position, finalPath.last ?? last) {
+                        finalPath.append(via.position)
+                    }
+                }
+                appendRouteSegment(
+                    netId: netId, points: finalPath, layer: layer,
+                    startsAtVia: startsAtVia, endsAtVia: true
+                )
+                routingState = .idle
+                return
+            }
             let world = transform.snap(transform.toWorld(pt), grid: grid)
             guard let last = wps.last else { return }
             let elbow = elbow(from: last, to: world)
@@ -1173,6 +1299,32 @@ struct PhysicalCanvasView: View {
             if !approximatelyEqual(world, wps.last ?? last) { wps.append(world) }
             routingState = .routing(netId: netId, waypoints: wps, layer: layer, startsAtVia: startsAtVia)
         }
+    }
+
+    /// Hit-tests via waypoints on visible segments. Returns the nearest via
+    /// within the dot's outer radius, so clicking the via dot wins over the
+    /// underlying segment polyline.
+    private func viaAtTap(at pt: CGPoint) -> (netId: UUID, layer: Layer, position: Point)? {
+        // Mirrors ViasOverlay's outer-radius computation plus a small slop so
+        // a click on the dot's rim still hits.
+        let radius = max(8, manufacturing.channelDiameter * transform.ptsPerMm * 0.85)
+        let radiusSq = radius * radius
+        var best: (netId: UUID, layer: Layer, position: Point, distSq: Double)?
+        for route in document.circuit.physical.routes {
+            for segment in route.segments {
+                guard visible.contains(segment.layer) else { continue }
+                for wp in segment.waypoints where wp.kind == .via {
+                    let screen = transform.toScreen(wp.position)
+                    let dx = Double(pt.x - screen.x)
+                    let dy = Double(pt.y - screen.y)
+                    let d2 = dx * dx + dy * dy
+                    if d2 <= radiusSq, d2 < (best?.distSq ?? .greatestFiniteMagnitude) {
+                        best = (route.netId, segment.layer, wp.position, d2)
+                    }
+                }
+            }
+        }
+        return best.map { ($0.netId, $0.layer, $0.position) }
     }
 
     /// Returns the closest visible route segment whose polyline passes within
@@ -1215,7 +1367,7 @@ struct PhysicalCanvasView: View {
     private func handlePinTap(componentId: UUID, pinKey: String) {
         guard let placement = document.circuit.physical.placements.first(where: { $0.componentId == componentId }),
               let component = component(for: componentId),
-              let pin = component.footprint(manufacturing).pin(pinKey)
+              let pin = component.footprint(manufacturing, snapshots: librarySnapshots).pin(pinKey)
         else { return }
         let world = placement.worldPosition(of: pin)
         // Resistor pins inherit the resistor's depth (resistors are pure
@@ -1323,10 +1475,19 @@ struct PhysicalCanvasView: View {
         routingState = .routing(netId: netId, waypoints: [cursorWorld], layer: target, startsAtVia: true)
     }
 
-    private func appendRouteSegment(netId: UUID, points: [Point], layer: Layer, startsAtVia: Bool) {
+    private func appendRouteSegment(
+        netId: UUID, points: [Point], layer: Layer,
+        startsAtVia: Bool, endsAtVia: Bool = false
+    ) {
         guard points.count >= 2 else { return }
-        let waypoints = points.enumerated().map { i, p in
-            Waypoint(position: p, kind: (i == 0 && startsAtVia) ? .via : .point)
+        let lastIdx = points.count - 1
+        let waypoints = points.enumerated().map { i, p -> Waypoint in
+            let kind: WaypointKind = {
+                if i == 0, startsAtVia { return .via }
+                if i == lastIdx, endsAtVia { return .via }
+                return .point
+            }()
+            return Waypoint(position: p, kind: kind)
         }
         let segment = Segment(waypoints: waypoints, layer: layer)
         if let i = document.circuit.physical.routes.firstIndex(where: { $0.netId == netId }) {
@@ -1399,6 +1560,168 @@ struct PhysicalCanvasView: View {
                 document.circuit.physical.placements[i].layer = placement.layer.opposite
                 document.circuit.physical.placements[i].depth = 0
             }
+        }
+    }
+
+    // MARK: - Disambiguator (click-and-hold)
+
+    /// Long-press fires after ~0.45 s of holding the cursor still. We snapshot
+    /// the current `mouseLocation` (kept up to date by `onContinuousHover`)
+    /// because LongPressGesture itself doesn't surface the press location.
+    /// Suppressed while a route is in progress — the user's next click is
+    /// meant to extend that route, not pop a menu.
+    private var disambigGesture: some Gesture {
+        LongPressGesture(minimumDuration: 0.45, maximumDistance: 6)
+            .onEnded { _ in
+                guard !routingState.inProgress else { return }
+                guard mouseLocation != .zero else { return }
+                let pt = mouseLocation
+                let candidates = collectDisambigCandidates(at: pt)
+                guard !candidates.isEmpty else { return }
+                disambiguator = DisambigState(screenPoint: pt, candidates: candidates)
+            }
+    }
+
+    /// Enumerates every selectable item under `pt` (screen-space). Order is
+    /// roughly visual z: vias (smallest, on top), then route segments by
+    /// layer, then placements. Each entry knows how to commit its own
+    /// selection so the popover doesn't need a dispatch table on the parent.
+    private func collectDisambigCandidates(at pt: CGPoint) -> [DisambigCandidate] {
+        var out: [DisambigCandidate] = []
+
+        // --- Vias ---
+        // Mirror viaAtTap's outer-radius tolerance, but collect *all* hits
+        // rather than the closest one. Dedup paired vias by (netId, XY) so a
+        // single via doesn't appear twice (it's stored on each twin segment).
+        let viaRadius = max(8, manufacturing.channelDiameter * transform.ptsPerMm * 0.85)
+        let viaRadiusSq = viaRadius * viaRadius
+        struct ViaHit: Hashable { let netId: UUID; let x: Double; let y: Double }
+        var viaSeen: Set<ViaHit> = []
+        for route in document.circuit.physical.routes {
+            for (segIdx, segment) in route.segments.enumerated() {
+                guard visible.contains(segment.layer) else { continue }
+                for wp in segment.waypoints where wp.kind == .via {
+                    let screen = transform.toScreen(wp.position)
+                    let dx = Double(pt.x - screen.x), dy = Double(pt.y - screen.y)
+                    guard dx * dx + dy * dy <= viaRadiusSq else { continue }
+                    let key = ViaHit(
+                        netId: route.netId,
+                        x: (wp.position.x / 0.05).rounded() * 0.05,
+                        y: (wp.position.y / 0.05).rounded() * 0.05
+                    )
+                    if viaSeen.contains(key) { continue }
+                    viaSeen.insert(key)
+                    let netLabel = netLabel(for: route.netId)
+                    let label = "Via on \(netLabel) (\(segment.layer.uiLabel))"
+                    out.append(DisambigCandidate(
+                        label: label,
+                        systemImage: "smallcircle.filled.circle",
+                        color: LayerPalette.color(for: segment.layer),
+                        apply: {
+                            selection = .routeSegment(netId: route.netId, segmentIndex: segIdx)
+                            routingState = .idle
+                        }
+                    ))
+                }
+            }
+        }
+
+        // --- Route segments ---
+        // Same channel-stroke + 3 pt tolerance as routeSegmentHit, but
+        // collecting every distinct (netId, segmentIndex) whose polyline
+        // passes within range.
+        let channelStroke = max(1.5, manufacturing.channelDiameter * transform.ptsPerMm * 0.85)
+        let routeThreshold = max(6.0, channelStroke / 2 + 3.0)
+        struct RouteSegmentKey: Hashable { let netId: UUID; let segmentIndex: Int }
+        var seenSegments: Set<RouteSegmentKey> = []
+        for route in document.circuit.physical.routes {
+            for (segIdx, segment) in route.segments.enumerated() {
+                guard visible.contains(segment.layer) else { continue }
+                let key = RouteSegmentKey(netId: route.netId, segmentIndex: segIdx)
+                if seenSegments.contains(key) { continue }
+                let pts = segment.waypoints.map { transform.toScreen($0.position) }
+                guard pts.count >= 2 else { continue }
+                var hit = false
+                for i in 0..<(pts.count - 1) {
+                    if distanceFromPoint(pt, toSegmentFrom: pts[i], to: pts[i + 1]) <= routeThreshold {
+                        hit = true; break
+                    }
+                }
+                guard hit else { continue }
+                seenSegments.insert(key)
+                let netLabel = netLabel(for: route.netId)
+                out.append(DisambigCandidate(
+                    label: "Route \(netLabel) (\(segment.layer.uiLabel))",
+                    systemImage: "scribble.variable",
+                    color: LayerPalette.color(for: segment.layer),
+                    apply: {
+                        selection = .routeSegment(netId: route.netId, segmentIndex: segIdx)
+                        routingState = .idle
+                    }
+                ))
+            }
+        }
+
+        // --- Placements ---
+        // Walk the same hit-rect test the placement hit targets use, but
+        // accept any placement whose rect covers `pt` — not just the nearest.
+        // Screws and silicone-sheet-mode transistors are allowed through the
+        // visibility filter on the canvas itself; mirror that here so the
+        // user can still pick a screw under a route in any view mode.
+        for placement in document.circuit.physical.placements {
+            guard let component = component(for: placement.componentId) else { continue }
+            guard visible.shows(componentKind: component.kind,
+                                on: Layer(plate: placement.layer, depth: placement.depth))
+            else { continue }
+            let centre = hitCenter(for: placement, component: component)
+            let size = hitSize(for: component)
+            let rect = CGRect(
+                x: centre.x - size.width / 2, y: centre.y - size.height / 2,
+                width: size.width, height: size.height
+            )
+            guard rect.contains(pt) else { continue }
+            let id = placement.componentId
+            out.append(DisambigCandidate(
+                label: "\(component.label) (\(componentKindLabel(component.kind)))",
+                systemImage: componentSystemImage(component.kind),
+                color: LayerPalette.color(for: Layer(plate: placement.layer, depth: placement.depth)),
+                apply: {
+                    selection = .placement(id)
+                    routingState = .idle
+                }
+            ))
+        }
+
+        return out
+    }
+
+    private func netLabel(for netId: UUID) -> String {
+        document.circuit.logic.nets.first(where: { $0.id == netId })?.label ?? "?"
+    }
+
+    private func componentKindLabel(_ kind: ComponentKind) -> String {
+        switch kind {
+        case .transistor:   return "transistor"
+        case .resistor:     return "resistor"
+        case .port:         return "port"
+        case .vacuumSource: return "vacuum"
+        case .atmVent:      return "vent"
+        case .subpart:      return "subpart"
+        case .screw:        return "screw"
+        case .led:          return "LED"
+        }
+    }
+
+    private func componentSystemImage(_ kind: ComponentKind) -> String {
+        switch kind {
+        case .transistor:   return "triangle"
+        case .resistor:     return "waveform.path.ecg"
+        case .port:         return "arrow.right.to.line"
+        case .vacuumSource: return "arrow.up.right.circle"
+        case .atmVent:      return "wind"
+        case .subpart:      return "rectangle.dashed"
+        case .screw:        return "circle.grid.cross"
+        case .led:          return "lightbulb"
         }
     }
 
@@ -1609,5 +1932,37 @@ struct ParkingDropDelegate: DropDelegate {
         if let d = item as? Data { return String(data: d, encoding: .utf8) }
         if let url = item as? URL { return url.absoluteString }
         return nil
+    }
+}
+
+/// Sonar-style pulse drawn at a DRC issue's focal point. Single ring that
+/// scales outward and fades to zero opacity over ~1.5 s. Mounting it with a
+/// fresh `id` per click restarts the animation, so re-clicking the same
+/// issue still pings.
+private struct IssueFocusPing: View {
+    let position: Point
+    let transform: CanvasTransform
+    @State private var animate = false
+
+    var body: some View {
+        let screen = transform.toScreen(position)
+        // Two stacked rings: the outer ring carries the pulse motion; the
+        // inner ring stays put as a fixed crosshair so the user's eye can
+        // still find the exact spot after the pulse has faded out.
+        ZStack {
+            Circle()
+                .stroke(Color.orange, lineWidth: 3)
+                .frame(width: 18, height: 18)
+                .scaleEffect(animate ? 5 : 1)
+                .opacity(animate ? 0 : 1)
+            Circle()
+                .stroke(Color.orange, lineWidth: 2)
+                .frame(width: 12, height: 12)
+                .opacity(animate ? 0.4 : 1)
+        }
+        .position(screen)
+        .onAppear {
+            withAnimation(.easeOut(duration: 1.5)) { animate = true }
+        }
     }
 }

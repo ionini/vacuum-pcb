@@ -45,6 +45,7 @@ struct ManufacturingSettingsView: View {
                 row("Port bore diameter", $draftMfg.portBoreDiameter)
                 row("Port bore taper (°)", $draftMfg.portBoreTaperDegrees)
                 row("Min channel spacing (DRC)", $draftMfg.minChannelSpacing)
+                row("Min wall thickness (DRC)", $draftMfg.minWallThickness)
                 Text("Port bore diameter is the narrow (route-side) end. The bore tapers outward at the given draft angle so it widens toward the board edge — 0° gives a straight cylinder.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
@@ -78,6 +79,12 @@ struct ManufacturingSettingsView: View {
                 row("Head/nut protrusion", $draftMfg.screwProtrusion)
                 row("Volcano base diameter", $draftMfg.screwDomeBaseDiameter)
                 Text("Head and nut depths size the countersink and hex pocket to whatever fastener you're using (defaults match an M2-class screw). Protrusion is how far the head and nut stick past their plate's outer face — 0 keeps both flush. Positive values reduce the inlay and rise a Mt-Fuji-shaped volcano around the protruding portion so the head/nut is still held by printed material on the sides; the cavity stays open at the top so a driver can still reach the fastener. Volcano base diameter sets how wide the dome is at its base; the flat plateau on top always sits 0.75 mm outside the cavity, so widening the base only widens the slope. Volcano fields are ignored when protrusion is 0.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+
+            group("Stencil") {
+                row("Thickness", $draftMfg.stencilThickness)
+                Text("Flat cutting template exported next to the plates. Holes at every cross-silicone via and screw shaft; sized to the silicone sheet so it doubles as a 1:1 cutting guide.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
 
@@ -141,8 +148,9 @@ struct ManufacturingSettingsView: View {
             guard let component = document.circuit.logic.components
                     .first(where: { $0.id == placement.componentId })
             else { continue }
-            let oldFp = component.footprint(oldMfg)
-            let newFp = component.footprint(newMfg)
+            let snapshots = document.circuit.librarySnapshots
+            let oldFp = component.footprint(oldMfg, snapshots: snapshots)
+            let newFp = component.footprint(newMfg, snapshots: snapshots)
             for newPin in newFp.pins {
                 guard let oldPin = oldFp.pin(newPin.key) else { continue }
                 let oldWorld = placement.worldPosition(of: oldPin)
@@ -237,7 +245,9 @@ struct ManufacturingSettingsView: View {
             screwDomeBaseDiameter: max(ScrewGeometry.headDiameter + 0.2,
                                        m.screwDomeBaseDiameter),
             screwHeadDepth: max(0.1, m.screwHeadDepth),
-            screwNutDepth: max(0.1, m.screwNutDepth)
+            screwNutDepth: max(0.1, m.screwNutDepth),
+            stencilThickness: max(0.05, m.stencilThickness),
+            minWallThickness: max(0.05, m.minWallThickness)
         )
     }
 

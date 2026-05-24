@@ -19,22 +19,27 @@ struct PlacementBodyView: View {
                 ctx.translateBy(x: origin.x, y: origin.y)
                 ctx.rotate(by: .radians(placement.rotation.radians))
 
-                switch component.kind {
-                case .transistor:
-                    drawTransistor(in: &ctx)
-                case .resistor:
-                    drawResistor(in: &ctx)
-                case .vacuumSource, .atmVent, .port:
-                    drawPort(in: &ctx)
-                case .subpart:
-                    // Subparts are rendered separately by SubpartExpandedView
-                    // (dotted outline + transformed internals); the per-
-                    // placement body view doesn't draw anything here.
-                    break
-                case .screw:
-                    drawScrew(in: &ctx)
-                case .led:
-                    drawLED(in: &ctx)
+                if visible.isSiliconeSheet {
+                    drawSiliconeSheetGlyph(in: &ctx)
+                } else {
+                    switch component.kind {
+                    case .transistor:
+                        drawTransistor(in: &ctx)
+                    case .resistor:
+                        drawResistor(in: &ctx)
+                    case .vacuumSource, .atmVent, .port:
+                        drawPort(in: &ctx)
+                    case .subpart:
+                        // Subparts are rendered separately by
+                        // SubpartExpandedView (dotted outline +
+                        // transformed internals); the per-placement body
+                        // view doesn't draw anything here.
+                        break
+                    case .screw:
+                        drawScrew(in: &ctx)
+                    case .led:
+                        drawLED(in: &ctx)
+                    }
                 }
 
                 if isSelected {
@@ -43,10 +48,38 @@ struct PlacementBodyView: View {
             }
             // Component label as a separate SwiftUI Text so it stays upright
             // regardless of placement rotation and uses crisp text rendering
-            // rather than canvas-rasterised glyphs.
-            label
+            // rather than canvas-rasterised glyphs. Silicone-sheet mode is a
+            // bare physical preview, so labels would just be noise — drop them.
+            if !visible.isSiliconeSheet {
+                label
+            }
         }
         .allowsHitTesting(false)
+    }
+
+    /// Silicone-sheet mode: draw only the feature that punches through the
+    /// silicone. Transistors → gate dimple circumference. LEDs → LED
+    /// dimple circumference (same idea, different diameter). Screws → the
+    /// 2.2 mm clearance bore (the actual hole through the sheet). All
+    /// other kinds are filtered out upstream and never get this far.
+    private func drawSiliconeSheetGlyph(in ctx: inout GraphicsContext) {
+        let strokeColor = Color.primary.opacity(0.85)
+        switch component.kind {
+        case .transistor:
+            let r = manufacturing.dimpleDiameter / 2 * transform.ptsPerMm
+            let rect = CGRect(x: -r, y: -r, width: 2 * r, height: 2 * r)
+            ctx.stroke(Path(ellipseIn: rect), with: .color(strokeColor), lineWidth: 1.4)
+        case .led:
+            let r = manufacturing.ledDimpleDiameter / 2 * transform.ptsPerMm
+            let rect = CGRect(x: -r, y: -r, width: 2 * r, height: 2 * r)
+            ctx.stroke(Path(ellipseIn: rect), with: .color(strokeColor), lineWidth: 1.4)
+        case .screw:
+            let r = ScrewGeometry.throughDiameter / 2 * transform.ptsPerMm
+            let rect = CGRect(x: -r, y: -r, width: 2 * r, height: 2 * r)
+            ctx.stroke(Path(ellipseIn: rect), with: .color(strokeColor), lineWidth: 1.4)
+        default:
+            break
+        }
     }
 
     private var label: some View {
@@ -152,14 +185,20 @@ struct PlacementBodyView: View {
     private func drawScrew(in ctx: inout GraphicsContext) {
         // Three concentric features matching the CAD cutters: outer ring =
         // head countersink (5.1 mm), middle dashed circle = clearance hole,
-        // hex outline indicates the nut pocket orientation on the bottom.
+        // hex outline indicates the nut pocket orientation on the opposite
+        // plate. `placement.layer` is the head's plate; the hex ring takes
+        // the opposite plate's tint so the user can see at a glance which
+        // side the screw is oriented to.
         let headR = ScrewGeometry.headDiameter / 2 * transform.ptsPerMm
         let throughR = ScrewGeometry.throughDiameter / 2 * transform.ptsPerMm
         let hexCircumR = (ScrewGeometry.hexAcrossFlats / sqrt(3.0)) * transform.ptsPerMm
 
+        let headColor = plateColor(placement.layer)
+        let hexColor = plateColor(placement.layer.opposite)
+
         let headRect = CGRect(x: -headR, y: -headR, width: 2 * headR, height: 2 * headR)
-        ctx.fill(Path(ellipseIn: headRect), with: .color(Color.gray.opacity(0.18)))
-        ctx.stroke(Path(ellipseIn: headRect), with: .color(.gray), lineWidth: 1.2)
+        ctx.fill(Path(ellipseIn: headRect), with: .color(headColor.opacity(0.20)))
+        ctx.stroke(Path(ellipseIn: headRect), with: .color(headColor), lineWidth: 1.2)
 
         let throughRect = CGRect(x: -throughR, y: -throughR, width: 2 * throughR, height: 2 * throughR)
         ctx.fill(Path(ellipseIn: throughRect), with: .color(Color.primary.opacity(0.55)))
@@ -177,7 +216,7 @@ struct PlacementBodyView: View {
         hex.closeSubpath()
         ctx.stroke(
             hex,
-            with: .color(Color.primary.opacity(0.55)),
+            with: .color(hexColor.opacity(0.75)),
             style: StrokeStyle(lineWidth: 0.8, dash: [3, 2])
         )
     }

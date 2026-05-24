@@ -75,7 +75,55 @@ struct InspectorStrip: View {
                 .labelsHidden()
                 .fixedSize()
             }
+            if c.kind == .subpart {
+                subpartLibrarySync(c)
+            }
         }
+    }
+
+    /// Subpart version-pin status + manual "Update from Library" button. The
+    /// pinned snapshot is what every renderer / CAD pass reads; this control
+    /// is the only way edits in the parts folder reach a placed instance.
+    @ViewBuilder
+    private func subpartLibrarySync(_ c: Component) -> some View {
+        let live = c.partRef.flatMap { PartsLibrary.shared.part(named: $0) }
+        // Compare deep behavioural state — transitive edits (a dep of a
+        // dep changed) need to surface as "out of date" too. The shallow
+        // `contentHash` strips partRefHash for snapshot-key stability and
+        // would miss this entirely.
+        let liveDeep = live?.document.effectiveHash()
+        let pinnedDeep = c.partRefHash.flatMap { document.circuit.librarySnapshots[$0]?.effectiveHash() }
+        let outOfDate = liveDeep != nil && liveDeep != pinnedDeep
+        Divider().frame(height: 18)
+        if live == nil {
+            Label("Library file missing", systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .font(.caption)
+        } else if outOfDate {
+            Label("Library has changes", systemImage: "arrow.triangle.2.circlepath")
+                .foregroundStyle(.orange)
+                .font(.caption)
+            Button("Update from Library") { updateSubpartFromLibrary(c) }
+                .controlSize(.small)
+        } else {
+            Label("Up to date", systemImage: "checkmark.circle")
+                .foregroundStyle(.secondary)
+                .font(.caption)
+        }
+    }
+
+    private func updateSubpartFromLibrary(_ c: Component) {
+        guard let filename = c.partRef,
+              let live = PartsLibrary.shared.part(named: filename),
+              let i = document.circuit.logic.components.firstIndex(where: { $0.id == c.id })
+        else { return }
+        let newHash = live.document.contentHash()
+        // Unconditional replace: the structural `contentHash` key may
+        // collide with an existing snapshot (transitive-only change), but
+        // the live doc's inner tree is what we want stored. Conditional
+        // store would leave the stale snapshot in place.
+        document.circuit.librarySnapshots[newHash] = live.document
+        document.circuit.logic.components[i].partRefHash = newHash
     }
 
     private func resistorSizeBinding(_ c: Component) -> Binding<ResistorSize> {

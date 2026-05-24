@@ -9,6 +9,10 @@ struct PhysicalView: View {
     /// Lifted to DocumentView so the sidebar's DRC list can drive
     /// highlight-on-click.
     @Binding var selection: PhysicalSelection
+    /// Transient ping marker for the DRC focus-on-click affordance. Owned
+    /// by DocumentView (it's also the one that schedules the auto-clear);
+    /// we pass it through to the canvas overlay.
+    @Binding var issueFocus: DRC.Focus?
     /// Threaded down so this view can plant the Inspector toolbar toggle as
     /// the rightmost toolbar item.
     @Binding var showInspector: Bool
@@ -21,6 +25,9 @@ struct PhysicalView: View {
     @State private var routingLayer: Layer = .top
     @State private var routingError: String?
     @State private var showRatsnest: Bool = true
+    @State private var showPressureMap: Bool = false
+    @State private var pressureSigma: Double = 10.0
+    @State private var pressurePopover: Bool = false
 
     var body: some View {
         // The parking lot now lives in the right-hand inspector (along
@@ -33,7 +40,10 @@ struct PhysicalView: View {
             visible: $visible,
             routingLayer: $routingLayer,
             routingError: $routingError,
-            showRatsnest: showRatsnest
+            showRatsnest: showRatsnest,
+            showPressureMap: showPressureMap,
+            pressureSigma: pressureSigma,
+            issueFocus: issueFocus
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .toolbar { physicalToolbar }
@@ -59,13 +69,19 @@ struct PhysicalView: View {
                 Text("All").tag(LayerVisibility.both)
                 Text("Top").tag(LayerVisibility.topOnly)
                 Text("Bottom").tag(LayerVisibility.bottomOnly)
+                Text("Sheet").tag(LayerVisibility.siliconeSheet)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 160)
+            .frame(width: 220)
         }
-        ToolbarItem(placement: .automatic) {
-            LayerVisibilityPills(layers: allLayers, visible: $visible)
+        // The per-layer pills toggle into `.explicit`, which would
+        // immediately leave silicone-sheet mode — hide them while that
+        // mode is active so the toolbar reads cleanly.
+        if !visible.isSiliconeSheet {
+            ToolbarItem(placement: .automatic) {
+                LayerVisibilityPills(layers: allLayers, visible: $visible)
+            }
         }
         ToolbarItem(placement: .automatic) {
             Picker("Route", selection: $routingLayer) {
@@ -83,6 +99,31 @@ struct PhysicalView: View {
             }
             .toggleStyle(.button)
             .help("Show dashed hint lines between pins on the same net that aren't routed yet")
+        }
+        ToolbarItem(placement: .automatic) {
+            // Single toolbar control hosts both the on/off toggle and the σ
+            // slider — the button shows enabled state at a glance, the
+            // popover opens the slider when the user wants to tune the
+            // spread. Plain click toggles the map; long-press / right-click
+            // would be nicer here but SwiftUI's Button doesn't expose a
+            // primary+secondary action cleanly, so we use a Menu fallback:
+            // a click opens the popover; the toggle inside is the on switch.
+            Button {
+                pressurePopover.toggle()
+            } label: {
+                Label("Pressure Map",
+                      systemImage: showPressureMap
+                          ? "thermometer.sun.fill"
+                          : "thermometer.medium")
+            }
+            .help("Pressure uniformity heatmap from screw placement")
+            .foregroundStyle(showPressureMap ? Color.accentColor : Color.primary)
+            .popover(isPresented: $pressurePopover, arrowEdge: .bottom) {
+                PressureHeatmapControls(
+                    enabled: $showPressureMap,
+                    sigma: $pressureSigma
+                )
+            }
         }
         ToolbarItem(placement: .automatic) {
             Button(action: addScrew) {

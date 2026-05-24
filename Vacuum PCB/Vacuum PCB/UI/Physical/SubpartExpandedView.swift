@@ -25,23 +25,33 @@ struct SubpartExpandedView: View {
     /// A nested subpart whose `partRef` is already in this set is rendered
     /// as a red cycle placeholder instead of recursing.
     var visiting: Set<String> = []
+    @Environment(\.librarySnapshots) private var librarySnapshots
 
     var body: some View {
         if let filename = component.partRef, visiting.contains(filename) {
             cyclePlaceholder(filename: filename)
-        } else if let part = component.partRef.flatMap({ PartsLibrary.shared.part(named: $0) }) {
+        } else if let part = component.resolvedPart(snapshots: librarySnapshots) {
             let part = part
             ZStack {
-                // 1. Internal routes — drawn underneath placements so the
-                // serpentines / glyphs sit on top.
-                internalRoutes(part: part)
-                // 2. Internal placements (transistors, resistors, etc.).
-                internalPlacements(part: part)
-                // 3. Boundary pin markers + labels.
-                boundaryMarkers(part: part)
-                // 4. Dotted outline + title sit on top so the part reads as a
-                // visually grouped block.
-                outline(part: part)
+                if visible.isSiliconeSheet {
+                    // Silicone-sheet view: only features that punch through
+                    // the sheet. Internal placements still go through the
+                    // standard filter (which surfaces screws + transistors
+                    // in this mode); routes/boundary pins/outline drop away.
+                    siliconeSheetVias(part: part)
+                    internalPlacements(part: part)
+                } else {
+                    // 1. Internal routes — drawn underneath placements so the
+                    // serpentines / glyphs sit on top.
+                    internalRoutes(part: part)
+                    // 2. Internal placements (transistors, resistors, etc.).
+                    internalPlacements(part: part)
+                    // 3. Boundary pin markers + labels.
+                    boundaryMarkers(part: part)
+                    // 4. Dotted outline + title sit on top so the part reads
+                    // as a visually grouped block.
+                    outline(part: part)
+                }
             }
         } else {
             // Missing-part placeholder: red dotted box at the instance
@@ -169,6 +179,12 @@ struct SubpartExpandedView: View {
                     if internalComponent.kind == .subpart {
                         // Nested subpart: recurse so the user sees the full
                         // hierarchy expanded (Half Adder → XOR → transistors).
+                        // Override the snapshot env to THIS layer's own
+                        // `librarySnapshots` — the top-level doc's dict only
+                        // has the direct subpart's snapshot, not its
+                        // transitive deps. Each recursion swaps to the
+                        // current snapshot's local dict so the next level
+                        // down resolves out of THIS file too.
                         SubpartExpandedView(
                             component: internalComponent,
                             placement: effective,
@@ -178,11 +194,15 @@ struct SubpartExpandedView: View {
                             isSelected: false,
                             visiting: childVisiting
                         )
-                    } else if internalComponent.kind == .screw
-                        || visible.contains(Layer(plate: effective.layer, depth: effective.depth)) {
+                        .environment(\.librarySnapshots, part.document.librarySnapshots)
+                    } else if visible.shows(
+                        componentKind: internalComponent.kind,
+                        on: Layer(plate: effective.layer, depth: effective.depth)
+                    ) {
                         // Screws live across both plates mechanically — same
                         // exemption from layer-filtering as primitive screws
-                        // on the parent canvas.
+                        // on the parent canvas. Silicone-sheet mode also
+                        // surfaces transistor gates through the same gate.
                         PlacementBodyView(
                             component: internalComponent,
                             placement: effective,
@@ -237,6 +257,64 @@ struct SubpartExpandedView: View {
             }
         }
         .allowsHitTesting(false)
+    }
+
+    // MARK: - Silicone-sheet vias
+
+    /// Silicone-sheet-mode counterpart to `internalRoutes`. Detects every
+    /// via XY that the subpart's library routes pair across T0 and B0 — the
+    /// only kind that actually pierces the silicone — and draws each as a
+    /// channel-sized ring at its transformed parent-world position.
+    private func siliconeSheetVias(part: PartsLibrary.Part) -> some View {
+        let radius = max(
+            4,
+            part.document.manufacturing.channelDiameter / 2 * transform.ptsPerMm
+        )
+        return Canvas { ctx, _ in
+            for position in crossSiliconeViaPositions(in: part) {
+                let center = transform.toScreen(transformWorld(position))
+                let rect = CGRect(
+                    x: center.x - radius, y: center.y - radius,
+                    width: radius * 2, height: radius * 2
+                )
+                ctx.stroke(
+                    Path(ellipseIn: rect),
+                    with: .color(Color.primary.opacity(0.85)),
+                    lineWidth: 1.5
+                )
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    /// Library-local via XYs that appear as a `.via` waypoint on both a T0
+    /// and a B0 segment of the same net. Same approximate-match tolerance
+    /// (0.05 mm) used elsewhere for paired-via bookkeeping.
+    private func crossSiliconeViaPositions(in part: PartsLibrary.Part) -> [Point] {
+        var result: [Point] = []
+        for route in part.document.physical.routes {
+            var topPositions: [Point] = []
+            var bottomPositions: [Point] = []
+            for segment in route.segments where segment.layer.depth == 0 {
+                for wp in segment.waypoints where wp.kind == .via {
+                    switch segment.layer.plate {
+                    case .top:    topPositions.append(wp.position)
+                    case .bottom: bottomPositions.append(wp.position)
+                    }
+                }
+            }
+            for p in topPositions {
+                let matched = bottomPositions.contains {
+                    abs($0.x - p.x) < 0.05 && abs($0.y - p.y) < 0.05
+                }
+                guard matched else { continue }
+                let alreadyAdded = result.contains {
+                    abs($0.x - p.x) < 0.05 && abs($0.y - p.y) < 0.05
+                }
+                if !alreadyAdded { result.append(p) }
+            }
+        }
+        return result
     }
 
     // MARK: - Boundary markers
@@ -296,8 +374,7 @@ struct SubpartExpandedView: View {
     /// corner sits at `placement.position`, then rotating about that corner
     /// by `placement.rotation`. Corner-anchored to match `subpartFootprint()`.
     private func transformWorld(_ libraryPoint: Point) -> Point {
-        let outline = component.partRef
-            .flatMap { PartsLibrary.shared.part(named: $0) }?
+        let outline = component.resolvedPart(snapshots: librarySnapshots)?
             .document.physical.boardOutline
             ?? Rect(origin: .zero, size: Size(width: 0, height: 0))
         let dx = libraryPoint.x - outline.minX

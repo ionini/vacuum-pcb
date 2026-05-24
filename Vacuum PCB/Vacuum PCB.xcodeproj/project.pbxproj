@@ -7,7 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		F9B05BF52FB674440071BB7F /* Euclid in Frameworks */ = {isa = PBXBuildFile; productRef = F9B05BF42FB674440071BB7F /* Euclid */; };
+		F900C1802FC1E3EB002D8CDB /* Euclid in Frameworks */ = {isa = PBXBuildFile; productRef = F900C17F2FC1E3EB002D8CDB /* Euclid */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -40,17 +40,25 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				F9B05BF52FB674440071BB7F /* Euclid in Frameworks */,
+				F900C1802FC1E3EB002D8CDB /* Euclid in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		F900C17E2FC1E3EB002D8CDB /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
 		F9B05BD32FB671F10071BB7F = {
 			isa = PBXGroup;
 			children = (
 				F9B05BDE2FB671F10071BB7F /* Vacuum PCB */,
+				F900C17E2FC1E3EB002D8CDB /* Frameworks */,
 				F9B05BDD2FB671F10071BB7F /* Products */,
 			);
 			sourceTree = "<group>";
@@ -83,7 +91,7 @@
 			);
 			name = "Vacuum PCB";
 			packageProductDependencies = (
-				F9B05BF42FB674440071BB7F /* Euclid */,
+				F900C17F2FC1E3EB002D8CDB /* Euclid */,
 			);
 			productName = "Vacuum PCB";
 			productReference = F9B05BDC2FB671F10071BB7F /* Vacuum PCB.app */;
@@ -114,7 +122,7 @@
 			mainGroup = F9B05BD32FB671F10071BB7F;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				F9B05BF32FB674440071BB7F /* XCRemoteSwiftPackageReference "Euclid" */,
+				F900C17D2FC1E3B2002D8CDB /* XCLocalSwiftPackageReference "../../Euclid" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = F9B05BDD2FB671F10071BB7F /* Products */;
@@ -270,7 +278,7 @@
 		F9B05BE82FB671F10071BB7F /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_APPICON_NAME = "AppIcon 2";
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGN_STYLE = Automatic;
@@ -306,7 +314,7 @@
 		F9B05BE92FB671F10071BB7F /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_APPICON_NAME = "AppIcon 2";
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGN_STYLE = Automatic;
@@ -362,21 +370,17 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCRemoteSwiftPackageReference section */
-		F9B05BF32FB674440071BB7F /* XCRemoteSwiftPackageReference "Euclid" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/nicklockwood/Euclid";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 0.8.14;
-			};
+/* Begin XCLocalSwiftPackageReference section */
+		F900C17D2FC1E3B2002D8CDB /* XCLocalSwiftPackageReference "../../Euclid" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../../Euclid;
 		};
-/* End XCRemoteSwiftPackageReference section */
+/* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		F9B05BF42FB674440071BB7F /* Euclid */ = {
+		F900C17F2FC1E3EB002D8CDB /* Euclid */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = F9B05BF32FB674440071BB7F /* XCRemoteSwiftPackageReference "Euclid" */;
+			package = F900C17D2FC1E3B2002D8CDB /* XCLocalSwiftPackageReference "../../Euclid" */;
 			productName = Euclid;
 		};
 /* End XCSwiftPackageProductDependency section */

@@ -57,11 +57,13 @@ struct ComponentSymbolMetrics {
 
     /// Library-aware metrics. For primitives this delegates to the kind-only
     /// version; for subparts it lays out one pin per `BoundaryPin`, grouping
-    /// by side and spacing along that side.
-    static func metrics(for component: Component) -> ComponentSymbolMetrics {
+    /// by side and spacing along that side. `snapshots` resolves the sub-part
+    /// against the parent doc's pinned library copy — pass the parent
+    /// document's `librarySnapshots` so the schematic symbol matches what the
+    /// CAD pipeline will export.
+    static func metrics(for component: Component, snapshots: [String: CircuitDocument] = [:]) -> ComponentSymbolMetrics {
         guard component.kind == .subpart,
-              let filename = component.partRef,
-              let part = PartsLibrary.shared.part(named: filename)
+              let part = component.resolvedPart(snapshots: snapshots)
         else { return metrics(for: component.kind) }
         return subpartMetrics(pins: part.pins)
     }
@@ -122,9 +124,10 @@ struct ComponentSymbolMetrics {
 struct ComponentSymbolView: View {
     let component: Component
     let isSelected: Bool
+    @Environment(\.librarySnapshots) private var librarySnapshots
 
     private var metrics: ComponentSymbolMetrics {
-        ComponentSymbolMetrics.metrics(for: component)
+        ComponentSymbolMetrics.metrics(for: component, snapshots: librarySnapshots)
     }
 
     /// Boundary-pin label lookup for subparts — keyed by the pin's UUID
@@ -132,8 +135,7 @@ struct ComponentSymbolView: View {
     /// (no boundary-pin label needed).
     private var boundaryPinLabel: (String) -> String? {
         guard component.kind == .subpart,
-              let filename = component.partRef,
-              let part = PartsLibrary.shared.part(named: filename)
+              let part = component.resolvedPart(snapshots: librarySnapshots)
         else { return { _ in nil } }
         let map = Dictionary(uniqueKeysWithValues: part.pins.map { ($0.portId.uuidString, $0.label) })
         return { map[$0] }

@@ -9,6 +9,10 @@ struct RatsnestEdge: Hashable {
     let netLabel: String
     let a: Point
     let b: Point
+    /// Layer of the pin at each endpoint, so the physical overlay can hide
+    /// edges that dangle into hidden layers.
+    let layerA: Layer
+    let layerB: Layer
 }
 
 enum Ratsnest {
@@ -49,7 +53,7 @@ enum Ratsnest {
         for pinRef in net.pins {
             guard let placement = doc.physical.placements.first(where: { $0.componentId == pinRef.componentId }),
                   let component = doc.logic.components.first(where: { $0.id == pinRef.componentId }),
-                  let fpPin = component.footprint(doc.manufacturing).pin(pinRef.pinKey)
+                  let fpPin = component.footprint(doc.manufacturing, snapshots: doc.librarySnapshots).pin(pinRef.pinKey)
             else { continue }
             let world = placement.worldPosition(of: fpPin)
             let layer = placement.resolvedLayer(of: fpPin, on: component)
@@ -148,7 +152,9 @@ enum Ratsnest {
                 edges.append(RatsnestEdge(
                     netId: net.id, netLabel: net.label,
                     a: anchor.position,
-                    b: placedPins[i].position
+                    b: placedPins[i].position,
+                    layerA: anchor.layer,
+                    layerB: placedPins[i].layer
                 ))
             }
             return edges
@@ -174,7 +180,9 @@ enum Ratsnest {
             edges.append(RatsnestEdge(
                 netId: net.id, netLabel: net.label,
                 a: placedPins[pair.i].position,
-                b: placedPins[pair.j].position
+                b: placedPins[pair.j].position,
+                layerA: placedPins[pair.i].layer,
+                layerB: placedPins[pair.j].layer
             ))
         }
         return edges

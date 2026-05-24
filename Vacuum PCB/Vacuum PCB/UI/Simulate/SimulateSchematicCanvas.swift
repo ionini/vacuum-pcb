@@ -49,7 +49,7 @@ struct SimulateSchematicCanvas: View {
     /// editor's metrics so positions and pin offsets line up exactly.
     @ViewBuilder
     private func componentNode(component: Component) -> some View {
-        let metrics = ComponentSymbolMetrics.metrics(for: component)
+        let metrics = ComponentSymbolMetrics.metrics(for: component, snapshots: document.librarySnapshots)
         let pressure = nodePressure(component: component)
         let fill = PressureColor.color(for: pressure).opacity(0.55)
         let stroke = PressureColor.strokeColor(for: pressure)
@@ -105,7 +105,7 @@ struct SimulateSchematicCanvas: View {
             // Library-driven boundary pins live in `Component.pinKeys`.
             // Average their net pressures so the symbol's tint reflects
             // the overall state of the subpart's external connections.
-            let keys = component.pinKeys
+            let keys = component.pinKeys(snapshots: document.librarySnapshots)
             guard !keys.isEmpty else { return 1 }
             let sum = keys.reduce(0.0) {
                 $0 + netPressure(pin: PinRef(componentId: component.id, pinKey: $1))
