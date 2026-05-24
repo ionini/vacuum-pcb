@@ -44,11 +44,14 @@ struct SchematicInspector: View {
     @State private var alertMessage: String?
 
     var body: some View {
-        ScrollView {
-            ComponentPaletteView(
-                onAdd: addComponent,
-                onAddLibraryPart: addLibraryPart
-            )
+        VStack(spacing: 0) {
+            SchematicContextSection(document: $document, selection: $selection)
+            ScrollView {
+                ComponentPaletteView(
+                    onAdd: addComponent,
+                    onAddLibraryPart: addLibraryPart
+                )
+            }
         }
         .alert("Can't add part", isPresented: Binding(
             get: { alertMessage != nil },
@@ -156,5 +159,92 @@ struct SchematicInspector: View {
     /// 1.0 reads as "1" and 0.5 as "0.5" instead of "1.000000".
     private func formatPitch(_ pitch: Double) -> String {
         String(format: "%g", pitch)
+    }
+}
+
+/// Contextual action block at the top of the schematic inspector. Mirrors
+/// `PhysicalContextSection` — shows nothing when the selection is empty,
+/// surfaces Delete when one or more components or a net is selected. The
+/// ⌫ shortcut still works on macOS; this is the only way to delete on
+/// iPad (no hardware Delete without an external keyboard).
+struct SchematicContextSection: View {
+    @Binding var document: VPCBDocument
+    @Binding var selection: SchematicSelection
+
+    var body: some View {
+        Group {
+            if !selection.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(header)
+                        .font(.caption.bold())
+                        .foregroundStyle(.secondary)
+                    Button(role: .destructive) {
+                        SchematicActions.delete(document: &document, selection: &selection)
+                    } label: {
+                        Label(deleteLabel, systemImage: "trash")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.regularMaterial)
+            }
+        }
+    }
+
+    private var header: String {
+        let n = selection.components.count
+        if n > 0 && selection.net != nil {
+            return "\(n) component\(n == 1 ? "" : "s") + net"
+        }
+        if n > 1 { return "\(n) components" }
+        if n == 1 { return "Component" }
+        return "Net"
+    }
+
+    private var deleteLabel: String {
+        if selection.components.count > 1 { return "Delete \(selection.components.count) components" }
+        if selection.components.count == 1 && selection.net == nil { return "Delete component" }
+        if selection.components.isEmpty && selection.net != nil { return "Delete net" }
+        return "Delete"
+    }
+}
+
+/// Mutations the schematic canvas and its inspector both trigger. Lifted
+/// out of `SchematicCanvasView` so the inspector's Delete button drives
+/// the same path the ⌫ shortcut does on macOS.
+enum SchematicActions {
+    /// Delete every selected component and the selected net (if any).
+    /// Component deletion cascades into nets (orphan nets dropped when
+    /// they fall below two pins) and into physical state (routes on
+    /// killed nets, the component's own placement). Net deletion also
+    /// removes any physical routes on that net.
+    static func delete(document: inout VPCBDocument, selection: inout SchematicSelection) {
+        for id in selection.components {
+            deleteComponent(id, in: &document)
+        }
+        if let netId = selection.net {
+            deleteNet(netId, in: &document)
+        }
+        selection = .none
+    }
+
+    private static func deleteComponent(_ id: UUID, in document: inout VPCBDocument) {
+        document.circuit.logic.components.removeAll { $0.id == id }
+        document.circuit.schematic.remove(componentId: id)
+        for i in document.circuit.logic.nets.indices {
+            document.circuit.logic.nets[i].pins.removeAll { $0.componentId == id }
+        }
+        let dead = document.circuit.logic.nets.filter { $0.pins.count < 2 }.map(\.id)
+        document.circuit.logic.nets.removeAll { dead.contains($0.id) }
+        document.circuit.physical.routes.removeAll { dead.contains($0.netId) }
+        document.circuit.physical.placements.removeAll { $0.componentId == id }
+    }
+
+    private static func deleteNet(_ id: UUID, in document: inout VPCBDocument) {
+        document.circuit.logic.nets.removeAll { $0.id == id }
+        document.circuit.physical.routes.removeAll { $0.netId == id }
     }
 }

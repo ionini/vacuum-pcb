@@ -10,6 +10,10 @@ struct DocumentView: View {
     /// Lifted up from PhysicalView so the sidebar's DRC list can jump to a
     /// selection (and switch tabs) when the user clicks an issue.
     @State private var physicalSelection: PhysicalSelection = .none
+    /// Lifted out of PhysicalView so the Physical-tab inspector can read it
+    /// and surface a "Cancel" button while routing is active — a stand-in
+    /// for the Escape shortcut on iPad, where there's no hardware key.
+    @State private var physicalRoutingState: RoutingState = .idle
     /// Transient ping marker on the physical canvas, set when the user
     /// clicks a DRC issue with a focal point (crossNetMerge, orphanVia,
     /// channelClearance, disconnectedPin). The canvas overlay animates it
@@ -125,6 +129,23 @@ struct DocumentView: View {
     /// pattern), and a `switch` evaluates one view at a time so SwiftUI
     /// doesn't size the window to the widest tab's intrinsic content.
     @ViewBuilder private var detail: some View {
+        detailBody
+            #if !canImport(AppKit)
+            // iPad: DocumentGroup wants to render a filename + "back to
+            // documents" chevron, and the detail column's own toolbar
+            // items want their own bar — by default both render, producing
+            // two stacked bars with two chevrons. `.toolbarRole(.editor)`
+            // tells the system to *merge* the DocumentGroup chrome into
+            // the same bar as the per-tab toolbar items (the editor bar
+            // pattern Apple uses in Pages/Keynote/Notes). It has to live
+            // on the same navigation context as the toolbar items — when
+            // attached to the NavigationSplitView root, the merge happens
+            // at the wrong level and you still get two bars.
+            .toolbarRole(.editor)
+            #endif
+    }
+
+    @ViewBuilder private var detailBody: some View {
         switch selectedTab {
         case .schematic:
             SchematicView(
@@ -138,6 +159,7 @@ struct DocumentView: View {
             PhysicalView(
                 document: $document,
                 selection: $physicalSelection,
+                routingState: $physicalRoutingState,
                 issueFocus: $issueFocus,
                 showInspector: $showInspector,
                 exportMenu: exportMenu
@@ -388,7 +410,11 @@ struct DocumentView: View {
                 )
             }
         case .physical:
-            PhysicalInspector(document: $document)
+            PhysicalInspector(
+                document: $document,
+                selection: $physicalSelection,
+                routingState: $physicalRoutingState
+            )
         case .schematic:
             SchematicInspector(document: $document, selection: $selection)
         }

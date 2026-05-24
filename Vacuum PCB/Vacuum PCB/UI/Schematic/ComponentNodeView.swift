@@ -13,6 +13,12 @@ struct ComponentNodeView: View {
     /// reads it to apply the same offset so the whole group follows
     /// together.
     @Binding var multiDrag: SchematicMultiDrag?
+    /// Forwarded straight to each `PinHandleView` so SchematicCanvasView
+    /// can hit-test the drop pin across every component. Receives the
+    /// pin's owning component id + pin key plus the drag location in
+    /// schematic coords.
+    var onPinDragChanged: (PinRef, CGPoint) -> Void = { _, _ in }
+    var onPinDragEnded: (PinRef, CGPoint) -> Void = { _, _ in }
 
     @State private var dragOffset: CGSize = .zero
     @State private var isRenaming = false
@@ -61,11 +67,14 @@ struct ComponentNodeView: View {
             // Pin handles
             ForEach(component.pinKeys(snapshots: document.circuit.librarySnapshots), id: \.self) { key in
                 let offset = metrics.pinOffset(key)
+                let ref = PinRef(componentId: component.id, pinKey: key)
                 PinHandleView(
                     pinKey: pinDisplayLabel(key),
                     pinType: pinTypeLabel(key),
                     isFirstOfDrawingNet: isFirstPin(key),
-                    onTap: { handlePinTap(key) }
+                    onTap: { handlePinTap(key) },
+                    onDragChanged: { pt in onPinDragChanged(ref, pt) },
+                    onDragEnded: { pt in onPinDragEnded(ref, pt) }
                 )
                 .offset(x: offset.x, y: offset.y)
             }
@@ -240,48 +249,8 @@ struct ComponentNodeView: View {
         case .awaitingSecondPin(let firstPin):
             defer { netDrawState = .idle }
             guard firstPin != ref else { return }    // same pin twice → cancel
-            connect(firstPin: firstPin, secondPin: ref)
+            document.circuit.connectPins(firstPin, ref)
         }
-    }
-
-    /// Adds `secondPin` to the same net as `firstPin`. Cases:
-    /// - Neither pin is on any net → create a new net with both.
-    /// - One pin already on a net → add the other to that net.
-    /// - Both on different nets → merge the two nets (keep the first net's id).
-    /// - Both on the same net → toggle: remove `secondPin` from the net
-    ///   (and delete the net if it falls below 2 pins).
-    private func connect(firstPin: PinRef, secondPin: PinRef) {
-        var nets = document.circuit.logic.nets
-        let firstIdx = nets.firstIndex { $0.pins.contains(firstPin) }
-        let secondIdx = nets.firstIndex { $0.pins.contains(secondPin) }
-
-        switch (firstIdx, secondIdx) {
-        case (nil, nil):
-            let label = document.circuit.logic.nextNetLabel()
-            nets.append(Net(label: label, pins: [firstPin, secondPin]))
-        case (let i?, nil):
-            nets[i].pins.append(secondPin)
-        case (nil, let j?):
-            nets[j].pins.append(firstPin)
-        case (let i?, let j?) where i == j:
-            // Toggle off: remove the second pin from the shared net.
-            nets[i].pins.removeAll { $0 == secondPin }
-            if nets[i].pins.count < 2 {
-                let killedNetId = nets[i].id
-                nets.remove(at: i)
-                document.circuit.physical.routes.removeAll { $0.netId == killedNetId }
-            }
-        case (let a?, let b?):
-            // Merge the higher-index net into the lower-index one and drop the
-            // higher. Removing the higher index leaves the lower untouched.
-            let i = min(a, b), j = max(a, b)
-            let merged = nets[j].pins
-            nets[i].pins.append(contentsOf: merged.filter { !nets[i].pins.contains($0) })
-            let killedNetId = nets[j].id
-            nets.remove(at: j)
-            document.circuit.physical.routes.removeAll { $0.netId == killedNetId }
-        }
-        document.circuit.logic.nets = nets
     }
 
     // MARK: - Rename

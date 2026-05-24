@@ -357,6 +357,49 @@ extension CircuitDocument {
         librarySnapshots = librarySnapshots.filter { referenced.contains($0.key) }
     }
 
+    /// Wire two pins on the schematic. Both tap-to-tap and drag-to-pin
+    /// flows commit through here so the four pin/net states (neither on a
+    /// net, one on a net, on different nets, on the same net) only need
+    /// one implementation:
+    ///   * neither on a net → create a new net with both,
+    ///   * one on a net → add the other to it,
+    ///   * different nets → merge the higher-index into the lower,
+    ///   * same net → toggle: remove the second; drop the net if it
+    ///     falls below two pins.
+    /// In every removal case the associated physical routes are deleted
+    /// so a dead net doesn't leak orphan segments.
+    mutating func connectPins(_ first: PinRef, _ second: PinRef) {
+        guard first != second else { return }
+        var nets = logic.nets
+        let firstIdx = nets.firstIndex { $0.pins.contains(first) }
+        let secondIdx = nets.firstIndex { $0.pins.contains(second) }
+
+        switch (firstIdx, secondIdx) {
+        case (nil, nil):
+            let label = logic.nextNetLabel()
+            nets.append(Net(label: label, pins: [first, second]))
+        case (let i?, nil):
+            nets[i].pins.append(second)
+        case (nil, let j?):
+            nets[j].pins.append(first)
+        case (let i?, let j?) where i == j:
+            nets[i].pins.removeAll { $0 == second }
+            if nets[i].pins.count < 2 {
+                let killedNetId = nets[i].id
+                nets.remove(at: i)
+                physical.routes.removeAll { $0.netId == killedNetId }
+            }
+        case (let a?, let b?):
+            let i = min(a, b), j = max(a, b)
+            let merged = nets[j].pins
+            nets[i].pins.append(contentsOf: merged.filter { !nets[i].pins.contains($0) })
+            let killedNetId = nets[j].id
+            nets.remove(at: j)
+            physical.routes.removeAll { $0.netId == killedNetId }
+        }
+        logic.nets = nets
+    }
+
     /// Library lookup used by migrations to resolve a sub-part's referenced
     /// library document. Defined as a typealias rather than always going
     /// through `PartsLibrary.shared` so `PartsLibrary.reload()` can supply

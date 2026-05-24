@@ -12,6 +12,13 @@ struct PinHandleView: View {
     let pinType: String?
     let isFirstOfDrawingNet: Bool
     let onTap: () -> Void
+    /// Drag callbacks used to draw a net by dragging from this pin and
+    /// releasing on another. Locations come back in the schematic-canvas
+    /// coord space (same units pin positions are stored in) so the parent
+    /// can hit-test directly. Defaults to no-op so passive call sites
+    /// don't have to provide them.
+    var onDragChanged: (CGPoint) -> Void = { _ in }
+    var onDragEnded: (CGPoint) -> Void = { _ in }
 
     @State private var hovered = false
     /// On touch platforms the chip is surfaced by a tap (and self-dismisses
@@ -22,12 +29,16 @@ struct PinHandleView: View {
         pinKey: String,
         pinType: String? = nil,
         isFirstOfDrawingNet: Bool,
-        onTap: @escaping () -> Void
+        onTap: @escaping () -> Void,
+        onDragChanged: @escaping (CGPoint) -> Void = { _ in },
+        onDragEnded: @escaping (CGPoint) -> Void = { _ in }
     ) {
         self.pinKey = pinKey
         self.pinType = pinType
         self.isFirstOfDrawingNet = isFirstOfDrawingNet
         self.onTap = onTap
+        self.onDragChanged = onDragChanged
+        self.onDragEnded = onDragEnded
     }
 
     var body: some View {
@@ -46,6 +57,18 @@ struct PinHandleView: View {
                 if InputPlatform.isTouch { flashTouchChip() }
                 onTap()
             }
+            // Drag-from-pin draws a net to wherever the user releases.
+            // minimumDistance keeps a small wobble from turning a tap into
+            // an accidental drag — short presses still fall through to
+            // .onTapGesture. The coord space name is set on
+            // SchematicCanvasView's scaled inner content so values arrive
+            // pre-scaled, in the same schematic units pin positions live in.
+            .gesture(
+                DragGesture(minimumDistance: InputPlatform.isTouch ? 8 : 4,
+                            coordinateSpace: .named("schematic-canvas"))
+                    .onChanged { value in onDragChanged(value.location) }
+                    .onEnded   { value in onDragEnded(value.location) }
+            )
             .overlay(alignment: .bottom) {
                 if showChip {
                     hoverChip

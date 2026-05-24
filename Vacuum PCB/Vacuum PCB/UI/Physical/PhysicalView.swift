@@ -9,6 +9,10 @@ struct PhysicalView: View {
     /// Lifted to DocumentView so the sidebar's DRC list can drive
     /// highlight-on-click.
     @Binding var selection: PhysicalSelection
+    /// Lifted to DocumentView so the right-hand inspector can read the
+    /// in-progress routing state and offer a "Cancel" button (the iPad
+    /// stand-in for Escape, which has no key without an external keyboard).
+    @Binding var routingState: RoutingState
     /// Transient ping marker for the DRC focus-on-click affordance. Owned
     /// by DocumentView (it's also the one that schedules the auto-clear);
     /// we pass it through to the canvas overlay.
@@ -20,7 +24,6 @@ struct PhysicalView: View {
     /// before the Inspector toggle on the trailing edge.
     let exportMenu: ExportMenuButton
 
-    @State private var routingState: RoutingState = .idle
     @State private var visible: LayerVisibility = .both
     @State private var routingLayer: Layer = .top
     @State private var routingError: String?
@@ -188,6 +191,11 @@ struct PhysicalView: View {
 /// this view so it appears when the user drives the destructive action.
 struct PhysicalInspector: View {
     @Binding var document: VPCBDocument
+    /// Read by the contextual section at the top so the inspector mirrors
+    /// the canvas's current selection / routing state. Same bindings the
+    /// canvas itself writes through.
+    @Binding var selection: PhysicalSelection
+    @Binding var routingState: RoutingState
 
     @State private var pendingLayerRemoval: PendingLayerRemoval?
     @FocusState private var boardFieldFocused: BoardField?
@@ -196,6 +204,11 @@ struct PhysicalInspector: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            PhysicalContextSection(
+                document: $document,
+                selection: $selection,
+                routingState: $routingState
+            )
             Form {
                 Section("Board") {
                     HStack(spacing: 6) {
@@ -473,5 +486,201 @@ struct PhysicalInspector: View {
                 document.circuit.physical.routes.append(Route(netId: entry.netId, segments: [entry.segment]))
             }
         }
+    }
+}
+
+/// Contextual action block at the top of the physical inspector. Shows
+/// nothing for an empty / canvas-idle state; surfaces Rotate / Flip /
+/// Delete when one or more placements are selected; surfaces Delete on
+/// route-segment selection; surfaces Cancel while a route is being laid
+/// out. Same actions the keyboard shortcuts trigger on macOS — these
+/// buttons are the only path on iPad.
+struct PhysicalContextSection: View {
+    @Binding var document: VPCBDocument
+    @Binding var selection: PhysicalSelection
+    @Binding var routingState: RoutingState
+
+    var body: some View {
+        Group {
+            if routingState.inProgress {
+                container { routingActions }
+            } else if !selection.placements.isEmpty {
+                container { placementActions }
+            } else if selection.routeSegment != nil {
+                container { routeSegmentActions }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func container<C: View>(@ViewBuilder _ content: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            content()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial)
+    }
+
+    @ViewBuilder private var routingActions: some View {
+        Text("Routing")
+            .font(.caption.bold())
+            .foregroundStyle(.secondary)
+        Button {
+            routingState = .idle
+        } label: {
+            Label("Cancel routing", systemImage: "xmark.circle")
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.regular)
+    }
+
+    @ViewBuilder private var placementActions: some View {
+        Text(placementHeader)
+            .font(.caption.bold())
+            .foregroundStyle(.secondary)
+        HStack(spacing: 6) {
+            Button {
+                PhysicalActions.rotate(document: &document, selection: selection)
+            } label: {
+                Label("Rotate", systemImage: "rotate.right")
+                    .frame(maxWidth: .infinity)
+            }
+            .help("Rotate 90° clockwise (R)")
+            Button {
+                PhysicalActions.flipLayer(document: &document, selection: selection)
+            } label: {
+                Label("Flip", systemImage: "arrow.up.arrow.down")
+                    .frame(maxWidth: .infinity)
+            }
+            .help("Cycle plate / layer (F)")
+        }
+        .buttonStyle(.bordered)
+        Button(role: .destructive) {
+            PhysicalActions.delete(document: &document, selection: &selection)
+        } label: {
+            Label("Delete", systemImage: "trash")
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.bordered)
+    }
+
+    @ViewBuilder private var routeSegmentActions: some View {
+        Text("Route segment")
+            .font(.caption.bold())
+            .foregroundStyle(.secondary)
+        Button(role: .destructive) {
+            PhysicalActions.delete(document: &document, selection: &selection)
+        } label: {
+            Label("Delete segment", systemImage: "trash")
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.bordered)
+    }
+
+    private var placementHeader: String {
+        let n = selection.placements.count
+        return n == 1 ? "Placement" : "\(n) placements"
+    }
+}
+
+/// Mutations the physical canvas and its inspector both trigger.
+///
+/// Originally lived as private methods on `PhysicalCanvasView` and were
+/// only reachable via keyboard shortcuts (R / F / ⌫). Lifted out so the
+/// inspector's contextual action buttons can drive the same code on iPad
+/// (where those shortcuts aren't available without an external keyboard).
+enum PhysicalActions {
+    /// Rotate every selected placement by 90° around its own anchor. The
+    /// multi-select case deliberately rotates each member independently
+    /// (not around the selection centroid) because users typically reach
+    /// for this to fix orientation on a row of identical parts.
+    static func rotate(document: inout VPCBDocument, selection: PhysicalSelection) {
+        guard !selection.placements.isEmpty else { return }
+        for id in selection.placements {
+            guard let i = document.circuit.physical.placements
+                .firstIndex(where: { $0.componentId == id })
+            else { continue }
+            let next: Rotation
+            switch document.circuit.physical.placements[i].rotation {
+            case .r0:   next = .r90
+            case .r90:  next = .r180
+            case .r180: next = .r270
+            case .r270: next = .r0
+            }
+            document.circuit.physical.placements[i].rotation = next
+        }
+    }
+
+    /// Cycle each selected placement's layer. Pure-hole components
+    /// (resistors as tubes; ports / vents / vacuum sources as edge
+    /// bores) step through every channel layer the board defines.
+    /// Transistors and other dimple-bearing kinds simply flip to the
+    /// opposite plate at depth 0 since their geometry is pinned to the
+    /// silicone face.
+    static func flipLayer(document: inout VPCBDocument, selection: PhysicalSelection) {
+        guard !selection.placements.isEmpty else { return }
+        let cycle = document.circuit.physical.layers(in: .top)
+            + document.circuit.physical.layers(in: .bottom)
+        for id in selection.placements {
+            guard let i = document.circuit.physical.placements
+                .firstIndex(where: { $0.componentId == id })
+            else { continue }
+            let placement = document.circuit.physical.placements[i]
+            let component = document.circuit.logic.components
+                .first(where: { $0.id == id })
+            let cyclesLayers: Bool = {
+                switch component?.kind {
+                case .resistor, .port, .vacuumSource, .atmVent: return true
+                default: return false
+                }
+            }()
+            if cyclesLayers, !cycle.isEmpty {
+                let current = Layer(plate: placement.layer, depth: placement.depth)
+                let idx = cycle.firstIndex(of: current) ?? 0
+                let next = cycle[(idx + 1) % cycle.count]
+                document.circuit.physical.placements[i].layer = next.plate
+                document.circuit.physical.placements[i].depth = next.depth
+            } else {
+                document.circuit.physical.placements[i].layer = placement.layer.opposite
+                document.circuit.physical.placements[i].depth = 0
+            }
+        }
+    }
+
+    /// Bulk-delete everything in the selection: placements (the logic-side
+    /// component isn't touched — schematic edits delete those), the focused
+    /// route segment, and every segment that contains a marquee-selected
+    /// waypoint. Selection is cleared to `.none` once done.
+    static func delete(document: inout VPCBDocument, selection: inout PhysicalSelection) {
+        if !selection.placements.isEmpty {
+            for id in selection.placements {
+                document.circuit.physical.placements.removeAll { $0.componentId == id }
+            }
+        }
+        var toRemove: [UUID: Set<Int>] = [:]
+        for addr in selection.waypoints {
+            toRemove[addr.netId, default: []].insert(addr.segmentIndex)
+        }
+        if let seg = selection.routeSegment {
+            toRemove[seg.netId, default: []].insert(seg.segmentIndex)
+        }
+        for (netId, segIndices) in toRemove {
+            guard let rIdx = document.circuit.physical.routes
+                .firstIndex(where: { $0.netId == netId })
+            else { continue }
+            // Descending so earlier removals don't shift later indices.
+            for sIdx in segIndices.sorted(by: >) {
+                if sIdx < document.circuit.physical.routes[rIdx].segments.count {
+                    document.circuit.physical.routes[rIdx].segments.remove(at: sIdx)
+                }
+            }
+            if document.circuit.physical.routes[rIdx].segments.isEmpty {
+                document.circuit.physical.routes.remove(at: rIdx)
+            }
+        }
+        selection = .none
     }
 }

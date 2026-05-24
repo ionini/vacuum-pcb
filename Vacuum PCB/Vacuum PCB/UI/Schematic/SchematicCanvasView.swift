@@ -185,7 +185,9 @@ struct SchematicCanvasView: View {
                     document: $document,
                     selection: $selection,
                     netDrawState: $netDrawState,
-                    multiDrag: $multiDrag
+                    multiDrag: $multiDrag,
+                    onPinDragChanged: handlePinDragChanged,
+                    onPinDragEnded: handlePinDragEnded
                 )
                 .position(x: pos.x, y: pos.y)
             }
@@ -197,6 +199,14 @@ struct SchematicCanvasView: View {
 
             marqueeOverlay
         }
+        // Named coord space the pin-handle drag gesture reports in.
+        // Attached inside the scaled subtree (before the parent's
+        // scaleEffect/offset are applied) so gesture locations arrive in
+        // unscaled schematic units — the same coord system pin/component
+        // positions live in. Putting this on the outer modifier chain
+        // would yield post-scaled screen pts instead and the hit test
+        // would drift with zoom/pan.
+        .coordinateSpace(name: "schematic-canvas")
         .onContinuousHover { phase in
             // Local-coord hover lives inside the scaled subtree so its
             // value is already in schematic units — usable directly for
@@ -391,6 +401,61 @@ struct SchematicCanvasView: View {
         .allowsHitTesting(false)
     }
 
+    // MARK: - Pin drag (drag-to-route)
+
+    /// Live drag update from a pin handle: start the net draw on the first
+    /// tick (so the rubber-band locks to this pin) and keep `mouseLocation`
+    /// in step with the finger/cursor so the rendered line follows it.
+    private func handlePinDragChanged(_ ref: PinRef, at canvasPt: CGPoint) {
+        if case .idle = netDrawState {
+            netDrawState = .awaitingSecondPin(firstPin: ref)
+        }
+        mouseLocation = canvasPt
+    }
+
+    /// Release on another pin commits the net; release in empty space
+    /// leaves the awaiting-second-pin state intact so a follow-up tap can
+    /// finish the connection. Mirrors the physical canvas's drag-to-route.
+    private func handlePinDragEnded(_ ref: PinRef, at canvasPt: CGPoint) {
+        guard case .awaitingSecondPin(let firstPin) = netDrawState else { return }
+        guard let target = pinHit(at: canvasPt) else {
+            // No drop pin — leave the net draw active so the user can
+            // finish with a tap.
+            return
+        }
+        defer { netDrawState = .idle }
+        guard target != firstPin else { return }
+        document.circuit.connectPins(firstPin, target)
+        _ = ref  // touched so the auto-capture is explicit in the diff
+    }
+
+    /// Nearest visible pin under a schematic-space point, with a slop
+    /// radius matched to the pin handle's hit zone. Iterates every
+    /// component's pins; the schematic graph is small enough that this
+    /// linear scan never shows up in practice.
+    private func pinHit(at schematicPt: CGPoint) -> PinRef? {
+        let radius: Double = InputPlatform.isTouch ? 18 : 14
+        let radiusSq = radius * radius
+        var best: (ref: PinRef, distSq: Double)?
+        for component in document.circuit.logic.components where component.kind != .screw {
+            guard let center = document.circuit.schematic.position(for: component.id) else { continue }
+            let metrics = ComponentSymbolMetrics.metrics(
+                for: component,
+                snapshots: document.circuit.librarySnapshots
+            )
+            for key in component.pinKeys(snapshots: document.circuit.librarySnapshots) {
+                let off = metrics.pinOffset(key)
+                let dx = Double(schematicPt.x) - (center.x + off.x)
+                let dy = Double(schematicPt.y) - (center.y + off.y)
+                let d2 = dx * dx + dy * dy
+                if d2 <= radiusSq, d2 < (best?.distSq ?? .greatestFiniteMagnitude) {
+                    best = (PinRef(componentId: component.id, pinKey: key), d2)
+                }
+            }
+        }
+        return best?.ref
+    }
+
     private func pinScreenPosition(_ ref: PinRef) -> CGPoint? {
         guard let comp = document.circuit.logic.components.first(where: { $0.id == ref.componentId }),
               let center = document.circuit.schematic.position(for: ref.componentId)
@@ -445,29 +510,6 @@ struct SchematicCanvasView: View {
     // MARK: - Deletion
 
     private func deleteSelection() {
-        for id in selection.components {
-            deleteComponent(id)
-        }
-        if let netId = selection.net {
-            deleteNet(netId)
-        }
-        selection = .none
-    }
-
-    private func deleteComponent(_ id: UUID) {
-        document.circuit.logic.components.removeAll { $0.id == id }
-        document.circuit.schematic.remove(componentId: id)
-        for i in document.circuit.logic.nets.indices {
-            document.circuit.logic.nets[i].pins.removeAll { $0.componentId == id }
-        }
-        let dead = document.circuit.logic.nets.filter { $0.pins.count < 2 }.map(\.id)
-        document.circuit.logic.nets.removeAll { dead.contains($0.id) }
-        document.circuit.physical.routes.removeAll { dead.contains($0.netId) }
-        document.circuit.physical.placements.removeAll { $0.componentId == id }
-    }
-
-    private func deleteNet(_ id: UUID) {
-        document.circuit.logic.nets.removeAll { $0.id == id }
-        document.circuit.physical.routes.removeAll { $0.netId == id }
+        SchematicActions.delete(document: &document, selection: &selection)
     }
 }

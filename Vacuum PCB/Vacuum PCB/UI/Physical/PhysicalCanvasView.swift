@@ -781,13 +781,20 @@ struct PhysicalCanvasView: View {
                         if visible.contains(pinLayer) {
                             let world = placement.worldPosition(of: pin)
                             let screen = transform.toScreen(world)
+                            let id = placement.componentId
+                            let key = pin.key
                             PhysicalPinHandle(
                                 pinKey: pinDisplayLabel(component: component, key: pin.key),
                                 layer: pinLayer,
-                                isFirstOfRouting: isFirstRoutingPin(componentId: placement.componentId, key: pin.key)
-                            ) {
-                                handlePinTap(componentId: placement.componentId, pinKey: pin.key)
-                            }
+                                isFirstOfRouting: isFirstRoutingPin(componentId: id, key: key),
+                                onTap: { handlePinTap(componentId: id, pinKey: key) },
+                                onDragChanged: { canvasPt in
+                                    handlePinDragChanged(componentId: id, pinKey: key, at: canvasPt)
+                                },
+                                onDragEnded: { canvasPt in
+                                    handlePinDragEnded(componentId: id, pinKey: key, at: canvasPt)
+                                }
+                            )
                             .position(screen)
                             .offset(dragOffset(for: placement.componentId))
                         }
@@ -1041,47 +1048,11 @@ struct PhysicalCanvasView: View {
         selection = .routeSegment(netId: hit.netId, segmentIndex: hit.segIdx)
     }
 
-    /// Bulk-delete everything in the current selection:
-    ///  * placements (just remove the placement; the logic-side component
-    ///    isn't touched — schematic edits delete those),
-    ///  * the focused route segment,
-    ///  * every segment that contains a marquee-selected waypoint (so a
-    ///    Cmd-marquee around a subcircuit can wipe the routes too).
-    ///
-    /// We collect the segment-removal set first, then process per-net in
-    /// descending segment-index order so removing earlier segments doesn't
-    /// shift indices of segments we still want to remove.
+    /// Bulk-delete everything in the current selection. Lives in
+    /// `PhysicalActions` so the inspector's contextual Delete button can
+    /// invoke the exact same path as the ⌫ shortcut.
     private func deleteCurrentSelection() {
-        if !selection.placements.isEmpty {
-            for id in selection.placements {
-                document.circuit.physical.placements.removeAll { $0.componentId == id }
-            }
-        }
-
-        // Build the (netId, segmentIndex) set to remove from waypoint hits
-        // and the focused route segment.
-        var toRemove: [UUID: Set<Int>] = [:]
-        for addr in selection.waypoints {
-            toRemove[addr.netId, default: []].insert(addr.segmentIndex)
-        }
-        if let seg = selection.routeSegment {
-            toRemove[seg.netId, default: []].insert(seg.segmentIndex)
-        }
-
-        for (netId, segIndices) in toRemove {
-            guard let rIdx = document.circuit.physical.routes.firstIndex(where: { $0.netId == netId })
-            else { continue }
-            // Descending so earlier removals don't shift later indices.
-            for sIdx in segIndices.sorted(by: >) {
-                if sIdx < document.circuit.physical.routes[rIdx].segments.count {
-                    document.circuit.physical.routes[rIdx].segments.remove(at: sIdx)
-                }
-            }
-            if document.circuit.physical.routes[rIdx].segments.isEmpty {
-                document.circuit.physical.routes.remove(at: rIdx)
-            }
-        }
-        selection = .none
+        PhysicalActions.delete(document: &document, selection: &selection)
     }
 
     private func projectPoint(_ p: CGPoint, ontoSegmentFrom a: CGPoint, to b: CGPoint) -> CGPoint {
@@ -1373,6 +1344,61 @@ struct PhysicalCanvasView: View {
         return hypot(Double(p.x - projX), Double(p.y - projY))
     }
 
+    /// First tick of a drag that started on a pin: begin routing from this
+    /// pin (if idle) and update `mouseLocation` so `RoutingPreviewOverlay`
+    /// follows the finger. Routing-already-in-progress drags just update
+    /// the cursor without re-tapping the pin.
+    private func handlePinDragChanged(componentId: UUID, pinKey: String, at canvasPt: CGPoint) {
+        if !routingState.inProgress {
+            handlePinTap(componentId: componentId, pinKey: pinKey)
+        }
+        mouseLocation = canvasPt
+    }
+
+    /// Release on another pin commits the route to it; release in empty
+    /// space drops a waypoint at the release point so the user can keep
+    /// extending with subsequent taps. Mirrors the click-then-click flow,
+    /// just driven by a single drag instead.
+    private func handlePinDragEnded(componentId: UUID, pinKey: String, at canvasPt: CGPoint) {
+        if let target = pinHit(at: canvasPt) {
+            handlePinTap(componentId: target.componentId, pinKey: target.pinKey)
+            return
+        }
+        // No pin under the release: treat it the same as a tap on empty
+        // canvas at that point (extends the in-progress route there). Skip
+        // if routing isn't actually in flight — that can happen when the
+        // drag was too small to start one but somehow still reached
+        // onEnded with onChanged never firing.
+        if routingState.inProgress {
+            handleBackgroundTap(at: canvasPt)
+        }
+    }
+
+    /// Nearest visible pin under a canvas-local point, within a forgiving
+    /// touch-friendly radius. Mirrors the same world→screen projection the
+    /// renderer uses so the user's eye and the hit test stay aligned.
+    private func pinHit(at canvasPt: CGPoint) -> (componentId: UUID, pinKey: String)? {
+        let radius: Double = InputPlatform.isTouch ? 26 : 18
+        let radiusSq = radius * radius
+        var best: (componentId: UUID, pinKey: String, distSq: Double)?
+        for placement in document.circuit.physical.placements {
+            guard let component = component(for: placement.componentId) else { continue }
+            for pin in component.footprint(manufacturing, snapshots: librarySnapshots).pins {
+                let pinLayer = placement.resolvedLayer(of: pin, on: component)
+                guard visible.contains(pinLayer) else { continue }
+                let world = placement.worldPosition(of: pin)
+                let screen = transform.toScreen(world)
+                let dx = Double(canvasPt.x - screen.x)
+                let dy = Double(canvasPt.y - screen.y)
+                let d2 = dx * dx + dy * dy
+                if d2 <= radiusSq, d2 < (best?.distSq ?? .greatestFiniteMagnitude) {
+                    best = (placement.componentId, pin.key, d2)
+                }
+            }
+        }
+        return best.map { ($0.componentId, $0.pinKey) }
+    }
+
     private func handlePinTap(componentId: UUID, pinKey: String) {
         guard let placement = document.circuit.physical.placements.first(where: { $0.componentId == componentId }),
               let component = component(for: componentId),
@@ -1516,60 +1542,12 @@ struct PhysicalCanvasView: View {
         deleteCurrentSelection()
     }
 
-    /// R rotates each selected placement by 90° in place. Multi-selection
-    /// rotates every member independently around its own anchor (rather
-    /// than rotating the bounding box around its centroid), which matches
-    /// what users typically want when they multi-select to "fix orientation
-    /// on a row of parts."
     private func rotateSelection() {
-        guard !selection.placements.isEmpty else { return }
-        for id in selection.placements {
-            guard let i = document.circuit.physical.placements.firstIndex(where: { $0.componentId == id })
-            else { continue }
-            let next: Rotation
-            switch document.circuit.physical.placements[i].rotation {
-            case .r0: next = .r90
-            case .r90: next = .r180
-            case .r180: next = .r270
-            case .r270: next = .r0
-            }
-            document.circuit.physical.placements[i].rotation = next
-        }
+        PhysicalActions.rotate(document: &document, selection: selection)
     }
 
     private func flipLayerSelection() {
-        guard !selection.placements.isEmpty else { return }
-        // Build the cycle order once — T0, T1, …, Tn-1, B0, B1, …, Bm-1.
-        // Pure-hole components (resistors are tubes; ports/vents/vacuum
-        // sources are edge bores) step one position along this cycle on
-        // each F press, so F walks them through every channel layer the
-        // board has. Transistors keep the "flip plate" behaviour because
-        // their dimple/dome geometry is pinned to the silicone-facing
-        // depth-0 layer.
-        let cycle = document.circuit.physical.layers(in: .top)
-            + document.circuit.physical.layers(in: .bottom)
-        for id in selection.placements {
-            guard let i = document.circuit.physical.placements.firstIndex(where: { $0.componentId == id })
-            else { continue }
-            let placement = document.circuit.physical.placements[i]
-            let component = document.circuit.logic.components.first(where: { $0.id == id })
-            let cyclesLayers: Bool = {
-                switch component?.kind {
-                case .resistor, .port, .vacuumSource, .atmVent: return true
-                default: return false
-                }
-            }()
-            if cyclesLayers, !cycle.isEmpty {
-                let current = Layer(plate: placement.layer, depth: placement.depth)
-                let idx = cycle.firstIndex(of: current) ?? 0
-                let next = cycle[(idx + 1) % cycle.count]
-                document.circuit.physical.placements[i].layer = next.plate
-                document.circuit.physical.placements[i].depth = next.depth
-            } else {
-                document.circuit.physical.placements[i].layer = placement.layer.opposite
-                document.circuit.physical.placements[i].depth = 0
-            }
-        }
+        PhysicalActions.flipLayer(document: &document, selection: selection)
     }
 
     // MARK: - Disambiguator (click-and-hold)
@@ -1767,6 +1745,14 @@ struct PhysicalPinHandle: View {
     let layer: Layer
     let isFirstOfRouting: Bool
     let onTap: () -> Void
+    /// Live drag callbacks used to let the user draw a route by dragging
+    /// from this pin and releasing on another. Locations are reported in
+    /// the canvas's "canvas" coordinate space so the receiver can hit-test
+    /// directly against the same screen positions it uses for pin rendering.
+    /// Defaults to no-op so existing call sites (and tests) don't need to
+    /// supply them.
+    var onDragChanged: (CGPoint) -> Void = { _ in }
+    var onDragEnded: (CGPoint) -> Void = { _ in }
 
     @State private var hovered = false
     /// On touch platforms the pin label briefly pops on tap, so the user
@@ -1790,6 +1776,18 @@ struct PhysicalPinHandle: View {
                 if InputPlatform.isTouch { flashTouchChip() }
                 onTap()
             }
+            // Drag-from-pin starts (or extends) a route and follows the
+            // finger/cursor. minimumDistance keeps a slight wobble from
+            // turning a tap into an accidental drag — taps under that
+            // threshold still fall through to .onTapGesture. The
+            // coordinate space name is set on PhysicalCanvasView's outer
+            // ZStack and matches the one `mouseLocation` lives in.
+            .gesture(
+                DragGesture(minimumDistance: InputPlatform.isTouch ? 8 : 4,
+                            coordinateSpace: .named("canvas"))
+                    .onChanged { value in onDragChanged(value.location) }
+                    .onEnded   { value in onDragEnded(value.location) }
+            )
             .overlay(alignment: .bottom) {
                 if showChip {
                     pinLabelChip
