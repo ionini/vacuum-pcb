@@ -51,6 +51,42 @@ extension RoutesOverlay {
     var body: some View {
         Canvas { ctx, _ in
             let channelStroke = max(1.5, manufacturing.channelDiameter * transform.ptsPerMm * 0.85)
+            // When a route segment is selected, every other segment on the
+            // same net renders a translucent accent-coloured halo below the
+            // normal stroke so the user can see the whole net as one shape —
+            // useful for catching stranded segments and confirming routing
+            // is actually complete.
+            let highlightedNetId: UUID? = selection.routeSegment?.netId
+            if let netId = highlightedNetId {
+                for route in document.physical.routes where route.netId == netId {
+                    for (segIdx, segment) in route.segments.enumerated() {
+                        guard visible.contains(segment.layer) else { continue }
+                        // Skip the selected segment itself — its existing
+                        // accent-coloured wider stroke is already the visual
+                        // anchor; stacking a halo on top adds nothing.
+                        if selectionMatches(netId: route.netId, segmentIndex: segIdx) { continue }
+                        let positions = waypoints(
+                            for: route.netId, segmentIndex: segIdx,
+                            fallback: segment.waypoints.map(\.position)
+                        )
+                        let pts = positions.map { transform.toScreen($0) }
+                        guard pts.count >= 2 else { continue }
+                        var path = Path()
+                        path.move(to: pts[0])
+                        for p in pts.dropFirst() { path.addLine(to: p) }
+                        ctx.stroke(
+                            path,
+                            with: .color(Color.accentColor.opacity(0.35)),
+                            style: StrokeStyle(
+                                lineWidth: channelStroke + 5,
+                                lineCap: .round,
+                                lineJoin: .round
+                            )
+                        )
+                    }
+                }
+            }
+
             for route in document.physical.routes {
                 for (segIdx, segment) in route.segments.enumerated() {
                     guard visible.contains(segment.layer) else { continue }
