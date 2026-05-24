@@ -116,4 +116,40 @@ struct PhysicalLayout: Codable, Hashable {
     func layers(in plate: Plate) -> [Layer] {
         (0..<layerCount(for: plate)).map { Layer(plate: plate, depth: $0) }
     }
+
+    /// Via XYs that pair a T0 segment with a B0 segment on the *same net* —
+    /// the only via kind that actually punches through the silicone sheet
+    /// sandwiched between the plates. Same-plate vias (a route stepping
+    /// between depths inside one plate) never cross silicone and are skipped.
+    ///
+    /// Used by the silicone-sheet view overlay and the stencil CAD pass.
+    /// Matching uses a 0.05 mm tolerance, the same the rest of the
+    /// codebase uses for paired-via bookkeeping.
+    func crossSiliconeViaPositions() -> [Point] {
+        let eps = 0.05
+        var result: [Point] = []
+        for route in routes {
+            var topPositions: [Point] = []
+            var bottomPositions: [Point] = []
+            for segment in route.segments where segment.layer.depth == 0 {
+                for wp in segment.waypoints where wp.kind == .via {
+                    switch segment.layer.plate {
+                    case .top:    topPositions.append(wp.position)
+                    case .bottom: bottomPositions.append(wp.position)
+                    }
+                }
+            }
+            for p in topPositions {
+                let matched = bottomPositions.contains {
+                    abs($0.x - p.x) < eps && abs($0.y - p.y) < eps
+                }
+                guard matched else { continue }
+                let alreadyAdded = result.contains {
+                    abs($0.x - p.x) < eps && abs($0.y - p.y) < eps
+                }
+                if !alreadyAdded { result.append(p) }
+            }
+        }
+        return result
+    }
 }

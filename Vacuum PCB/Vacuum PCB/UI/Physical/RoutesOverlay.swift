@@ -181,7 +181,7 @@ struct SiliconeSheetViasOverlay: View {
     var body: some View {
         Canvas { ctx, _ in
             let radius = max(4, manufacturing.channelDiameter / 2 * transform.ptsPerMm)
-            for position in crossSiliconeViaPositions() {
+            for position in document.physical.crossSiliconeViaPositions() {
                 let center = transform.toScreen(position)
                 let rect = CGRect(
                     x: center.x - radius, y: center.y - radius,
@@ -197,32 +197,6 @@ struct SiliconeSheetViasOverlay: View {
         .allowsHitTesting(false)
     }
 
-    private func crossSiliconeViaPositions() -> [Point] {
-        var result: [Point] = []
-        for route in document.physical.routes {
-            var topPositions: [Point] = []
-            var bottomPositions: [Point] = []
-            for segment in route.segments where segment.layer.depth == 0 {
-                for wp in segment.waypoints where wp.kind == .via {
-                    switch segment.layer.plate {
-                    case .top:    topPositions.append(wp.position)
-                    case .bottom: bottomPositions.append(wp.position)
-                    }
-                }
-            }
-            for p in topPositions {
-                let matched = bottomPositions.contains {
-                    abs($0.x - p.x) < 0.05 && abs($0.y - p.y) < 0.05
-                }
-                guard matched else { continue }
-                let alreadyAdded = result.contains {
-                    abs($0.x - p.x) < 0.05 && abs($0.y - p.y) < 0.05
-                }
-                if !alreadyAdded { result.append(p) }
-            }
-        }
-        return result
-    }
 }
 
 /// Overlay showing the in-progress polyline while the user is routing.

@@ -136,6 +136,23 @@ struct ManufacturingConstants: Codable, Hashable {
     /// outer face.
     var screwNutDepth: Double
 
+    /// Thickness of the auxiliary stencil sheet exported alongside the
+    /// plates. The stencil is a flat body matching the board outline with
+    /// through-holes at every cross-silicone via and screw shaft — print it
+    /// next to the plates, lay it over the silicone, and the holes guide
+    /// the silicone cuts at assembly. Default 0.2 mm tracks a typical
+    /// silicone sheet so the stencil reads as a 1:1 cutting template.
+    var stencilThickness: Double
+
+    /// Minimum acceptable wall of printed material between a channel and any
+    /// nearby feature (the board's outer face, another channel, a via, a
+    /// drop bore). Drives the wall-thickness DRC check — anything thinner is
+    /// at risk of breaking through during print or under fluid pressure.
+    /// Distinct from `minChannelSpacing`: that one is centre-to-centre
+    /// between two channels on the same layer; this is wall-thickness, so
+    /// it deducts the participating feature radii from the centre distance.
+    var minWallThickness: Double
+
     static let defaults = ManufacturingConstants(
         plateThickness: 4.0,
         channelDiameter: 1.5,
@@ -159,7 +176,9 @@ struct ManufacturingConstants: Codable, Hashable {
         screwProtrusion: 0,
         screwDomeBaseDiameter: 8.1,
         screwHeadDepth: 2.7,
-        screwNutDepth: 1.7
+        screwNutDepth: 1.7,
+        stencilThickness: 0.2,
+        minWallThickness: 0.5
     )
 
     // Codable hand-rolled so older .vpcb files (written before
@@ -175,6 +194,8 @@ struct ManufacturingConstants: Codable, Hashable {
         case plateCornerFillet
         case ledDimpleDiameter, ledDimpleDepth
         case screwProtrusion, screwDomeBaseDiameter, screwHeadDepth, screwNutDepth
+        case stencilThickness
+        case minWallThickness
     }
 
     init(plateThickness: Double, channelDiameter: Double,
@@ -187,7 +208,9 @@ struct ManufacturingConstants: Codable, Hashable {
          interLayerWall: Double, plateCornerFillet: Double,
          ledDimpleDiameter: Double, ledDimpleDepth: Double,
          screwProtrusion: Double, screwDomeBaseDiameter: Double,
-         screwHeadDepth: Double, screwNutDepth: Double) {
+         screwHeadDepth: Double, screwNutDepth: Double,
+         stencilThickness: Double,
+         minWallThickness: Double) {
         self.plateThickness = plateThickness
         self.channelDiameter = channelDiameter
         self.portBoreDiameter = portBoreDiameter
@@ -211,6 +234,8 @@ struct ManufacturingConstants: Codable, Hashable {
         self.screwDomeBaseDiameter = screwDomeBaseDiameter
         self.screwHeadDepth = screwHeadDepth
         self.screwNutDepth = screwNutDepth
+        self.stencilThickness = stencilThickness
+        self.minWallThickness = minWallThickness
     }
 
     /// Outer length of the resistor footprint (pin-to-pin distance). Constant
@@ -260,6 +285,10 @@ struct ManufacturingConstants: Codable, Hashable {
                                                forKey: .screwHeadDepth) ?? 2.7
         screwNutDepth = try c.decodeIfPresent(Double.self,
                                               forKey: .screwNutDepth) ?? 1.7
+        stencilThickness = try c.decodeIfPresent(Double.self,
+                                                 forKey: .stencilThickness) ?? 0.2
+        minWallThickness = try c.decodeIfPresent(Double.self,
+                                                 forKey: .minWallThickness) ?? 0.5
     }
 
     /// Effective thickness of a plate with `layerCount` channel layers. The

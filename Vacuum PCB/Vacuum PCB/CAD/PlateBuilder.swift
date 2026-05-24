@@ -20,6 +20,11 @@ enum PlateBuilder {
         /// "features only" mode to show the routing solids without the plate.
         let topFeatures: Mesh
         let bottomFeatures: Mesh
+        /// Flat printed sheet sitting at z=0 (the silicone gap), matching the
+        /// board outline and punched through at every cross-silicone via and
+        /// screw shaft. Used at assembly as a 1:1 cutting template for the
+        /// silicone sheet. Empty when `stencilThickness` is 0.
+        let stencil: Mesh
     }
 
     static func build(_ doc: CircuitDocument) -> Output {
@@ -295,6 +300,27 @@ enum PlateBuilder {
             }
         }
 
+        // Stencil: a flat sheet centred on the silicone gap with the same
+        // outline as the plates, punched through at every cross-silicone via
+        // and screw shaft. CSG is small (~one slab minus a handful of short
+        // cylinders) so it runs sequentially rather than fanning out — the
+        // two-plate parallelism above already saturates the typical Euclid
+        // pass that costs anything.
+        var stencilCutters: [(position: Point, diameter: Double)] = []
+        for position in doc.physical.crossSiliconeViaPositions() {
+            stencilCutters.append((position, m.channelDiameter))
+        }
+        for placement in doc.physical.placements {
+            guard let component = componentsById[placement.componentId],
+                  component.kind == .screw
+            else { continue }
+            stencilCutters.append((placement.position, ScrewGeometry.throughDiameter))
+        }
+        let stencil = buildStencil(
+            outline: outline, thickness: m.stencilThickness,
+            cornerRadius: m.plateCornerFillet, cutters: stencilCutters
+        )
+
         // `makeWatertight()` is intentionally NOT called here. Euclid's BSP
         // CSG can leave hairline cracks where curved surfaces meet flat
         // ones; slicers refuse to print non-manifold STLs, so the export
@@ -304,8 +330,40 @@ enum PlateBuilder {
         // operations and the preview is the hot path.
         return Output(
             topPlate: topOut.plate, bottomPlate: bottomOut.plate,
-            topFeatures: topOut.preview, bottomFeatures: bottomOut.preview
+            topFeatures: topOut.preview, bottomFeatures: bottomOut.preview,
+            stencil: stencil
         )
+    }
+
+    // MARK: - Stencil
+
+    /// Builds a thin sheet centred on z=0, matching the board outline (with
+    /// the plates' corner fillet so all three bodies stack cleanly in the
+    /// preview), then subtracts a cylinder at every cutter XY. Returns the
+    /// empty mesh when thickness ≤ 0 — the user has disabled stencil export.
+    private static func buildStencil(
+        outline: Rect, thickness: Double, cornerRadius: Double,
+        cutters: [(position: Point, diameter: Double)]
+    ) -> Mesh {
+        guard thickness > 0 else { return .empty }
+        let half = thickness / 2
+        // `plateBase(side: .top, innerZ: -half, thickness: thickness)` puts
+        // the lower face at z = -half and the upper face at z = +half, which
+        // is exactly the centred-on-zero slab we want. The polygon winding
+        // it produces is correct for an exterior solid.
+        let slab = plateBase(
+            outline: outline, thickness: thickness,
+            innerZ: -half, side: .top, edgeChamfer: cornerRadius
+        )
+        guard !cutters.isEmpty else { return slab }
+        let eps = 0.1
+        let cylHeight = thickness + 2 * eps
+        let cutterMeshes = cutters.map { c in
+            Mesh.cylinder(radius: c.diameter / 2, height: cylHeight, slices: 24)
+                .rotated(by: Euclid.Rotation.pitch(.halfPi))
+                .translated(by: Vector(c.position.x, c.position.y, 0))
+        }
+        return slab.subtracting(Mesh.union(cutterMeshes))
     }
 
     /// Per-plate CSG pipeline: union the additive domes onto the base

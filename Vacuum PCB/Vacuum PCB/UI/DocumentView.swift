@@ -191,6 +191,7 @@ struct DocumentView: View {
                     bottom: built.bottomPlate,
                     topFeatures: built.topFeatures,
                     bottomFeatures: built.bottomFeatures,
+                    stencil: built.stencil,
                     boardOutline: document.circuit.physical.boardOutline,
                     displayMode: previewMode
                 )
@@ -410,7 +411,7 @@ struct DocumentView: View {
 
     private var stlExport: STLExportDocument? {
         guard let built else { return nil }
-        return STLExportDocument(meshes: [built.topPlate, built.bottomPlate])
+        return STLExportDocument(meshes: [built.topPlate, built.bottomPlate, built.stencil])
     }
 
     private var stlFilename: String {
@@ -519,6 +520,7 @@ struct DocumentView: View {
         let combined = Mesh.merge([
             built.topPlate.makeWatertight(),
             built.bottomPlate.makeWatertight(),
+            built.stencil.makeWatertight(),
         ])
         let data = combined.stlData()
         let url = FileManager.default.temporaryDirectory

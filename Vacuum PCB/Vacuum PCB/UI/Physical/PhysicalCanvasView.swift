@@ -28,6 +28,11 @@ struct PhysicalCanvasView: View {
     @State private var mouseLocation: CGPoint = .zero
     @State private var draggingWaypoint: DraggingWaypoint?
     @State private var draggingPlacement: DraggingPlacement?
+    /// Click-and-hold disambiguator state. When non-nil, a popover anchored
+    /// at `screenPoint` lists every selectable element under that point so
+    /// the user can pick through a stack (a placement covering a route, a
+    /// route under a via, etc.) — Fusion 360's "select under" pattern.
+    @State private var disambiguator: DisambigState?
     /// Whether the user has interacted with zoom/pan since the last fit. If
     /// not, view-size changes re-fit to keep the board centred; once the
     /// user has taken control, size changes leave the transform alone so
@@ -255,6 +260,47 @@ struct PhysicalCanvasView: View {
                 if case .active(let p) = phase { mouseLocation = p }
             }
             .gesture(magnifyGesture(viewSize: geo.size))
+            // Click-and-hold over any stacked content (placement on top of a
+            // route, route under a via, etc.) opens a SwiftUI popover listing
+            // every selectable item at the cursor. `.simultaneousGesture` so
+            // plain clicks, drags, and pin taps still work; the long-press
+            // only wins when the user actively holds without moving.
+            .simultaneousGesture(disambigGesture)
+            // Anchor for the popover. `.position()` doesn't change the source
+            // rect the popover reads — SwiftUI calculates it from the modified
+            // view's intrinsic bounds, ignoring the position-induced offset,
+            // which is what pinned the menu to the canvas's right edge.
+            // Instead, attach the popover to a transparent overlay that
+            // covers the whole canvas and compute the press location as a
+            // UnitPoint via the inner GeometryReader. The `attachmentAnchor`
+            // recomputes whenever `disambiguator` changes.
+            .overlay {
+                GeometryReader { overlayGeo in
+                    let anchor: UnitPoint = disambiguator.map { d in
+                        UnitPoint(
+                            x: d.screenPoint.x / max(1, overlayGeo.size.width),
+                            y: d.screenPoint.y / max(1, overlayGeo.size.height)
+                        )
+                    } ?? .center
+                    Color.clear
+                        .allowsHitTesting(false)
+                        .popover(
+                            isPresented: Binding(
+                                get: { disambiguator != nil },
+                                set: { if !$0 { disambiguator = nil } }
+                            ),
+                            attachmentAnchor: .point(anchor),
+                            arrowEdge: .top
+                        ) {
+                            if let d = disambiguator {
+                                DisambigPopover(
+                                    candidates: d.candidates,
+                                    dismiss: { disambiguator = nil }
+                                )
+                            }
+                        }
+                }
+            }
             .onAppear {
                 lastViewSize = geo.size
                 recomputeTransform(viewSize: geo.size)
@@ -1514,6 +1560,168 @@ struct PhysicalCanvasView: View {
                 document.circuit.physical.placements[i].layer = placement.layer.opposite
                 document.circuit.physical.placements[i].depth = 0
             }
+        }
+    }
+
+    // MARK: - Disambiguator (click-and-hold)
+
+    /// Long-press fires after ~0.45 s of holding the cursor still. We snapshot
+    /// the current `mouseLocation` (kept up to date by `onContinuousHover`)
+    /// because LongPressGesture itself doesn't surface the press location.
+    /// Suppressed while a route is in progress — the user's next click is
+    /// meant to extend that route, not pop a menu.
+    private var disambigGesture: some Gesture {
+        LongPressGesture(minimumDuration: 0.45, maximumDistance: 6)
+            .onEnded { _ in
+                guard !routingState.inProgress else { return }
+                guard mouseLocation != .zero else { return }
+                let pt = mouseLocation
+                let candidates = collectDisambigCandidates(at: pt)
+                guard !candidates.isEmpty else { return }
+                disambiguator = DisambigState(screenPoint: pt, candidates: candidates)
+            }
+    }
+
+    /// Enumerates every selectable item under `pt` (screen-space). Order is
+    /// roughly visual z: vias (smallest, on top), then route segments by
+    /// layer, then placements. Each entry knows how to commit its own
+    /// selection so the popover doesn't need a dispatch table on the parent.
+    private func collectDisambigCandidates(at pt: CGPoint) -> [DisambigCandidate] {
+        var out: [DisambigCandidate] = []
+
+        // --- Vias ---
+        // Mirror viaAtTap's outer-radius tolerance, but collect *all* hits
+        // rather than the closest one. Dedup paired vias by (netId, XY) so a
+        // single via doesn't appear twice (it's stored on each twin segment).
+        let viaRadius = max(8, manufacturing.channelDiameter * transform.ptsPerMm * 0.85)
+        let viaRadiusSq = viaRadius * viaRadius
+        struct ViaHit: Hashable { let netId: UUID; let x: Double; let y: Double }
+        var viaSeen: Set<ViaHit> = []
+        for route in document.circuit.physical.routes {
+            for (segIdx, segment) in route.segments.enumerated() {
+                guard visible.contains(segment.layer) else { continue }
+                for wp in segment.waypoints where wp.kind == .via {
+                    let screen = transform.toScreen(wp.position)
+                    let dx = Double(pt.x - screen.x), dy = Double(pt.y - screen.y)
+                    guard dx * dx + dy * dy <= viaRadiusSq else { continue }
+                    let key = ViaHit(
+                        netId: route.netId,
+                        x: (wp.position.x / 0.05).rounded() * 0.05,
+                        y: (wp.position.y / 0.05).rounded() * 0.05
+                    )
+                    if viaSeen.contains(key) { continue }
+                    viaSeen.insert(key)
+                    let netLabel = netLabel(for: route.netId)
+                    let label = "Via on \(netLabel) (\(segment.layer.uiLabel))"
+                    out.append(DisambigCandidate(
+                        label: label,
+                        systemImage: "smallcircle.filled.circle",
+                        color: LayerPalette.color(for: segment.layer),
+                        apply: {
+                            selection = .routeSegment(netId: route.netId, segmentIndex: segIdx)
+                            routingState = .idle
+                        }
+                    ))
+                }
+            }
+        }
+
+        // --- Route segments ---
+        // Same channel-stroke + 3 pt tolerance as routeSegmentHit, but
+        // collecting every distinct (netId, segmentIndex) whose polyline
+        // passes within range.
+        let channelStroke = max(1.5, manufacturing.channelDiameter * transform.ptsPerMm * 0.85)
+        let routeThreshold = max(6.0, channelStroke / 2 + 3.0)
+        struct RouteSegmentKey: Hashable { let netId: UUID; let segmentIndex: Int }
+        var seenSegments: Set<RouteSegmentKey> = []
+        for route in document.circuit.physical.routes {
+            for (segIdx, segment) in route.segments.enumerated() {
+                guard visible.contains(segment.layer) else { continue }
+                let key = RouteSegmentKey(netId: route.netId, segmentIndex: segIdx)
+                if seenSegments.contains(key) { continue }
+                let pts = segment.waypoints.map { transform.toScreen($0.position) }
+                guard pts.count >= 2 else { continue }
+                var hit = false
+                for i in 0..<(pts.count - 1) {
+                    if distanceFromPoint(pt, toSegmentFrom: pts[i], to: pts[i + 1]) <= routeThreshold {
+                        hit = true; break
+                    }
+                }
+                guard hit else { continue }
+                seenSegments.insert(key)
+                let netLabel = netLabel(for: route.netId)
+                out.append(DisambigCandidate(
+                    label: "Route \(netLabel) (\(segment.layer.uiLabel))",
+                    systemImage: "scribble.variable",
+                    color: LayerPalette.color(for: segment.layer),
+                    apply: {
+                        selection = .routeSegment(netId: route.netId, segmentIndex: segIdx)
+                        routingState = .idle
+                    }
+                ))
+            }
+        }
+
+        // --- Placements ---
+        // Walk the same hit-rect test the placement hit targets use, but
+        // accept any placement whose rect covers `pt` — not just the nearest.
+        // Screws and silicone-sheet-mode transistors are allowed through the
+        // visibility filter on the canvas itself; mirror that here so the
+        // user can still pick a screw under a route in any view mode.
+        for placement in document.circuit.physical.placements {
+            guard let component = component(for: placement.componentId) else { continue }
+            guard visible.shows(componentKind: component.kind,
+                                on: Layer(plate: placement.layer, depth: placement.depth))
+            else { continue }
+            let centre = hitCenter(for: placement, component: component)
+            let size = hitSize(for: component)
+            let rect = CGRect(
+                x: centre.x - size.width / 2, y: centre.y - size.height / 2,
+                width: size.width, height: size.height
+            )
+            guard rect.contains(pt) else { continue }
+            let id = placement.componentId
+            out.append(DisambigCandidate(
+                label: "\(component.label) (\(componentKindLabel(component.kind)))",
+                systemImage: componentSystemImage(component.kind),
+                color: LayerPalette.color(for: Layer(plate: placement.layer, depth: placement.depth)),
+                apply: {
+                    selection = .placement(id)
+                    routingState = .idle
+                }
+            ))
+        }
+
+        return out
+    }
+
+    private func netLabel(for netId: UUID) -> String {
+        document.circuit.logic.nets.first(where: { $0.id == netId })?.label ?? "?"
+    }
+
+    private func componentKindLabel(_ kind: ComponentKind) -> String {
+        switch kind {
+        case .transistor:   return "transistor"
+        case .resistor:     return "resistor"
+        case .port:         return "port"
+        case .vacuumSource: return "vacuum"
+        case .atmVent:      return "vent"
+        case .subpart:      return "subpart"
+        case .screw:        return "screw"
+        case .led:          return "LED"
+        }
+    }
+
+    private func componentSystemImage(_ kind: ComponentKind) -> String {
+        switch kind {
+        case .transistor:   return "triangle"
+        case .resistor:     return "waveform.path.ecg"
+        case .port:         return "arrow.right.to.line"
+        case .vacuumSource: return "arrow.up.right.circle"
+        case .atmVent:      return "wind"
+        case .subpart:      return "rectangle.dashed"
+        case .screw:        return "circle.grid.cross"
+        case .led:          return "lightbulb"
         }
     }
 

@@ -33,6 +33,7 @@ struct Scene3DView: NSViewRepresentable {
     var bottom: Mesh
     var topFeatures: Mesh
     var bottomFeatures: Mesh
+    var stencil: Mesh
     var boardOutline: Rect
     var displayMode: PreviewDisplayMode
 
@@ -43,6 +44,7 @@ struct Scene3DView: NSViewRepresentable {
         let bottomNode = SCNNode()
         let topFeaturesNode = SCNNode()
         let bottomFeaturesNode = SCNNode()
+        let stencilNode = SCNNode()
         let camera = SCNCamera()
         let cameraNode = SCNNode()
         var lastOutline: Rect?
@@ -64,6 +66,7 @@ struct Scene3DView: NSViewRepresentable {
         c.modelRoot.addChildNode(c.bottomNode)
         c.modelRoot.addChildNode(c.topFeaturesNode)
         c.modelRoot.addChildNode(c.bottomFeaturesNode)
+        c.modelRoot.addChildNode(c.stencilNode)
 
         c.camera.usesOrthographicProjection = true
         c.camera.zNear = 0.01
@@ -109,6 +112,12 @@ struct Scene3DView: NSViewRepresentable {
         c.bottomNode.geometry = plateGeometry(for: bottom, color: .systemTeal)
         c.topFeaturesNode.geometry = featuresGeometry(for: topFeatures, color: .systemBlue)
         c.bottomFeaturesNode.geometry = featuresGeometry(for: bottomFeatures, color: .systemTeal)
+        // Stencil reuses the plate material so it reads as a printed body
+        // rather than a routing feature. Yellow distinguishes it from the
+        // blue/teal of the plates without competing with them visually.
+        c.stencilNode.geometry = stencil.isEmpty
+            ? nil
+            : plateGeometry(for: stencil, color: .systemYellow)
     }
 
     private func plateGeometry(for mesh: Mesh, color: NSColor) -> SCNGeometry {
@@ -149,16 +158,21 @@ struct Scene3DView: NSViewRepresentable {
             c.bottomNode.isHidden = false
             c.topFeaturesNode.isHidden = true
             c.bottomFeaturesNode.isHidden = true
+            c.stencilNode.isHidden = false
         case .both:
             c.topNode.isHidden = false
             c.bottomNode.isHidden = false
             c.topFeaturesNode.isHidden = false
             c.bottomFeaturesNode.isHidden = false
+            c.stencilNode.isHidden = false
         case .featuresOnly:
             c.topNode.isHidden = true
             c.bottomNode.isHidden = true
             c.topFeaturesNode.isHidden = false
             c.bottomFeaturesNode.isHidden = false
+            // Channels-only mode hides every printed body so the routing
+            // solids read clearly. The stencil is a body, so it goes too.
+            c.stencilNode.isHidden = true
         }
     }
 

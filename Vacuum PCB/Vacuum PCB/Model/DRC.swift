@@ -1,5 +1,20 @@
 import Foundation
 
+/// What kind of feature is on the other side of a thin-wall offence. Drives
+/// the issue summary text and the picked colour palette in the sidebar.
+enum ThinWallNeighbor: String, Hashable {
+    /// Distance from a channel to the outer rectangle of the board.
+    case outerFace
+    /// Distance from a channel to another channel on the same plate
+    /// (different net OR same net on a different layer). Same-layer
+    /// different-net pairs are normally caught by `channelClearance`;
+    /// this kind picks up cross-layer pairs where the 3D wall is thin.
+    case channel
+    /// Distance from a channel to a vertical bore on the same plate — a
+    /// via or a transistor / LED drop bore.
+    case bore
+}
+
 /// Topology checks on the physical projection.
 ///
 /// The schematic owns the netlist; the physical layout is a projection that
@@ -79,6 +94,20 @@ enum DRC {
                 layer: Layer,
                 position: Point
             )
+            /// A channel segment sits close enough to some nearby feature
+            /// that the printed wall between them falls below
+            /// `minWallThickness` — the print will likely break through or
+            /// fail under fluid pressure. `neighbor` distinguishes which
+            /// kind of feature is on the other side; `segmentIndex` points
+            /// at the offending channel segment within this issue's net so
+            /// the sidebar can select it on click.
+            case thinWall(
+                neighbor: ThinWallNeighbor,
+                layer: Layer,
+                gap: Double,
+                segmentIndex: Int,
+                position: Point
+            )
         }
 
         var summary: String {
@@ -98,6 +127,17 @@ enum DRC {
             case .crossNetMerge(_, let other, let layer, let p):
                 return "\(netLabel) ↔ \(other) merge on \(layer.uiLabel)"
                     + " near (\(String(format: "%.1f", p.x)), \(String(format: "%.1f", p.y)))"
+            case let .thinWall(neighbor, layer, gap, _, _):
+                let kindTxt: String
+                switch neighbor {
+                case .outerFace: kindTxt = "outer face"
+                case .channel:   kindTxt = "another channel"
+                case .bore:      kindTxt = "a bore"
+                }
+                let gapTxt = gap < 0.01
+                    ? "wall < 0.01 mm"
+                    : "\(String(format: "%.2f", gap)) mm wall"
+                return "\(netLabel) on \(layer.uiLabel): thin wall to \(kindTxt) (\(gapTxt))"
             }
         }
     }
@@ -134,6 +174,8 @@ enum DRC {
                 }
             }
             return sel
+        case let .thinWall(_, _, _, segIdx, _):
+            return .routeSegment(netId: issue.netId, segmentIndex: segIdx)
         case .crossNetMerge(let otherNetId, let otherLabel, _, _):
             // For each side of the merge, highlight whatever the user can
             // act on in the unflattened canvas:
@@ -191,6 +233,8 @@ enum DRC {
                   let pin = comp.footprint(document.manufacturing, snapshots: document.librarySnapshots).pin(ref.pinKey)
             else { return nil }
             return (placement.worldPosition(of: pin), placement.resolvedLayer(of: pin, on: comp))
+        case let .thinWall(_, layer, _, _, pos):
+            return (pos, layer)
         case .unplacedPin, .noRouteDrawn:
             return nil
         }
@@ -203,6 +247,7 @@ enum DRC {
         }
         issues.append(contentsOf: clearanceIssues(in: document))
         issues.append(contentsOf: crossNetMergeIssues(in: document))
+        issues.append(contentsOf: thinWallIssues(in: document))
         return issues
     }
 
@@ -544,5 +589,202 @@ enum DRC {
         let m1 = Point(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
         let m2 = Point(x: (c.x + d.x) / 2, y: (c.y + d.y) / 2)
         return Point(x: (m1.x + m2.x) / 2, y: (m1.y + m2.y) / 2)
+    }
+
+    // MARK: - Wall thickness
+
+    private struct ThinWallBore {
+        let position: Point
+        let plate: Plate
+        let radius: Double
+        /// Net this bore belongs to. Channel edges on the same net are
+        /// allowed to come arbitrarily close — they're going to fuse in CSG
+        /// anyway, which is the whole point of routing. `nil` if the bore
+        /// can't be attributed to a net (shouldn't happen in v1 but kept
+        /// optional so a future kind of bore can opt out of net matching).
+        let netId: UUID?
+    }
+
+    /// Walks every channel polyline edge and flags places where the printed
+    /// wall between the channel and a nearby feature (outer face, another
+    /// channel, a vertical bore) is thinner than `minWallThickness`.
+    /// Different from `channelClearance` and `crossNetMerge`: those measure
+    /// centre-to-centre on same-layer pairs; this one measures wall
+    /// thickness (centre distance minus participating radii) and adds the
+    /// outer-face and bore cases the others don't cover.
+    ///
+    /// Dedup is per `(netId, segmentIndex, neighbor)` so a long parallel
+    /// run reports one issue per neighbor category rather than per edge.
+    private static func thinWallIssues(in doc: CircuitDocument) -> [Issue] {
+        let m = doc.manufacturing
+        let threshold = m.minWallThickness
+        guard threshold > 0 else { return [] }
+
+        let labels = Dictionary(uniqueKeysWithValues: doc.logic.nets.map { ($0.id, $0.label) })
+        let channelRadius = m.channelDiameter / 2
+        let edges = collectRouteEdges(in: doc)
+        guard !edges.isEmpty else { return [] }
+
+        let outline = doc.physical.boardOutline
+        struct OutlineEdge { let a: Point; let b: Point }
+        let outlineEdges: [OutlineEdge] = [
+            .init(a: Point(x: outline.minX, y: outline.minY),
+                  b: Point(x: outline.maxX, y: outline.minY)),
+            .init(a: Point(x: outline.maxX, y: outline.minY),
+                  b: Point(x: outline.maxX, y: outline.maxY)),
+            .init(a: Point(x: outline.maxX, y: outline.maxY),
+                  b: Point(x: outline.minX, y: outline.maxY)),
+            .init(a: Point(x: outline.minX, y: outline.maxY),
+                  b: Point(x: outline.minX, y: outline.minY)),
+        ]
+
+        // Bores by plate. Vias add one entry per twin (one per plate they
+        // actually appear on); pin drop bores anchor at depth 0 on the pin's
+        // resolved plate. Port / vent / vacuum-source bores enter horizontally
+        // and intentionally meet the outer face — skipped, they'd produce
+        // false positives at every port.
+        //
+        // Each bore carries its net id so the wall check can skip same-net
+        // pairs (a transistor's drop bore sitting near another segment of
+        // its own net would otherwise produce a spurious thin-wall warning
+        // — the two volumes are supposed to fuse, not stay separated).
+        var pinToNet: [PinRef: UUID] = [:]
+        for net in doc.logic.nets {
+            for pinRef in net.pins {
+                pinToNet[pinRef] = net.id
+            }
+        }
+        var bores: [ThinWallBore] = []
+        for route in doc.physical.routes {
+            for segment in route.segments {
+                for wp in segment.waypoints where wp.kind == .via {
+                    bores.append(ThinWallBore(
+                        position: wp.position,
+                        plate: segment.layer.plate,
+                        radius: channelRadius,
+                        netId: route.netId
+                    ))
+                }
+            }
+        }
+        for placement in doc.physical.placements {
+            guard let comp = doc.logic.components.first(where: { $0.id == placement.componentId })
+            else { continue }
+            switch comp.kind {
+            case .transistor, .led:
+                let fp = comp.footprint(m, snapshots: doc.librarySnapshots)
+                for pin in fp.pins {
+                    let world = placement.worldPosition(of: pin)
+                    let pinPlate = placement.resolvedPlate(of: pin)
+                    let ref = PinRef(componentId: placement.componentId, pinKey: pin.key)
+                    bores.append(ThinWallBore(
+                        position: world, plate: pinPlate, radius: channelRadius,
+                        netId: pinToNet[ref]
+                    ))
+                }
+            default:
+                break
+            }
+        }
+
+        struct ReportKey: Hashable {
+            let netId: UUID
+            let segmentIndex: Int
+            let neighbor: ThinWallNeighbor
+        }
+        var reported: Set<ReportKey> = []
+        var issues: [Issue] = []
+
+        func emit(edge: ChannelEdge, neighbor: ThinWallNeighbor,
+                  gap: Double, position: Point) {
+            let key = ReportKey(
+                netId: edge.netId,
+                segmentIndex: edge.segmentIndex,
+                neighbor: neighbor
+            )
+            if reported.contains(key) { return }
+            reported.insert(key)
+            let label = labels[edge.netId] ?? edge.netLabel
+            issues.append(Issue(
+                netId: edge.netId, netLabel: label,
+                kind: .thinWall(
+                    neighbor: neighbor,
+                    layer: edge.layer,
+                    gap: max(0, gap),
+                    segmentIndex: edge.segmentIndex,
+                    position: position
+                )
+            ))
+        }
+
+        for edge in edges {
+            // --- Outer face ---
+            // Bores meeting the outer face are valid for port-type pins, but
+            // we skip those bores entirely above, so any channel-edge-to-
+            // outline hit here is an actual thin wall.
+            for outlineE in outlineEdges {
+                let d = segmentDistance(edge.a, edge.b, outlineE.a, outlineE.b)
+                let wall = d - channelRadius
+                if wall < threshold {
+                    // Report position: approachPoint reads "near here" with
+                    // enough fidelity for the canvas ping.
+                    let pos = approachPoint(edge.a, edge.b, outlineE.a, outlineE.b)
+                    emit(edge: edge, neighbor: .outerFace, gap: wall, position: pos)
+                }
+            }
+
+            // --- Other channels ---
+            // 3D centre distance: hypot(2D-edge-distance, layer-z-gap). Same
+            // plate only; different plates have the silicone gap between
+            // them, not a printed wall.
+            for other in edges where other.layer.plate == edge.layer.plate {
+                if other.netId == edge.netId, other.segmentIndex == edge.segmentIndex { continue }
+                // Same-net pairs (any layer) are intentionally meant to fuse
+                // — two segments of the same net are part of one electrical
+                // node, so the "wall" between them isn't a wall at all. Skip
+                // both same-layer (the routes overlap to merge) and cross-
+                // layer (connected through a via, but mechanically free to
+                // run as close as the print resolution allows).
+                if other.netId == edge.netId { continue }
+                // Same-layer different-net pairs are surfaced by the existing
+                // `channelClearance` issue using `minChannelSpacing`; don't
+                // double-report.
+                if other.layer == edge.layer { continue }
+                let dxy = segmentDistance(edge.a, edge.b, other.a, other.b)
+                let depthDelta = abs(edge.layer.depth - other.layer.depth)
+                let dz = Double(depthDelta) * (m.channelDiameter + m.interLayerWall)
+                let centre = (dxy * dxy + dz * dz).squareRoot()
+                let wall = centre - 2 * channelRadius
+                if wall < threshold {
+                    let pos = approachPoint(edge.a, edge.b, other.a, other.b)
+                    emit(edge: edge, neighbor: .channel, gap: wall, position: pos)
+                }
+            }
+
+            // --- Bores ---
+            for bore in bores where bore.plate == edge.layer.plate {
+                // Bores on this segment's own net are part of the same
+                // electrical node — the route is on its way to connect to
+                // them (or already does, via another segment). Their walls
+                // are supposed to fuse, not stay separate.
+                if let boreNet = bore.netId, boreNet == edge.netId { continue }
+                // Skip the bore that anchors this segment's endpoint — the
+                // channel intentionally meets its pin's drop or via, no wall
+                // to talk about. 0.1 mm matches the eps used elsewhere for
+                // pin-coincidence checks.
+                let touchesA = abs(edge.a.x - bore.position.x) < 0.1
+                    && abs(edge.a.y - bore.position.y) < 0.1
+                let touchesB = abs(edge.b.x - bore.position.x) < 0.1
+                    && abs(edge.b.y - bore.position.y) < 0.1
+                if touchesA || touchesB { continue }
+                let d = pointSegmentDistance(bore.position, edge.a, edge.b)
+                let wall = d - channelRadius - bore.radius
+                if wall < threshold {
+                    emit(edge: edge, neighbor: .bore, gap: wall, position: bore.position)
+                }
+            }
+        }
+
+        return issues
     }
 }
