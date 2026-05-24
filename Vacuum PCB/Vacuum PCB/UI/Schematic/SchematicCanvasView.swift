@@ -33,6 +33,9 @@ struct SchematicCanvasView: View {
     @State private var pan: CGSize = .zero
     @State private var userAdjustedView: Bool = false
     @State private var magnifyBaseline: (zoom: Double, pan: CGSize)?
+    /// Magnification value at which the pinch escaped the deadband (see
+    /// `magnifyGesture`). nil while we're still ignoring small jitter.
+    @State private var zoomOriginMagnification: Double?
     @State private var bgDragMode: BackgroundDragMode = .none
     @State private var panBaseline: CGSize = .zero
     @State private var lastViewSize: CGSize = CGSize(width: 800, height: 600)
@@ -288,15 +291,30 @@ struct SchematicCanvasView: View {
         userAdjustedView = true
     }
 
+    /// See the matching comment on `PhysicalCanvasView.magnifyGesture`
+    /// for the deadband rationale.
     private func magnifyGesture(viewSize: CGSize) -> some Gesture {
         MagnifyGesture()
             .onChanged { value in
-                if magnifyBaseline == nil { magnifyBaseline = (zoom, pan) }
+                if magnifyBaseline == nil {
+                    magnifyBaseline = (zoom, pan)
+                    zoomOriginMagnification = nil
+                }
                 guard let base = magnifyBaseline else { return }
+                let threshold = InputPlatform.isTouch ? 0.15 : 0.04
+                let origin: Double
+                if let z = zoomOriginMagnification {
+                    origin = z
+                } else if abs(value.magnification - 1.0) < threshold {
+                    return
+                } else {
+                    zoomOriginMagnification = value.magnification
+                    origin = value.magnification
+                }
                 let anchor = windowCursor == .zero
                     ? CGPoint(x: viewSize.width / 2, y: viewSize.height / 2)
                     : windowCursor
-                let factor = max(0.05, value.magnification)
+                let factor = max(0.05, value.magnification / origin)
                 let newZoom = max(0.1, min(10.0, base.zoom * factor))
                 pan = CGSize(
                     width: Double(anchor.x) - (Double(anchor.x) - base.pan.width)  * (newZoom / base.zoom),
@@ -305,7 +323,10 @@ struct SchematicCanvasView: View {
                 zoom = newZoom
                 userAdjustedView = true
             }
-            .onEnded { _ in magnifyBaseline = nil }
+            .onEnded { _ in
+                magnifyBaseline = nil
+                zoomOriginMagnification = nil
+            }
     }
 
     /// Converts a window-space point (received from the right-click catcher

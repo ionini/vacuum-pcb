@@ -209,50 +209,57 @@ struct PhysicalInspector: View {
                 selection: $selection,
                 routingState: $routingState
             )
-            Form {
-                Section("Board") {
-                    HStack(spacing: 6) {
-                        TextField("Width", value: boardSizeBinding(\.width),
-                                  format: .number.precision(.fractionLength(0...2)))
-                            .textFieldStyle(.roundedBorder)
-                            .multilineTextAlignment(.trailing)
-                            .focused($boardFieldFocused, equals: .width)
-                        Text("×").foregroundStyle(.secondary)
-                        TextField("Height", value: boardSizeBinding(\.height),
-                                  format: .number.precision(.fractionLength(0...2)))
-                            .textFieldStyle(.roundedBorder)
-                            .multilineTextAlignment(.trailing)
-                            .focused($boardFieldFocused, equals: .height)
-                        Text("mm").foregroundStyle(.tertiary)
+            // SwiftUI's grouped `Form` reports no usable intrinsic vertical
+            // size on iPadOS — it's backed by `UITableView`, which only
+            // sizes itself when given a fixed-height container — so the
+            // previous `.fixedSize(horizontal: false, vertical: true)`
+            // collapsed the whole panel on iPad. A plain VStack with
+            // section headers renders identically on both platforms and
+            // lets the ScrollView host scrolling when the column is tight.
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    sectionGroup("Board") {
+                        HStack(spacing: 6) {
+                            TextField("Width", value: boardSizeBinding(\.width),
+                                      format: .number.precision(.fractionLength(0...2)))
+                                .textFieldStyle(.roundedBorder)
+                                .multilineTextAlignment(.trailing)
+                                .focused($boardFieldFocused, equals: .width)
+                            Text("×").foregroundStyle(.secondary)
+                            TextField("Height", value: boardSizeBinding(\.height),
+                                      format: .number.precision(.fractionLength(0...2)))
+                                .textFieldStyle(.roundedBorder)
+                                .multilineTextAlignment(.trailing)
+                                .focused($boardFieldFocused, equals: .height)
+                            Text("mm").foregroundStyle(.tertiary)
+                        }
+                        // Pressing Return in either field clears the focus so
+                        // the canvas gets keyboard events back (otherwise
+                        // R/F/V/0..9 all type into the still-focused field).
+                        .onSubmit { boardFieldFocused = nil }
                     }
-                    // Pressing Return in either field clears the focus so
-                    // the canvas gets keyboard events back (otherwise
-                    // R/F/V/0..9 all type into the still-focused field).
-                    .onSubmit { boardFieldFocused = nil }
+                    sectionGroup("Channel Layers") {
+                        layerStepper(label: "Top plate", plate: .top)
+                        layerStepper(label: "Bottom plate", plate: .bottom)
+                    }
+                    Divider()
+                    // Parking lot used to be the leading column of the
+                    // Physical tab; it lives here in the inspector now so
+                    // the canvas can claim the full detail area.
+                    ParkingLotView(
+                        document: document.circuit,
+                        providerForComponent: { id in
+                            NSItemProvider(object: id.uuidString as NSString)
+                        },
+                        onPlaceAll: placeAllUnplaced,
+                        onAutoPlace: autoPlace,
+                        onAutoRoute: autoRoute
+                    )
                 }
-                Section("Channel Layers") {
-                    layerStepper(label: "Top plate", plate: .top)
-                    layerStepper(label: "Bottom plate", plate: .bottom)
-                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .formStyle(.grouped)
-            .fixedSize(horizontal: false, vertical: true)
-
-            Divider()
-
-            // Parking lot used to be the leading column of the Physical
-            // tab; it lives here in the inspector now so the canvas can
-            // claim the full detail area.
-            ParkingLotView(
-                document: document.circuit,
-                providerForComponent: { id in
-                    NSItemProvider(object: id.uuidString as NSString)
-                },
-                onPlaceAll: placeAllUnplaced,
-                onAutoPlace: autoPlace,
-                onAutoRoute: autoRoute
-            )
-            .padding(.vertical, 6)
         }
         .alert(item: $pendingLayerRemoval) { removal in
             let layerList = removal.removedLayers.map(\.uiLabel).joined(separator: ", ")
@@ -274,6 +281,23 @@ struct PhysicalInspector: View {
                 },
                 secondaryButton: .cancel()
             )
+        }
+    }
+
+    /// Header + content vertical block, used in place of `Form` /
+    /// `Section` so the inspector renders identically on both platforms
+    /// (grouped Form collapses to zero height on iPad — see the comment
+    /// in `body`).
+    @ViewBuilder
+    private func sectionGroup<C: View>(
+        _ title: String,
+        @ViewBuilder _ content: () -> C
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption.bold())
+                .foregroundStyle(.secondary)
+            content()
         }
     }
 

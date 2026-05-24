@@ -21,6 +21,16 @@ struct Vacuum_PCBApp: App {
     var body: some Scene {
         DocumentGroup(newDocument: VPCBDocument()) { config in
             DocumentView(document: config.$document)
+                #if !canImport(AppKit)
+                // iPad: without this, DocumentGroup's outer nav chrome
+                // and the inner NavigationSplitView each render their
+                // own bar with "← filename ⌄", giving two stacked back
+                // buttons. `.automatic` (vs `.editor`/`.navigationStack`/
+                // `.browser`) is what suppresses the extra back button —
+                // see Apple Developer Forums 714430 / Daniel Saidi's
+                // "DocumentGroup double back button fix".
+                .toolbarRole(.automatic)
+                #endif
         }
         // SwiftUI's intrinsic-size default for document windows was small
         // enough that the Physical bottom strip needed scrolling on every

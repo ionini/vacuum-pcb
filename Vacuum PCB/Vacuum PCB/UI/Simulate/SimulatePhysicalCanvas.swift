@@ -32,6 +32,9 @@ struct SimulatePhysicalCanvas: View {
     @State private var transform: CanvasTransform = .default
     @State private var userAdjusted: Bool = false
     @State private var magnifyBaseline: (ptsPerMm: Double, offset: CGSize)?
+    /// Magnification value at which the pinch escaped the deadband (see
+    /// `magnifyGesture`). nil while we're still ignoring small jitter.
+    @State private var zoomOriginMagnification: Double?
     @State private var panBaseline: CGSize = .zero
     @State private var windowCursor: CGPoint = .zero
     @State private var bgDragging: Bool = false
@@ -314,15 +317,27 @@ struct SimulatePhysicalCanvas: View {
             .onEnded { _ in bgDragging = false }
     }
 
+    /// See `PhysicalCanvasView.magnifyGesture` for the deadband rationale.
     private func magnifyGesture(in viewSize: CGSize) -> some Gesture {
         MagnifyGesture()
             .onChanged { value in
                 if magnifyBaseline == nil {
                     magnifyBaseline = (transform.ptsPerMm, transform.offset)
+                    zoomOriginMagnification = nil
                 }
                 guard let base = magnifyBaseline else { return }
+                let threshold = InputPlatform.isTouch ? 0.15 : 0.04
+                let origin: Double
+                if let z = zoomOriginMagnification {
+                    origin = z
+                } else if abs(value.magnification - 1.0) < threshold {
+                    return
+                } else {
+                    zoomOriginMagnification = value.magnification
+                    origin = value.magnification
+                }
                 let anchor = anchorPoint(in: viewSize)
-                let raw = max(0.05, value.magnification)
+                let raw = max(0.05, value.magnification / origin)
                 let next = max(1.0, min(200.0, base.ptsPerMm * raw))
                 let factor = next / base.ptsPerMm
                 transform.offset = CGSize(
@@ -332,7 +347,10 @@ struct SimulatePhysicalCanvas: View {
                 transform.ptsPerMm = next
                 userAdjusted = true
             }
-            .onEnded { _ in magnifyBaseline = nil }
+            .onEnded { _ in
+                magnifyBaseline = nil
+                zoomOriginMagnification = nil
+            }
     }
 
     /// Fit the board outline into the viewport with a comfortable margin.

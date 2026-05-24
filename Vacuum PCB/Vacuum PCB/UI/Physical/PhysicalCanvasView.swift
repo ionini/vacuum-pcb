@@ -42,6 +42,9 @@ struct PhysicalCanvasView: View {
     /// deltas against the transform at gesture start, not against a
     /// running-multiplied baseline that would drift.
     @State private var magnifyBaseline: CanvasTransform?
+    /// Magnification value at which the pinch escaped the deadband (see
+    /// `magnifyGesture`). nil while we're still ignoring small jitter.
+    @State private var zoomOriginMagnification: Double?
     /// Background-drag mode latched at drag start: marquee (Option not held)
     /// or pan (Option held). Decided once so a release after toggling the
     /// modifier mid-drag doesn't flip behaviour at the very end.
@@ -388,15 +391,37 @@ struct PhysicalCanvasView: View {
     /// single gesture, so we capture a baseline at gesture start and apply
     /// the delta against it each tick — otherwise repeated pinches would
     /// drift away from the user's intended scale.
+    ///
+    /// `MagnifyGesture` on iPad is extremely sensitive — natural finger
+    /// jitter while panning produces sub-pt distance changes that the
+    /// system reports as 1.02–1.05 magnifications and the canvas would
+    /// otherwise honour, hijacking the pan. We sit in a deadband until
+    /// the user moves their fingers apart (or together) by at least
+    /// `threshold` percent, and once we cross it the zoom is computed
+    /// relative to that crossing point so engagement is smooth instead
+    /// of snapping.
     private func magnifyGesture(viewSize: CGSize) -> some Gesture {
         MagnifyGesture()
             .onChanged { value in
-                if magnifyBaseline == nil { magnifyBaseline = transform }
+                if magnifyBaseline == nil {
+                    magnifyBaseline = transform
+                    zoomOriginMagnification = nil
+                }
                 guard let base = magnifyBaseline else { return }
+                let threshold = InputPlatform.isTouch ? 0.15 : 0.04
+                let origin: Double
+                if let z = zoomOriginMagnification {
+                    origin = z
+                } else if abs(value.magnification - 1.0) < threshold {
+                    return
+                } else {
+                    zoomOriginMagnification = value.magnification
+                    origin = value.magnification
+                }
                 let cursor = mouseLocation == .zero
                     ? CGPoint(x: viewSize.width / 2, y: viewSize.height / 2)
                     : mouseLocation
-                let factor = max(0.05, value.magnification)
+                let factor = max(0.05, value.magnification / origin)
                 let newScale = max(0.5, min(200.0, base.ptsPerMm * factor))
                 let nx = Double(cursor.x) - (Double(cursor.x) - base.offset.width)  * (newScale / base.ptsPerMm)
                 let ny = Double(cursor.y) - (Double(cursor.y) - base.offset.height) * (newScale / base.ptsPerMm)
@@ -407,7 +432,10 @@ struct PhysicalCanvasView: View {
                 userAdjustedView = true
                 lastViewSize = viewSize
             }
-            .onEnded { _ in magnifyBaseline = nil }
+            .onEnded { _ in
+                magnifyBaseline = nil
+                zoomOriginMagnification = nil
+            }
     }
 
     // MARK: - Background visuals
@@ -772,12 +800,19 @@ struct PhysicalCanvasView: View {
         // Footprint exclusion-rect dimensions in pts, padded so small parts
         // stay easy to grab. The arrowhead glyph for ports / rails extends
         // well past the pin anchor — and the tip is exactly what users aim
-        // at — so give those kinds a generous minimum target.
+        // at — so give those kinds a generous minimum target. On iPad the
+        // pin handle (~26 pt hit zone) sits on top of the placement, so
+        // the body's own target has to be considerably bigger than the
+        // pin's to leave finger-sized slack around the glyph.
         let bounds = c.footprint(manufacturing, snapshots: librarySnapshots).boundingRect
         let isArrowLike: Bool = (c.kind == .port || c.kind == .vacuumSource || c.kind == .atmVent)
-        let minSize: Double = isArrowLike ? 60 : 40
-        let w = max(minSize, bounds.size.width * transform.ptsPerMm + 12)
-        let h = max(minSize, bounds.size.height * transform.ptsPerMm + 12)
+        let minSize: Double = {
+            if InputPlatform.isTouch { return isArrowLike ? 88 : 56 }
+            return isArrowLike ? 60 : 40
+        }()
+        let pad: Double = InputPlatform.isTouch ? 20 : 12
+        let w = max(minSize, bounds.size.width * transform.ptsPerMm + pad)
+        let h = max(minSize, bounds.size.height * transform.ptsPerMm + pad)
         return CGSize(width: w, height: h)
     }
 

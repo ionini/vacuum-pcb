@@ -129,23 +129,6 @@ struct DocumentView: View {
     /// pattern), and a `switch` evaluates one view at a time so SwiftUI
     /// doesn't size the window to the widest tab's intrinsic content.
     @ViewBuilder private var detail: some View {
-        detailBody
-            #if !canImport(AppKit)
-            // iPad: DocumentGroup wants to render a filename + "back to
-            // documents" chevron, and the detail column's own toolbar
-            // items want their own bar — by default both render, producing
-            // two stacked bars with two chevrons. `.toolbarRole(.editor)`
-            // tells the system to *merge* the DocumentGroup chrome into
-            // the same bar as the per-tab toolbar items (the editor bar
-            // pattern Apple uses in Pages/Keynote/Notes). It has to live
-            // on the same navigation context as the toolbar items — when
-            // attached to the NavigationSplitView root, the merge happens
-            // at the wrong level and you still get two bars.
-            .toolbarRole(.editor)
-            #endif
-    }
-
-    @ViewBuilder private var detailBody: some View {
         switch selectedTab {
         case .schematic:
             SchematicView(

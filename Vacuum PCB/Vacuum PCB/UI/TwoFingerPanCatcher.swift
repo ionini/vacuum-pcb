@@ -21,7 +21,15 @@ struct TwoFingerPanCatcher: View {
 
     var body: some View {
         #if canImport(UIKit) && !targetEnvironment(macCatalyst)
+        // Frame the wrapper so SwiftUI lays out a real, full-canvas view.
+        // The recognizer is attached at window level, so the size doesn't
+        // gate recognition — but a zero-sized view did hide a separate
+        // bounds filter that we've since removed, and the explicit frame
+        // also keeps the diagnostics tooling (Reveal etc.) from claiming
+        // the catcher "isn't there".
         TwoFingerPanCatcherRepresentable(onPan: onPan)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .allowsHitTesting(false)
         #else
         Color.clear.allowsHitTesting(false)
         #endif
@@ -94,20 +102,18 @@ final class TwoFingerPanCatcherView: UIView, UIGestureRecognizerDelegate {
         shouldRecognizeSimultaneouslyWith b: UIGestureRecognizer
     ) -> Bool { true }
 
-    /// Only let the recognizer fire when both fingers are inside this
-    /// catcher's frame, so a different canvas on the same window (or
-    /// the parking-lot / inspector area) doesn't get phantom pans.
+    /// Require two active touches. We deliberately do *not* gate on the
+    /// catcher's view frame: the canvas tab switching means only one
+    /// catcher is mounted per document window at a time, and the
+    /// recognizer is installed window-level so the host view's bounds
+    /// don't influence what touches reach it. Earlier attempts to scope
+    /// to `bounds` fired never on real iPads because SwiftUI hadn't
+    /// given the wrapper a non-zero frame yet.
     /// UIView declares its own `gestureRecognizerShouldBegin`, so the
     /// `override` keyword is required even though we're only
     /// participating in the recognizer's delegate protocol here.
     override func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
-        guard let window, recognizer.numberOfTouches == 2 else { return false }
-        let frameInWindow = window.convert(bounds, from: self)
-        for i in 0..<recognizer.numberOfTouches {
-            let p = recognizer.location(ofTouch: i, in: window)
-            if !frameInWindow.contains(p) { return false }
-        }
-        return true
+        true
     }
 }
 
