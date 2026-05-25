@@ -314,48 +314,10 @@ struct DocumentView: View {
                 }
             }
             Section("Design Rules") {
-                drcRows
+                DRCSummarySection(circuit: document.circuit, onFocus: focusIssue)
             }
         }
         .listStyle(.sidebar)
-    }
-
-    /// DRC summary: how many nets are clean, how many have routing issues,
-    /// and the first few issues in human-readable form. Updates live as the
-    /// document changes — this whole view rebuilds on every circuit change.
-    @ViewBuilder private var drcRows: some View {
-        let issues = DRC.check(document.circuit)
-        let netsWithIssues = Set(issues.map(\.netId)).count
-        let totalNets = document.circuit.logic.nets.count
-        if totalNets == 0 {
-            Label("No nets defined", systemImage: "circle.dashed")
-                .foregroundStyle(.secondary)
-        } else if issues.isEmpty {
-            Label("All \(totalNets) nets routed", systemImage: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-        } else {
-            Label("\(netsWithIssues) of \(totalNets) nets have issues",
-                  systemImage: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
-            ForEach(issues.prefix(6)) { issue in
-                Button {
-                    focusIssue(issue)
-                } label: {
-                    Text(issue.summary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .buttonStyle(.plain)
-            }
-            if issues.count > 6 {
-                Text("… and \(issues.count - 6) more")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-        }
     }
 
     /// Click handler for an issue row in the sidebar. Asks DRC for the
@@ -627,6 +589,58 @@ struct DocumentView: View {
                 }
             }
         }
+    }
+}
+
+/// DRC summary block for the sidebar. Owns its own `issues` cache and
+/// only recomputes when the circuit itself changes — without this the
+/// inline `DRC.check(...)` ran on every parent body invalidation
+/// (panning the schematic counted), and the trace flagged it as one of
+/// the heavier paths during scroll. `.onChange(of:)` keeps the cache in
+/// step with mutations from anywhere in the document, since `Circuit`
+/// equality already covers the substantive state DRC reads.
+private struct DRCSummarySection: View {
+    let circuit: CircuitDocument
+    let onFocus: (DRC.Issue) -> Void
+
+    @State private var issues: [DRC.Issue] = []
+
+    var body: some View {
+        let netsWithIssues = Set(issues.map(\.netId)).count
+        let totalNets = circuit.logic.nets.count
+        Group {
+            if totalNets == 0 {
+                Label("No nets defined", systemImage: "circle.dashed")
+                    .foregroundStyle(.secondary)
+            } else if issues.isEmpty {
+                Label("All \(totalNets) nets routed", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            } else {
+                Label("\(netsWithIssues) of \(totalNets) nets have issues",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                ForEach(issues.prefix(6)) { issue in
+                    Button {
+                        onFocus(issue)
+                    } label: {
+                        Text(issue.summary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                }
+                if issues.count > 6 {
+                    Text("… and \(issues.count - 6) more")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .onAppear { issues = DRC.check(circuit) }
+        .onChange(of: circuit) { _, new in issues = DRC.check(new) }
     }
 }
 

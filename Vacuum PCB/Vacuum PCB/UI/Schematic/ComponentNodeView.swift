@@ -32,10 +32,6 @@ struct ComponentNodeView: View {
     /// component 50 schematic units, not 100.
     @Environment(\.schematicZoom) private var schematicZoom: Double
 
-    private var metrics: ComponentSymbolMetrics {
-        ComponentSymbolMetrics.metrics(for: component, snapshots: document.circuit.librarySnapshots)
-    }
-
     private var isSelected: Bool {
         selection.contains(component: component.id)
     }
@@ -53,7 +49,9 @@ struct ComponentNodeView: View {
     }
 
     var body: some View {
-        ZStack {
+        let snapshots = document.circuit.librarySnapshots
+        let m = ComponentSymbolMetrics.metrics(for: component, snapshots: snapshots)
+        return ZStack {
             ComponentSymbolView(component: component, isSelected: isSelected)
                 .onTapGesture {
                     handleSymbolTap()
@@ -65,8 +63,8 @@ struct ComponentNodeView: View {
                 .gesture(dragGesture)
 
             // Pin handles
-            ForEach(component.pinKeys(snapshots: document.circuit.librarySnapshots), id: \.self) { key in
-                let offset = metrics.pinOffset(key)
+            ForEach(component.pinKeys(snapshots: snapshots), id: \.self) { key in
+                let offset = m.pinOffset(key)
                 let ref = PinRef(componentId: component.id, pinKey: key)
                 PinHandleView(
                     pinKey: pinDisplayLabel(key),
@@ -81,7 +79,7 @@ struct ComponentNodeView: View {
 
             if isRenaming {
                 renameField
-                    .offset(y: metrics.size.height / 2 + 12)
+                    .offset(y: m.size.height / 2 + 12)
             }
         }
         .offset(effectiveOffset)

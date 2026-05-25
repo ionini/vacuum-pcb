@@ -38,16 +38,31 @@ struct SubpartExpandedView: View {
                     // the sheet. Internal placements still go through the
                     // standard filter (which surfaces screws + transistors
                     // in this mode); routes/boundary pins/outline drop away.
-                    siliconeSheetVias(part: part)
-                    internalPlacements(part: part)
+                    ZStack {
+                        siliconeSheetVias(part: part)
+                        internalPlacements(part: part)
+                    }
+                    .drawingGroup()
                 } else {
-                    // 1. Internal routes — drawn underneath placements so the
-                    // serpentines / glyphs sit on top.
-                    internalRoutes(part: part)
-                    // 2. Internal placements (transistors, resistors, etc.).
-                    internalPlacements(part: part)
-                    // 3. Boundary pin markers + labels.
-                    boundaryMarkers(part: part)
+                    // Routes + placements + boundary markers composite into
+                    // one offscreen Metal layer. Without `.drawingGroup()`
+                    // each was a separate SwiftUI subtree whose attribute
+                    // graph re-walked on every pan tick; collapsing them
+                    // lets SwiftUI rasterise once and ship a single layer to
+                    // the compositor. Outline + title sit outside the group
+                    // so the title's `.regularMaterial` background still
+                    // renders (Material falls back to plain colour inside a
+                    // drawingGroup).
+                    ZStack {
+                        // 1. Internal routes — drawn underneath placements so the
+                        // serpentines / glyphs sit on top.
+                        internalRoutes(part: part)
+                        // 2. Internal placements (transistors, resistors, etc.).
+                        internalPlacements(part: part)
+                        // 3. Boundary pin markers + labels.
+                        boundaryMarkers(part: part)
+                    }
+                    .drawingGroup()
                     // 4. Dotted outline + title sit on top so the part reads
                     // as a visually grouped block.
                     outline(part: part)
@@ -319,33 +334,49 @@ struct SubpartExpandedView: View {
 
     // MARK: - Boundary markers
 
+    /// One Canvas instead of N ZStack/ForEach views. Each visible pin used to
+    /// produce its own SwiftUI subtree (Circle fill + Circle stroke + Text +
+    /// Material background), which on a subpart with many pins ran the
+    /// attribute graph (`AG::Subgraph::update`, `ShapeStyledDisplayList`,
+    /// `ResolvedStyledText`) once per pin per pan tick. Collapsing to a single
+    /// Canvas eliminates that fan-out — only one attribute updates per pan and
+    /// all the drawing lands on one Metal layer. Label backdrops fall back to
+    /// a translucent rounded rect because Canvas doesn't render `.material`.
     private func boundaryMarkers(part: PartsLibrary.Part) -> some View {
-        ZStack {
-            ForEach(part.pins, id: \.portId) { pin in
-                // Hide pins on a hidden plate — same rule that filters
-                // primitive port placements, so showing T0 alone leaves
-                // only the top-plate boundary pins visible.
-                if visible.contains(Layer(plate: pin.plate, depth: 0)) {
-                    let world = transformWorld(pin.physicalAnchor)
-                    let screen = transform.toScreen(world)
-                    ZStack {
-                        Circle()
-                            .fill(LayerPalette.color(for: Layer(plate: pin.plate, depth: 0)).opacity(0.85))
-                            .frame(width: 7, height: 7)
-                            .overlay(Circle().stroke(Color.primary.opacity(0.6), lineWidth: 0.5))
-                        Text(pin.label)
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundStyle(.primary)
-                            .padding(.horizontal, 2)
-                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 2))
-                            .fixedSize()
-                            .offset(labelOffset(for: pin.side))
-                    }
-                    .position(screen)
-                    .allowsHitTesting(false)
-                }
+        let labelFont = Font.system(size: 9, weight: .medium)
+        let dotR: CGFloat = 3.5
+        let backdrop = Color(white: 0.95).opacity(0.85)
+        return Canvas { ctx, _ in
+            for pin in part.pins {
+                let layer = Layer(plate: pin.plate, depth: 0)
+                guard visible.contains(layer) else { continue }
+                let world = transformWorld(pin.physicalAnchor)
+                let screen = transform.toScreen(world)
+                let dotRect = CGRect(
+                    x: screen.x - dotR, y: screen.y - dotR,
+                    width: dotR * 2, height: dotR * 2
+                )
+                let dotPath = Path(ellipseIn: dotRect)
+                ctx.fill(dotPath, with: .color(LayerPalette.color(for: layer).opacity(0.85)))
+                ctx.stroke(dotPath, with: .color(Color.primary.opacity(0.6)), lineWidth: 0.5)
+
+                let offset = labelOffset(for: pin.side)
+                let labelCenter = CGPoint(x: screen.x + offset.width, y: screen.y + offset.height)
+                let resolved = ctx.resolve(
+                    Text(pin.label).font(labelFont).foregroundStyle(.primary)
+                )
+                let size = resolved.measure(in: CGSize(width: 200, height: 40))
+                let bg = CGRect(
+                    x: labelCenter.x - size.width / 2 - 2,
+                    y: labelCenter.y - size.height / 2 - 1,
+                    width: size.width + 4,
+                    height: size.height + 2
+                )
+                ctx.fill(Path(roundedRect: bg, cornerRadius: 2), with: .color(backdrop))
+                ctx.draw(resolved, at: labelCenter, anchor: .center)
             }
         }
+        .allowsHitTesting(false)
     }
 
     private func labelOffset(for side: SymbolSide) -> CGSize {
