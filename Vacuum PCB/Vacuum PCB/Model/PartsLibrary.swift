@@ -56,12 +56,27 @@ struct BoundaryPin: Hashable {
 final class PartsLibrary: ObservableObject {
     static let shared = PartsLibrary()
 
-    /// User-visible parts folder. Created on first launch.
-    static var folderURL: URL {
-        let support = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+    /// User-visible parts folder. Prefers the app's iCloud Drive container
+    /// (`Documents/Parts` inside `iCloud.com.ionini.Vacuum-PCB`) so the
+    /// same library appears on every device signed into the user's iCloud
+    /// account. Falls back to local Application Support when iCloud isn't
+    /// available — user not signed in, dev simulator without iCloud config,
+    /// etc. — so the app still functions standalone.
+    ///
+    /// Resolved once at first access: `url(forUbiquityContainerIdentifier:)`
+    /// is documented as blocking, and the container path doesn't change
+    /// during a process's lifetime.
+    static let folderURL: URL = {
+        let fm = FileManager.default
+        if let ubiquity = fm.url(forUbiquityContainerIdentifier: nil) {
+            // Documents/ is the publicly-scoped subdirectory exposed to
+            // Finder / Files thanks to NSUbiquitousContainerIsDocumentScopePublic
+            // in Info.plist — users can drag .vpcb files into Parts directly.
+            return ubiquity.appendingPathComponent("Documents/Parts", isDirectory: true)
+        }
+        let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return support.appendingPathComponent("Vacuum PCB/Parts", isDirectory: true)
-    }
+    }()
 
     struct Part: Identifiable, Hashable {
         let filename: String
@@ -94,6 +109,17 @@ final class PartsLibrary: ObservableObject {
         guard let entries = try? fm.contentsOfDirectory(at: url, includingPropertiesForKeys: nil) else {
             parts = []
             return
+        }
+        // Trigger downloads for any iCloud-evicted parts so the next reload
+        // picks them up. Evicted files appear as `.Name.vpcb.icloud`
+        // placeholders here — listing the directory doesn't fault them in.
+        // Safe (no-op) when the folder is local Application Support.
+        for entry in entries {
+            let name = entry.lastPathComponent
+            guard name.hasPrefix("."), name.hasSuffix(".icloud") else { continue }
+            let realName = String(name.dropFirst().dropLast(".icloud".count))
+            let realURL = url.appendingPathComponent(realName)
+            try? fm.startDownloadingUbiquitousItem(at: realURL)
         }
         // Migration during reload MUST NOT reach into `PartsLibrary.shared`
         // — we're inside its dispatch_once initialiser. Library files

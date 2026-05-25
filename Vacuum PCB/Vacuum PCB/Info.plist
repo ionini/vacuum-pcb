@@ -4,6 +4,23 @@
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeIconSystemGenerated</key>
+			<true/>
+			<key>CFBundleTypeName</key>
+			<string>Vacuum PCB Design</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.ionini.vacuum-pcb</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIconName</key>
@@ -22,23 +39,35 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string></string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
-	<!-- Required on iOS for DocumentGroup-backed apps; lets the system
-	     open a .vpcb file in place via the Files browser without making
-	     a copy. macOS ignores this key. -->
-	<key>LSSupportsOpeningDocumentsInPlace</key>
-	<true/>
-	<key>UISupportsDocumentBrowser</key>
-	<true/>
-	<!-- App Store will soon require both keys on iPad submissions:
-	     full orientation support and a UILaunchScreen entry (the legacy
-	     LaunchScreen.storyboard path is being phased out). macOS ignores
-	     both keys. The launch screen is intentionally minimal — system
-	     background, no image — since the editor's first paint already
-	     covers the screen once DocumentGroup hands off. -->
+	<key>NSUbiquitousContainers</key>
+	<dict>
+		<key>iCloud.com.ionini.Vacuum-PCB</key>
+		<dict>
+			<key>NSUbiquitousContainerIsDocumentScopePublic</key>
+			<true/>
+			<key>NSUbiquitousContainerName</key>
+			<string>Vacuum PCB</string>
+			<key>NSUbiquitousContainerSupportedFolderLevels</key>
+			<string>Any</string>
+		</dict>
+	</dict>
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIColorName</key>
+		<string></string>
+	</dict>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
 	<key>UISupportedInterfaceOrientations~ipad</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
@@ -46,53 +75,22 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
-	<key>UISupportedInterfaceOrientations</key>
-	<array>
-		<string>UIInterfaceOrientationPortrait</string>
-		<string>UIInterfaceOrientationLandscapeLeft</string>
-		<string>UIInterfaceOrientationLandscapeRight</string>
-	</array>
-	<key>UILaunchScreen</key>
-	<dict>
-		<key>UIColorName</key>
-		<string></string>
-	</dict>
-	<key>CFBundleDocumentTypes</key>
-	<array>
-		<dict>
-			<key>CFBundleTypeName</key>
-			<string>Vacuum PCB Design</string>
-			<key>CFBundleTypeRole</key>
-			<string>Editor</string>
-			<key>LSHandlerRank</key>
-			<string>Owner</string>
-			<key>LSItemContentTypes</key>
-			<array>
-				<string>com.ionini.vacuum-pcb</string>
-			</array>
-			<!-- Have macOS overlay the app icon on a generic document frame.
-			     macOS 13+. Avoids shipping a hand-crafted .icns. -->
-			<key>CFBundleTypeIconSystemGenerated</key>
-			<true/>
-		</dict>
-	</array>
+	<key>UISupportsDocumentBrowser</key>
+	<true/>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
 		<dict>
-			<key>UTTypeIdentifier</key>
-			<string>com.ionini.vacuum-pcb</string>
-			<key>UTTypeDescription</key>
-			<string>Vacuum PCB Design</string>
 			<key>UTTypeConformsTo</key>
 			<array>
 				<string>public.json</string>
 				<string>public.data</string>
 			</array>
-			<!-- Same icon source as the document-types entry, so Spotlight and
-			     third-party apps see a glyph for the UTI even when this app
-			     isn't the active handler. -->
+			<key>UTTypeDescription</key>
+			<string>Vacuum PCB Design</string>
 			<key>UTTypeIconFile</key>
 			<string>AppIcon</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.ionini.vacuum-pcb</string>
 			<key>UTTypeTagSpecification</key>
 			<dict>
 				<key>public.filename-extension</key>
