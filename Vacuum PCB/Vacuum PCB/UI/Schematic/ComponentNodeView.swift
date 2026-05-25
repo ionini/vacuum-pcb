@@ -13,8 +13,22 @@ struct ComponentNodeView: View {
     /// reads it to apply the same offset so the whole group follows
     /// together.
     @Binding var multiDrag: SchematicMultiDrag?
+    /// Bumped by the parent canvas whenever a second finger touches down.
+    /// We watch this and abort any single-finger drag in flight so the
+    /// component snaps back instead of trailing the user's first finger
+    /// during a pan/pinch.
+    var dragInvalidation: Int = 0
+    /// Forwarded straight to each `PinHandleView` so SchematicCanvasView
+    /// can hit-test the drop pin across every component. Receives the
+    /// pin's owning component id + pin key plus the drag location in
+    /// schematic coords.
+    var onPinDragChanged: (PinRef, CGPoint) -> Void = { _, _ in }
+    var onPinDragEnded: (PinRef, CGPoint) -> Void = { _, _ in }
 
     @State private var dragOffset: CGSize = .zero
+    /// Set when `dragInvalidation` changes during a live drag. The drag
+    /// gesture's `.onEnded` reads this and skips committing the move.
+    @State private var dragCancelled: Bool = false
     @State private var isRenaming = false
     @State private var renameDraft: String = ""
     @FocusState private var renameFieldFocused: Bool
@@ -25,10 +39,10 @@ struct ComponentNodeView: View {
     /// user actually dragged — at 2× zoom a 100 px drag should move the
     /// component 50 schematic units, not 100.
     @Environment(\.schematicZoom) private var schematicZoom: Double
-
-    private var metrics: ComponentSymbolMetrics {
-        ComponentSymbolMetrics.metrics(for: component, snapshots: document.circuit.librarySnapshots)
-    }
+    /// When the canvas is locked into pan/zoom mode, our drag gesture is
+    /// masked to `.none` so a stray finger landing on this component
+    /// during a pinch can't kick off a drag.
+    @Environment(\.canvasLocked) private var canvasLocked: Bool
 
     private var isSelected: Bool {
         selection.contains(component: component.id)
@@ -47,7 +61,9 @@ struct ComponentNodeView: View {
     }
 
     var body: some View {
-        ZStack {
+        let snapshots = document.circuit.librarySnapshots
+        let m = ComponentSymbolMetrics.metrics(for: component, snapshots: snapshots)
+        return ZStack {
             ComponentSymbolView(component: component, isSelected: isSelected)
                 .onTapGesture {
                     handleSymbolTap()
@@ -56,30 +72,51 @@ struct ComponentNodeView: View {
                     renameDraft = component.label
                     isRenaming = true
                 }
-                .gesture(dragGesture)
+                // `.gesture(_, including: .none)` keeps the modifier
+                // wired in the view tree (so SwiftUI preserves the
+                // ComponentNodeView's state) while making the gesture
+                // itself inert. Lock mode flips this so a stray finger
+                // landing on the symbol during a pinch can't snag a
+                // drag.
+                .gesture(dragGesture, including: canvasLocked ? .none : .gesture)
 
             // Pin handles
-            ForEach(component.pinKeys(snapshots: document.circuit.librarySnapshots), id: \.self) { key in
-                let offset = metrics.pinOffset(key)
+            ForEach(component.pinKeys(snapshots: snapshots), id: \.self) { key in
+                let offset = m.pinOffset(key)
+                let ref = PinRef(componentId: component.id, pinKey: key)
                 PinHandleView(
                     pinKey: pinDisplayLabel(key),
                     pinType: pinTypeLabel(key),
                     isFirstOfDrawingNet: isFirstPin(key),
-                    onTap: { handlePinTap(key) }
+                    onTap: { handlePinTap(key) },
+                    onDragChanged: { pt in onPinDragChanged(ref, pt) },
+                    onDragEnded: { pt in onPinDragEnded(ref, pt) }
                 )
                 .offset(x: offset.x, y: offset.y)
             }
 
             if isRenaming {
                 renameField
-                    .offset(y: metrics.size.height / 2 + 12)
+                    .offset(y: m.size.height / 2 + 12)
             }
         }
         .offset(effectiveOffset)
+        .onChange(of: dragInvalidation) { _, _ in
+            // A second finger landed on the canvas — drop any in-flight
+            // single-finger drag this node was tracking. SwiftUI's
+            // DragGesture itself won't necessarily fire `.onEnded` in
+            // response (the gesture isn't cancelled at the UIKit layer),
+            // so we reset the visible offset here and mark cancelled so
+            // a delayed `.onEnded` doesn't commit a stale position.
+            if dragOffset != .zero || multiDrag?.participants.contains(component.id) == true {
+                dragOffset = .zero
+                dragCancelled = true
+            }
+        }
     }
 
     private func handleSymbolTap() {
-        if NSEvent.modifierFlags.contains(.command) {
+        if ModifierKeys.commandHeld {
             // Cmd-click toggles in/out of the multi-selection.
             var next = selection
             next.net = nil
@@ -100,8 +137,15 @@ struct ComponentNodeView: View {
         // `.global` matters: the symbol lives inside the ZStack we're offsetting,
         // so a `.local` translation would shrink to zero as the view moves under
         // the cursor and the component would fight the drag.
-        DragGesture(minimumDistance: 2, coordinateSpace: .global)
+        // A 2 pt threshold suits a precise cursor; finger taps wobble more
+        // than that, so raise it on iPad.
+        let minDistance: Double = InputPlatform.isTouch ? 6 : 2
+        return DragGesture(minimumDistance: minDistance, coordinateSpace: .global)
             .onChanged { value in
+                // Skip ticks that arrive after a multi-touch cancel so a
+                // trailing finger movement doesn't re-inflate the offset
+                // we just zeroed.
+                if dragCancelled { return }
                 if multiDrag == nil && dragOffset == .zero {
                     // Decide on first tick: if this node is part of a
                     // multi-selection, drive the shared state so the rest
@@ -119,6 +163,11 @@ struct ComponentNodeView: View {
                 }
             }
             .onEnded { value in
+                if dragCancelled {
+                    dragCancelled = false
+                    dragOffset = .zero
+                    return
+                }
                 if let multi = multiDrag {
                     commitMultiDrag(multi, finalTranslation: unscaled(value.translation))
                     multiDrag = nil
@@ -237,59 +286,23 @@ struct ComponentNodeView: View {
         case .awaitingSecondPin(let firstPin):
             defer { netDrawState = .idle }
             guard firstPin != ref else { return }    // same pin twice → cancel
-            connect(firstPin: firstPin, secondPin: ref)
+            document.circuit.connectPins(firstPin, ref)
         }
-    }
-
-    /// Adds `secondPin` to the same net as `firstPin`. Cases:
-    /// - Neither pin is on any net → create a new net with both.
-    /// - One pin already on a net → add the other to that net.
-    /// - Both on different nets → merge the two nets (keep the first net's id).
-    /// - Both on the same net → toggle: remove `secondPin` from the net
-    ///   (and delete the net if it falls below 2 pins).
-    private func connect(firstPin: PinRef, secondPin: PinRef) {
-        var nets = document.circuit.logic.nets
-        let firstIdx = nets.firstIndex { $0.pins.contains(firstPin) }
-        let secondIdx = nets.firstIndex { $0.pins.contains(secondPin) }
-
-        switch (firstIdx, secondIdx) {
-        case (nil, nil):
-            let label = document.circuit.logic.nextNetLabel()
-            nets.append(Net(label: label, pins: [firstPin, secondPin]))
-        case (let i?, nil):
-            nets[i].pins.append(secondPin)
-        case (nil, let j?):
-            nets[j].pins.append(firstPin)
-        case (let i?, let j?) where i == j:
-            // Toggle off: remove the second pin from the shared net.
-            nets[i].pins.removeAll { $0 == secondPin }
-            if nets[i].pins.count < 2 {
-                let killedNetId = nets[i].id
-                nets.remove(at: i)
-                document.circuit.physical.routes.removeAll { $0.netId == killedNetId }
-            }
-        case (let a?, let b?):
-            // Merge the higher-index net into the lower-index one and drop the
-            // higher. Removing the higher index leaves the lower untouched.
-            let i = min(a, b), j = max(a, b)
-            let merged = nets[j].pins
-            nets[i].pins.append(contentsOf: merged.filter { !nets[i].pins.contains($0) })
-            let killedNetId = nets[j].id
-            nets.remove(at: j)
-            document.circuit.physical.routes.removeAll { $0.netId == killedNetId }
-        }
-        document.circuit.logic.nets = nets
     }
 
     // MARK: - Rename
 
     private var renameField: some View {
-        TextField("Label", text: $renameDraft, onCommit: commitRename)
+        let field = TextField("Label", text: $renameDraft, onCommit: commitRename)
             .textFieldStyle(.roundedBorder)
             .frame(width: 80)
             .focused($renameFieldFocused)
             .onAppear { renameFieldFocused = true }
-            .onExitCommand { isRenaming = false }
+        #if canImport(AppKit)
+        return field.onExitCommand { isRenaming = false }
+        #else
+        return field
+        #endif
     }
 
     private func commitRename() {

@@ -19,6 +19,9 @@ struct SimulatePanZoom<Content: View>: View {
     @State private var pan: CGSize = .zero
     @State private var userAdjusted: Bool = false
     @State private var magnifyBaseline: (zoom: Double, pan: CGSize)?
+    /// Magnification value at which the pinch escaped the deadband (see
+    /// `magnifyGesture`). nil while we're still ignoring small jitter.
+    @State private var zoomOriginMagnification: Double?
     @State private var windowCursor: CGPoint = .zero
     @State private var bgDragMode: BgDragMode = .none
     @State private var panBaseline: CGSize = .zero
@@ -28,7 +31,7 @@ struct SimulatePanZoom<Content: View>: View {
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .topLeading) {
-                Color(NSColor.controlBackgroundColor)
+                Color.canvasBackground
                     .ignoresSafeArea(edges: [])
 
                 content()
@@ -140,13 +143,27 @@ struct SimulatePanZoom<Content: View>: View {
             .onEnded { _ in bgDragMode = .none }
     }
 
+    /// See `PhysicalCanvasView.magnifyGesture` for the deadband rationale.
     private func magnifyGesture(in viewSize: CGSize) -> some Gesture {
         MagnifyGesture()
             .onChanged { value in
-                if magnifyBaseline == nil { magnifyBaseline = (zoom, pan) }
+                if magnifyBaseline == nil {
+                    magnifyBaseline = (zoom, pan)
+                    zoomOriginMagnification = nil
+                }
                 guard let base = magnifyBaseline else { return }
+                let threshold = InputPlatform.isTouch ? 0.15 : 0.04
+                let origin: Double
+                if let z = zoomOriginMagnification {
+                    origin = z
+                } else if abs(value.magnification - 1.0) < threshold {
+                    return
+                } else {
+                    zoomOriginMagnification = value.magnification
+                    origin = value.magnification
+                }
                 let anchor = anchorPoint(in: viewSize)
-                let raw = max(0.05, value.magnification)
+                let raw = max(0.05, value.magnification / origin)
                 let next = max(0.1, min(10.0, base.zoom * raw))
                 let f = next / base.zoom
                 pan = CGSize(
@@ -156,6 +173,9 @@ struct SimulatePanZoom<Content: View>: View {
                 zoom = next
                 userAdjusted = true
             }
-            .onEnded { _ in magnifyBaseline = nil }
+            .onEnded { _ in
+                magnifyBaseline = nil
+                zoomOriginMagnification = nil
+            }
     }
 }

@@ -26,6 +26,37 @@
 	<string></string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<!-- Required on iOS for DocumentGroup-backed apps; lets the system
+	     open a .vpcb file in place via the Files browser without making
+	     a copy. macOS ignores this key. -->
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+	<key>UISupportsDocumentBrowser</key>
+	<true/>
+	<!-- App Store will soon require both keys on iPad submissions:
+	     full orientation support and a UILaunchScreen entry (the legacy
+	     LaunchScreen.storyboard path is being phased out). macOS ignores
+	     both keys. The launch screen is intentionally minimal — system
+	     background, no image — since the editor's first paint already
+	     covers the screen once DocumentGroup hands off. -->
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIColorName</key>
+		<string></string>
+	</dict>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>

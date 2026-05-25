@@ -12,31 +12,69 @@ struct PinHandleView: View {
     let pinType: String?
     let isFirstOfDrawingNet: Bool
     let onTap: () -> Void
+    /// Drag callbacks used to draw a net by dragging from this pin and
+    /// releasing on another. Locations come back in the schematic-canvas
+    /// coord space (same units pin positions are stored in) so the parent
+    /// can hit-test directly. Defaults to no-op so passive call sites
+    /// don't have to provide them.
+    var onDragChanged: (CGPoint) -> Void = { _ in }
+    var onDragEnded: (CGPoint) -> Void = { _ in }
 
     @State private var hovered = false
+    /// On touch platforms the chip is surfaced by a tap (and self-dismisses
+    /// after a beat) since `.onHover` never fires without a cursor.
+    @State private var touchChipUntil: Date?
+    /// When the canvas is locked into pan/zoom mode, the drag-to-route
+    /// gesture is masked to `.none` so the canvas's pan gesture wins.
+    @Environment(\.canvasLocked) private var canvasLocked: Bool
 
     init(
         pinKey: String,
         pinType: String? = nil,
         isFirstOfDrawingNet: Bool,
-        onTap: @escaping () -> Void
+        onTap: @escaping () -> Void,
+        onDragChanged: @escaping (CGPoint) -> Void = { _ in },
+        onDragEnded: @escaping (CGPoint) -> Void = { _ in }
     ) {
         self.pinKey = pinKey
         self.pinType = pinType
         self.isFirstOfDrawingNet = isFirstOfDrawingNet
         self.onTap = onTap
+        self.onDragChanged = onDragChanged
+        self.onDragEnded = onDragEnded
     }
 
     var body: some View {
-        Circle()
+        // iPad fingers cover much more area than a cursor; a 22 pt hit zone
+        // is right on the touch HIG floor. 26 pt gives a bit of slop without
+        // bleeding onto neighbouring pins on tight footprints.
+        let dot: CGFloat = InputPlatform.isTouch ? 12 : 10
+        let hit: CGFloat = InputPlatform.isTouch ? 26 : 22
+        return Circle()
             .fill(fillColor)
             .overlay(Circle().stroke(strokeColor, lineWidth: 1.0))
-            .frame(width: 10, height: 10)
-            .contentShape(Rectangle().size(width: 22, height: 22))
+            .frame(width: dot, height: dot)
+            .contentShape(Rectangle().size(width: hit, height: hit))
             .onHover { hovered = $0 }
-            .onTapGesture { onTap() }
+            .onTapGesture {
+                if InputPlatform.isTouch { flashTouchChip() }
+                onTap()
+            }
+            // Drag-from-pin draws a net to wherever the user releases.
+            // minimumDistance keeps a small wobble from turning a tap into
+            // an accidental drag — short presses still fall through to
+            // .onTapGesture. The coord space name is set on
+            // SchematicCanvasView's scaled inner content so values arrive
+            // pre-scaled, in the same schematic units pin positions live in.
+            .gesture(
+                DragGesture(minimumDistance: InputPlatform.isTouch ? 8 : 4,
+                            coordinateSpace: .named("schematic-canvas"))
+                    .onChanged { value in onDragChanged(value.location) }
+                    .onEnded   { value in onDragEnded(value.location) },
+                including: canvasLocked ? .none : .gesture
+            )
             .overlay(alignment: .bottom) {
-                if hovered {
+                if showChip {
                     hoverChip
                         .fixedSize()
                         // Sit above the dot so the cursor doesn't sit on the
@@ -48,6 +86,24 @@ struct PinHandleView: View {
                 }
             }
             .animation(.easeOut(duration: 0.08), value: hovered)
+            .animation(.easeOut(duration: 0.12), value: touchChipUntil)
+    }
+
+    private var showChip: Bool {
+        if hovered { return true }
+        if let until = touchChipUntil, until > .now { return true }
+        return false
+    }
+
+    /// Pop the chip for ~1.4 s after a tap so the user can confirm which
+    /// pin they actually hit before the routing state machine reacts.
+    private func flashTouchChip() {
+        let deadline = Date.now.addingTimeInterval(1.4)
+        touchChipUntil = deadline
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.4))
+            if touchChipUntil == deadline { touchChipUntil = nil }
+        }
     }
 
     private var hoverChip: some View {

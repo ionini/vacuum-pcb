@@ -290,10 +290,40 @@ final class PartsLibrary: ObservableObject {
             return Part(
                 filename: filename,
                 document: doc,
-                pins: boundaryPins(in: doc)
+                pins: cachedBoundaryPins(forHash: hash, in: doc)
             )
         }
         return shared.part(named: filename)
+    }
+
+    // MARK: - Boundary-pin cache
+    //
+    // `boundaryPins(in:)` scans every component + placement in the snapshot
+    // and was the dominant CPU cost during schematic pan/zoom (profile:
+    // 89/390 user-code samples). Every subpart instance hit it from
+    // `resolvedPart` on every SwiftUI body invalidation — multiple times per
+    // render because both `ComponentSymbolView` and `ComponentNodeView`
+    // recompute their `metrics` computed property in a ForEach. Pins are a
+    // pure function of the snapshot, so we memoise by `contentHash` (the
+    // same key the snapshot dict uses). Entries are immortal-ish: editing a
+    // library part produces a new hash, the old entry simply never matches
+    // again. Locked because some non-UI callers (DRC, flatten, CAD) reach
+    // `resolve` off the main thread.
+    private static let pinsCacheLock = NSLock()
+    private static var pinsCache: [String: [BoundaryPin]] = [:]
+
+    static func cachedBoundaryPins(forHash hash: String, in doc: CircuitDocument) -> [BoundaryPin] {
+        pinsCacheLock.lock()
+        if let cached = pinsCache[hash] {
+            pinsCacheLock.unlock()
+            return cached
+        }
+        pinsCacheLock.unlock()
+        let pins = boundaryPins(in: doc)
+        pinsCacheLock.lock()
+        pinsCache[hash] = pins
+        pinsCacheLock.unlock()
+        return pins
     }
 }
 

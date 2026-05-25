@@ -33,9 +33,25 @@ struct SchematicCanvasView: View {
     @State private var pan: CGSize = .zero
     @State private var userAdjustedView: Bool = false
     @State private var magnifyBaseline: (zoom: Double, pan: CGSize)?
+    /// Magnification value at which the pinch escaped the deadband (see
+    /// `magnifyGesture`). nil while we're still ignoring small jitter.
+    @State private var zoomOriginMagnification: Double?
     @State private var bgDragMode: BackgroundDragMode = .none
     @State private var panBaseline: CGSize = .zero
     @State private var lastViewSize: CGSize = CGSize(width: 800, height: 600)
+    /// Monotonic tick incremented whenever a second finger touches down.
+    /// `ComponentNodeView` observes this and resets its in-flight drag so
+    /// the first finger's accidental component grab doesn't survive into
+    /// a two-finger pan/pinch.
+    @State private var dragInvalidation: Int = 0
+    /// Sticky toggle that puts the canvas into pan/zoom-only mode. The
+    /// `dragInvalidation` race-fix above wins most multi-touch starts,
+    /// but it can't help when the user lands finger #1 well before #2 —
+    /// the SwiftUI DragGesture commits to a component drag before any
+    /// system-level multi-touch arbitration runs. Locking the canvas is
+    /// the bulletproof fallback: single-finger drags pan instead of
+    /// moving components.
+    @State private var navigateMode: Bool = false
     /// Window-space mouse location, captured by an NSEvent monitor mirroring
     /// the right-click catcher. Used so ⌘= / ⌘− / pinch all zoom about the
     /// point the user is actually looking at, not the canvas centre.
@@ -63,7 +79,7 @@ struct SchematicCanvasView: View {
                 // Solid backdrop sits *outside* the scaled subtree so it
                 // always fills the visible canvas no matter how far the
                 // user has zoomed in / out.
-                Color(NSColor.controlBackgroundColor)
+                Color.canvasBackground
                     .ignoresSafeArea(edges: [])
 
                 // `scaledContent` carries the 100k×100k background tap target
@@ -126,20 +142,63 @@ struct SchematicCanvasView: View {
                 )
                 .allowsHitTesting(true)
 
+                // iPad: two-finger drag pans, leaving one-finger drag for
+                // marquee / component move / pin net-draw. Pan coords are
+                // in window pts, applied directly to `pan` which is also
+                // window-pt space.
+                TwoFingerPanCatcher(
+                    onPan: { dx, dy in
+                        pan = CGSize(
+                            width: pan.width  + Double(dx),
+                            height: pan.height + Double(dy)
+                        )
+                        userAdjustedView = true
+                    },
+                    onMultiTouchBegan: {
+                        // Second finger landed — abort any single-finger
+                        // work the first finger started so pan/pinch wins.
+                        multiDrag = nil
+                        marquee = nil
+                        bgDragMode = .none
+                        dragInvalidation &+= 1
+                    }
+                )
+
                 ZoomToolbar(
                     zoomPercent: zoom,
                     onZoomOut: { zoomBy(1 / 1.25, atWindowPoint: windowCursor, viewSize: geo.size) },
                     onFit: { fitToView(viewSize: geo.size) },
-                    onZoomIn: { zoomBy(1.25, atWindowPoint: windowCursor, viewSize: geo.size) }
+                    onZoomIn: { zoomBy(1.25, atWindowPoint: windowCursor, viewSize: geo.size) },
+                    isLocked: navigateMode,
+                    onToggleLock: {
+                        navigateMode.toggle()
+                        // Drop any in-flight selection/drag state so the
+                        // mode flip doesn't leave the canvas mid-gesture.
+                        multiDrag = nil
+                        marquee = nil
+                        bgDragMode = .none
+                        if navigateMode { netDrawState = .idle }
+                    }
                 )
                 .padding(8)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                 .allowsHitTesting(true)
             }
+            .environment(\.canvasLocked, navigateMode)
             .coordinateSpace(name: "schematic-screen")
             .clipped()
             .contentShape(Rectangle())
             .gesture(magnifyGesture(viewSize: geo.size))
+            // Lock-mode pan. Child drag gestures (component move, pin
+            // drag-to-route) read `\.canvasLocked` from the environment
+            // and mask themselves to `.none` when locked, so this is the
+            // only DragGesture left in the tree. `.subviews` mask when
+            // unlocked deactivates this gesture so editing works
+            // normally.
+            .highPriorityGesture(
+                lockPanGesture,
+                including: navigateMode ? .all : .subviews
+            )
             .onContinuousHover(coordinateSpace: .named("schematic-screen")) { phase in
                 if case .active(let p) = phase { windowCursor = p }
             }
@@ -168,12 +227,20 @@ struct SchematicCanvasView: View {
                 .frame(width: 100_000, height: 100_000)
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    if !NSEvent.modifierFlags.contains(.command) {
+                    if !ModifierKeys.commandHeld {
                         selection = .none
                     }
                     netDrawState = .idle
                 }
-                .gesture(marqueeGesture)
+                // In lock mode the canvas-root `lockPanGesture` owns
+                // single-finger drags. Masking marquee to `.none` here
+                // keeps it from snagging the second pinch finger that
+                // happens to land on background and drawing a stray
+                // selection box. SwiftUI's arbitration assigns separate
+                // fingers to separate DragGestures during multi-touch,
+                // so this needs to be off explicitly — not just shadowed
+                // by the high-priority gesture above.
+                .gesture(marqueeGesture, including: navigateMode ? .none : .gesture)
 
             NetLinesView(document: document.circuit, selection: selection)
 
@@ -185,7 +252,10 @@ struct SchematicCanvasView: View {
                     document: $document,
                     selection: $selection,
                     netDrawState: $netDrawState,
-                    multiDrag: $multiDrag
+                    multiDrag: $multiDrag,
+                    dragInvalidation: dragInvalidation,
+                    onPinDragChanged: handlePinDragChanged,
+                    onPinDragEnded: handlePinDragEnded
                 )
                 .position(x: pos.x, y: pos.y)
             }
@@ -197,6 +267,14 @@ struct SchematicCanvasView: View {
 
             marqueeOverlay
         }
+        // Named coord space the pin-handle drag gesture reports in.
+        // Attached inside the scaled subtree (before the parent's
+        // scaleEffect/offset are applied) so gesture locations arrive in
+        // unscaled schematic units — the same coord system pin/component
+        // positions live in. Putting this on the outer modifier chain
+        // would yield post-scaled screen pts instead and the hit test
+        // would drift with zoom/pan.
+        .coordinateSpace(name: "schematic-canvas")
         .onContinuousHover { phase in
             // Local-coord hover lives inside the scaled subtree so its
             // value is already in schematic units — usable directly for
@@ -266,15 +344,56 @@ struct SchematicCanvasView: View {
         userAdjustedView = true
     }
 
+    /// Active only when `navigateMode` is on. A single-finger drag
+    /// anywhere on the canvas pans the viewport, beating any child drag
+    /// gesture (component move, pin drag-to-route) thanks to its
+    /// `.highPriorityGesture` attachment on the canvas root. The outer
+    /// modifier chain is outside the scaleEffect/offset subtree, so
+    /// `value.translation` arrives in window points already — no zoom
+    /// rescale (unlike `marqueeGesture`, which lives inside the scaled
+    /// subtree and divides accordingly).
+    private var lockPanGesture: some Gesture {
+        DragGesture(minimumDistance: 4, coordinateSpace: .local)
+            .onChanged { value in
+                if bgDragMode != .pan {
+                    bgDragMode = .pan
+                    panBaseline = pan
+                }
+                pan = CGSize(
+                    width: panBaseline.width  + value.translation.width,
+                    height: panBaseline.height + value.translation.height
+                )
+                userAdjustedView = true
+            }
+            .onEnded { _ in
+                bgDragMode = .none
+            }
+    }
+
+    /// See the matching comment on `PhysicalCanvasView.magnifyGesture`
+    /// for the deadband rationale.
     private func magnifyGesture(viewSize: CGSize) -> some Gesture {
         MagnifyGesture()
             .onChanged { value in
-                if magnifyBaseline == nil { magnifyBaseline = (zoom, pan) }
+                if magnifyBaseline == nil {
+                    magnifyBaseline = (zoom, pan)
+                    zoomOriginMagnification = nil
+                }
                 guard let base = magnifyBaseline else { return }
+                let threshold = InputPlatform.isTouch ? 0.15 : 0.04
+                let origin: Double
+                if let z = zoomOriginMagnification {
+                    origin = z
+                } else if abs(value.magnification - 1.0) < threshold {
+                    return
+                } else {
+                    zoomOriginMagnification = value.magnification
+                    origin = value.magnification
+                }
                 let anchor = windowCursor == .zero
                     ? CGPoint(x: viewSize.width / 2, y: viewSize.height / 2)
                     : windowCursor
-                let factor = max(0.05, value.magnification)
+                let factor = max(0.05, value.magnification / origin)
                 let newZoom = max(0.1, min(10.0, base.zoom * factor))
                 pan = CGSize(
                     width: Double(anchor.x) - (Double(anchor.x) - base.pan.width)  * (newZoom / base.zoom),
@@ -283,7 +402,10 @@ struct SchematicCanvasView: View {
                 zoom = newZoom
                 userAdjustedView = true
             }
-            .onEnded { _ in magnifyBaseline = nil }
+            .onEnded { _ in
+                magnifyBaseline = nil
+                zoomOriginMagnification = nil
+            }
     }
 
     /// Converts a window-space point (received from the right-click catcher
@@ -313,11 +435,14 @@ struct SchematicCanvasView: View {
     private var marqueeGesture: some Gesture {
         // Plain drag = marquee (in schematic coords). Option-held drag =
         // pan the viewport (in window coords). Mode is latched at first
-        // tick so the user can release Option mid-gesture without flipping.
+        // tick so the user can release Option mid-gesture without
+        // flipping. Lock-mode pan goes through `lockPanGesture` on the
+        // canvas root instead — this whole gesture is masked off when
+        // locked.
         DragGesture(minimumDistance: 4, coordinateSpace: .local)
             .onChanged { value in
                 if bgDragMode == .none {
-                    if NSEvent.modifierFlags.contains(.option) {
+                    if ModifierKeys.optionHeld {
                         bgDragMode = .pan
                         panBaseline = pan
                     } else {
@@ -349,7 +474,7 @@ struct SchematicCanvasView: View {
                     currentScreen: value.location
                 ).rect
                 guard rect.width > 2 || rect.height > 2 else { return }
-                applyMarquee(rect: rect, additive: NSEvent.modifierFlags.contains(.command))
+                applyMarquee(rect: rect, additive: ModifierKeys.commandHeld)
             }
     }
 
@@ -389,6 +514,61 @@ struct SchematicCanvasView: View {
         }
         .stroke(Color.accentColor.opacity(0.8), style: StrokeStyle(lineWidth: 1.6, dash: [4, 3]))
         .allowsHitTesting(false)
+    }
+
+    // MARK: - Pin drag (drag-to-route)
+
+    /// Live drag update from a pin handle: start the net draw on the first
+    /// tick (so the rubber-band locks to this pin) and keep `mouseLocation`
+    /// in step with the finger/cursor so the rendered line follows it.
+    private func handlePinDragChanged(_ ref: PinRef, at canvasPt: CGPoint) {
+        if case .idle = netDrawState {
+            netDrawState = .awaitingSecondPin(firstPin: ref)
+        }
+        mouseLocation = canvasPt
+    }
+
+    /// Release on another pin commits the net; release in empty space
+    /// leaves the awaiting-second-pin state intact so a follow-up tap can
+    /// finish the connection. Mirrors the physical canvas's drag-to-route.
+    private func handlePinDragEnded(_ ref: PinRef, at canvasPt: CGPoint) {
+        guard case .awaitingSecondPin(let firstPin) = netDrawState else { return }
+        guard let target = pinHit(at: canvasPt) else {
+            // No drop pin — leave the net draw active so the user can
+            // finish with a tap.
+            return
+        }
+        defer { netDrawState = .idle }
+        guard target != firstPin else { return }
+        document.circuit.connectPins(firstPin, target)
+        _ = ref  // touched so the auto-capture is explicit in the diff
+    }
+
+    /// Nearest visible pin under a schematic-space point, with a slop
+    /// radius matched to the pin handle's hit zone. Iterates every
+    /// component's pins; the schematic graph is small enough that this
+    /// linear scan never shows up in practice.
+    private func pinHit(at schematicPt: CGPoint) -> PinRef? {
+        let radius: Double = InputPlatform.isTouch ? 18 : 14
+        let radiusSq = radius * radius
+        var best: (ref: PinRef, distSq: Double)?
+        for component in document.circuit.logic.components where component.kind != .screw {
+            guard let center = document.circuit.schematic.position(for: component.id) else { continue }
+            let metrics = ComponentSymbolMetrics.metrics(
+                for: component,
+                snapshots: document.circuit.librarySnapshots
+            )
+            for key in component.pinKeys(snapshots: document.circuit.librarySnapshots) {
+                let off = metrics.pinOffset(key)
+                let dx = Double(schematicPt.x) - (center.x + off.x)
+                let dy = Double(schematicPt.y) - (center.y + off.y)
+                let d2 = dx * dx + dy * dy
+                if d2 <= radiusSq, d2 < (best?.distSq ?? .greatestFiniteMagnitude) {
+                    best = (PinRef(componentId: component.id, pinKey: key), d2)
+                }
+            }
+        }
+        return best?.ref
     }
 
     private func pinScreenPosition(_ ref: PinRef) -> CGPoint? {
@@ -445,29 +625,6 @@ struct SchematicCanvasView: View {
     // MARK: - Deletion
 
     private func deleteSelection() {
-        for id in selection.components {
-            deleteComponent(id)
-        }
-        if let netId = selection.net {
-            deleteNet(netId)
-        }
-        selection = .none
-    }
-
-    private func deleteComponent(_ id: UUID) {
-        document.circuit.logic.components.removeAll { $0.id == id }
-        document.circuit.schematic.remove(componentId: id)
-        for i in document.circuit.logic.nets.indices {
-            document.circuit.logic.nets[i].pins.removeAll { $0.componentId == id }
-        }
-        let dead = document.circuit.logic.nets.filter { $0.pins.count < 2 }.map(\.id)
-        document.circuit.logic.nets.removeAll { dead.contains($0.id) }
-        document.circuit.physical.routes.removeAll { dead.contains($0.netId) }
-        document.circuit.physical.placements.removeAll { $0.componentId == id }
-    }
-
-    private func deleteNet(_ id: UUID) {
-        document.circuit.logic.nets.removeAll { $0.id == id }
-        document.circuit.physical.routes.removeAll { $0.netId == id }
+        SchematicActions.delete(document: &document, selection: &selection)
     }
 }

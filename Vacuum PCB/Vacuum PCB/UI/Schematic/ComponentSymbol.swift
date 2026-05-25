@@ -142,14 +142,15 @@ struct ComponentSymbolView: View {
     }
 
     var body: some View {
-        ZStack {
+        let m = metrics
+        return ZStack {
             symbolShape
                 .fill(fillColor)
                 .overlay(symbolShape.stroke(strokeColor, lineWidth: isSelected ? 2.5 : 1.5))
-                .frame(width: metrics.size.width, height: metrics.size.height)
+                .frame(width: m.size.width, height: m.size.height)
             label
         }
-        .frame(width: metrics.size.width, height: metrics.size.height)
+        .frame(width: m.size.width, height: m.size.height)
     }
 
     private var symbolShape: AnyShape {

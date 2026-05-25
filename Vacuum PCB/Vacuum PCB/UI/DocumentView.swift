@@ -3,6 +3,12 @@ import Euclid
 
 struct DocumentView: View {
     @Binding var document: VPCBDocument
+    /// Document-scoped UndoManager that SwiftUI's DocumentGroup
+    /// publishes through the environment. macOS already routes the
+    /// Edit > Undo menu and ⌘Z through it; this lets us mirror the
+    /// same actions in toolbar buttons that iPad can reach without a
+    /// menu bar or hardware keyboard.
+    @Environment(\.undoManager) private var undoManager
 
     @State private var selectedTab: ViewTab = .schematic
     @State private var selection: SchematicSelection = .none
@@ -10,6 +16,10 @@ struct DocumentView: View {
     /// Lifted up from PhysicalView so the sidebar's DRC list can jump to a
     /// selection (and switch tabs) when the user clicks an issue.
     @State private var physicalSelection: PhysicalSelection = .none
+    /// Lifted out of PhysicalView so the Physical-tab inspector can read it
+    /// and surface a "Cancel" button while routing is active — a stand-in
+    /// for the Escape shortcut on iPad, where there's no hardware key.
+    @State private var physicalRoutingState: RoutingState = .idle
     /// Transient ping marker on the physical canvas, set when the user
     /// clicks a DRC issue with a focal point (crossNetMerge, orphanVia,
     /// channelClearance, disconnectedPin). The canvas overlay animates it
@@ -64,6 +74,33 @@ struct DocumentView: View {
         .inspector(isPresented: $showInspector) {
             inspector
                 .inspectorColumnWidth(min: 240, ideal: 300, max: 420)
+        }
+        .toolbar {
+            // Undo / redo on the leading edge so they sit next to the
+            // document title on iPad (the Notes/Pages convention) and
+            // out of the way of the per-tab Export / Inspector items on
+            // the trailing edge. macOS keeps the Edit > Undo menu as well;
+            // these buttons are just a second route.
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    undoManager?.undo()
+                } label: {
+                    Label("Undo", systemImage: "arrow.uturn.backward")
+                }
+                .keyboardShortcut("z", modifiers: .command)
+                .disabled(undoManager?.canUndo != true)
+                .help("Undo (⌘Z)")
+            }
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    undoManager?.redo()
+                } label: {
+                    Label("Redo", systemImage: "arrow.uturn.forward")
+                }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+                .disabled(undoManager?.canRedo != true)
+                .help("Redo (⇧⌘Z)")
+            }
         }
         .onChange(of: document.circuit) { _, _ in
             previewDirty = true
@@ -138,6 +175,7 @@ struct DocumentView: View {
             PhysicalView(
                 document: $document,
                 selection: $physicalSelection,
+                routingState: $physicalRoutingState,
                 issueFocus: $issueFocus,
                 showInspector: $showInspector,
                 exportMenu: exportMenu
@@ -236,8 +274,18 @@ struct DocumentView: View {
     /// simulator inputs) live in the right-hand inspector — the macOS
     /// convention for "properties of the current view" (Xcode, Pages,
     /// Keynote, Final Cut all do this).
+    /// iOS's `List(selection:)` only accepts a `Binding<Tab?>`; macOS accepts
+    /// both. Wrap our non-optional `@State` in an optional binding so the
+    /// same `List` works on both platforms.
+    private var sidebarSelection: Binding<ViewTab?> {
+        Binding(
+            get: { selectedTab },
+            set: { if let v = $0 { selectedTab = v } }
+        )
+    }
+
     private var sidebar: some View {
-        List(selection: $selectedTab) {
+        List(selection: sidebarSelection) {
             Section("Views") {
                 Label("Schematic", systemImage: "point.3.connected.trianglepath.dotted")
                     .tag(ViewTab.schematic)
@@ -266,48 +314,10 @@ struct DocumentView: View {
                 }
             }
             Section("Design Rules") {
-                drcRows
+                DRCSummarySection(circuit: document.circuit, onFocus: focusIssue)
             }
         }
         .listStyle(.sidebar)
-    }
-
-    /// DRC summary: how many nets are clean, how many have routing issues,
-    /// and the first few issues in human-readable form. Updates live as the
-    /// document changes — this whole view rebuilds on every circuit change.
-    @ViewBuilder private var drcRows: some View {
-        let issues = DRC.check(document.circuit)
-        let netsWithIssues = Set(issues.map(\.netId)).count
-        let totalNets = document.circuit.logic.nets.count
-        if totalNets == 0 {
-            Label("No nets defined", systemImage: "circle.dashed")
-                .foregroundStyle(.secondary)
-        } else if issues.isEmpty {
-            Label("All \(totalNets) nets routed", systemImage: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-        } else {
-            Label("\(netsWithIssues) of \(totalNets) nets have issues",
-                  systemImage: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
-            ForEach(issues.prefix(6)) { issue in
-                Button {
-                    focusIssue(issue)
-                } label: {
-                    Text(issue.summary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .buttonStyle(.plain)
-            }
-            if issues.count > 6 {
-                Text("… and \(issues.count - 6) more")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-        }
     }
 
     /// Click handler for an issue row in the sidebar. Asks DRC for the
@@ -378,7 +388,11 @@ struct DocumentView: View {
                 )
             }
         case .physical:
-            PhysicalInspector(document: $document)
+            PhysicalInspector(
+                document: $document,
+                selection: $physicalSelection,
+                routingState: $physicalRoutingState
+            )
         case .schematic:
             SchematicInspector(document: $document, selection: $selection)
         }
@@ -438,12 +452,21 @@ struct DocumentView: View {
         case .saveSTL:
             showExporter = true
         case .openInBambuStudio:
+            #if canImport(AppKit)
             openInBambuStudio()
+            #else
+            break
+            #endif
         case .openInFlowSimulator:
+            #if canImport(AppKit)
             openInFlowSimulator()
+            #else
+            break
+            #endif
         }
     }
 
+    #if canImport(AppKit)
     private static let bambuStudioBundleID = "com.bambulab.bambu-studio"
     private static let flowSimulatorBundleID = "com.ionini.Flow-Simulator"
 
@@ -538,6 +561,13 @@ struct DocumentView: View {
             }
         }
     }
+    #else
+    // iOS fallback: helper apps don't exist on iPad, so the menu items
+    // stay disabled. Keeps `exportMenu` compiling without dragging in
+    // any NSWorkspace references.
+    private var bambuStudioInstalled: Bool { false }
+    private var flowSimulatorInstalled: Bool { false }
+    #endif
 
     // MARK: - Build
 
@@ -559,6 +589,58 @@ struct DocumentView: View {
                 }
             }
         }
+    }
+}
+
+/// DRC summary block for the sidebar. Owns its own `issues` cache and
+/// only recomputes when the circuit itself changes — without this the
+/// inline `DRC.check(...)` ran on every parent body invalidation
+/// (panning the schematic counted), and the trace flagged it as one of
+/// the heavier paths during scroll. `.onChange(of:)` keeps the cache in
+/// step with mutations from anywhere in the document, since `Circuit`
+/// equality already covers the substantive state DRC reads.
+private struct DRCSummarySection: View {
+    let circuit: CircuitDocument
+    let onFocus: (DRC.Issue) -> Void
+
+    @State private var issues: [DRC.Issue] = []
+
+    var body: some View {
+        let netsWithIssues = Set(issues.map(\.netId)).count
+        let totalNets = circuit.logic.nets.count
+        Group {
+            if totalNets == 0 {
+                Label("No nets defined", systemImage: "circle.dashed")
+                    .foregroundStyle(.secondary)
+            } else if issues.isEmpty {
+                Label("All \(totalNets) nets routed", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            } else {
+                Label("\(netsWithIssues) of \(totalNets) nets have issues",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                ForEach(issues.prefix(6)) { issue in
+                    Button {
+                        onFocus(issue)
+                    } label: {
+                        Text(issue.summary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                }
+                if issues.count > 6 {
+                    Text("… and \(issues.count - 6) more")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .onAppear { issues = DRC.check(circuit) }
+        .onChange(of: circuit) { _, new in issues = DRC.check(new) }
     }
 }
 

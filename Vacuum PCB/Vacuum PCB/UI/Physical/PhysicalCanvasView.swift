@@ -18,6 +18,11 @@ struct PhysicalCanvasView: View {
     /// Larger values spread the influence further — calibrate against the
     /// stiffness of the actual board+silicone stackup.
     var pressureSigma: Double
+    /// Sticky-mode equivalent of holding Cmd at drag start. When on, every
+    /// placement drag carries connected route waypoints along with it.
+    /// OR'd with `ModifierKeys.commandHeld` in `startPlacementDrag` so the
+    /// keyboard path on macOS keeps working independently.
+    var dragWithRoutes: Bool
     /// Transient pulse marker dropped when the user clicks a DRC issue with
     /// a focal point. Read-only — DocumentView owns the value and the
     /// auto-clear timer. We re-mount the overlay on each new focus via
@@ -42,11 +47,21 @@ struct PhysicalCanvasView: View {
     /// deltas against the transform at gesture start, not against a
     /// running-multiplied baseline that would drift.
     @State private var magnifyBaseline: CanvasTransform?
+    /// Magnification value at which the pinch escaped the deadband (see
+    /// `magnifyGesture`). nil while we're still ignoring small jitter.
+    @State private var zoomOriginMagnification: Double?
     /// Background-drag mode latched at drag start: marquee (Option not held)
     /// or pan (Option held). Decided once so a release after toggling the
     /// modifier mid-drag doesn't flip behaviour at the very end.
     @State private var bgDragMode: BackgroundDragMode = .none
     @State private var panBaseline: CGSize = .zero
+    /// Sticky toggle that puts the canvas into pan/zoom-only mode. The
+    /// race-fix in `TwoFingerPanCatcher.onMultiTouchBegan` cancels most
+    /// stray component drags, but it can't help when finger #1 lands
+    /// well before #2 — SwiftUI commits to the drag before any
+    /// multi-touch arbitration. Locking the canvas is the bulletproof
+    /// fallback: single-finger drags pan instead of moving placements.
+    @State private var navigateMode: Bool = false
 
     enum BackgroundDragMode { case none, marquee, pan }
 
@@ -133,14 +148,18 @@ struct PhysicalCanvasView: View {
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .topLeading) {
-                Color(NSColor.controlBackgroundColor)
+                Color.canvasBackground
                     .contentShape(Rectangle())
                     .onTapGesture(coordinateSpace: .local) { pt in
                         handleBackgroundTap(at: pt)
                     }
                     // Drag on empty canvas → marquee select. Min-distance 4
                     // gives SwiftUI room to disambiguate from a click.
-                    .gesture(marqueeGesture)
+                    // Masked off in lock mode so a pinch finger that
+                    // happens to land on background can't draw a stray
+                    // marquee box — the canvas-root `lockPanGesture`
+                    // handles single-finger pans there instead.
+                    .gesture(marqueeGesture, including: navigateMode ? .none : .gesture)
 
                 gridLines(in: geo.size)
                 boardOutline
@@ -241,25 +260,75 @@ struct PhysicalCanvasView: View {
                 )
                 .allowsHitTesting(true)
 
+                // iPad: two-finger drag pans, leaving one-finger drag for
+                // marquee / component move / pin route. macOS pan is
+                // handled by ScrollEventCatcher and Option-drag; this
+                // catcher no-ops there.
+                TwoFingerPanCatcher(
+                    onPan: { dx, dy in
+                        transform = CanvasTransform(
+                            ptsPerMm: transform.ptsPerMm,
+                            offset: CGSize(
+                                width: transform.offset.width  + Double(dx),
+                                height: transform.offset.height + Double(dy)
+                            )
+                        )
+                        userAdjustedView = true
+                    },
+                    onMultiTouchBegan: {
+                        // Second finger landed — drop any single-finger
+                        // drag the first finger may have started so
+                        // pan/pinch wins cleanly. The placement-drag
+                        // `.onEnded` later sees `draggingPlacement == nil`
+                        // and bails out without committing a move.
+                        draggingPlacement = nil
+                        draggingWaypoint = nil
+                        marquee = nil
+                        bgDragMode = .none
+                    }
+                )
+
                 // Zoom controls floating in the top-right corner. Sits on
                 // top of all canvas content; ignores hits otherwise.
                 ZoomToolbar(
                     zoomPercent: zoomPercent(viewSize: geo.size),
                     onZoomOut: { zoomBy(1 / 1.25, viewSize: geo.size) },
                     onFit: { recomputeTransform(viewSize: geo.size); userAdjustedView = false },
-                    onZoomIn: { zoomBy(1.25, viewSize: geo.size) }
+                    onZoomIn: { zoomBy(1.25, viewSize: geo.size) },
+                    isLocked: navigateMode,
+                    onToggleLock: {
+                        navigateMode.toggle()
+                        // Drop in-flight gesture state so the mode flip
+                        // doesn't leave a half-applied drag behind.
+                        draggingPlacement = nil
+                        draggingWaypoint = nil
+                        marquee = nil
+                        bgDragMode = .none
+                        if navigateMode { routingState = .idle }
+                    }
                 )
                 .padding(8)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                 .allowsHitTesting(true)
             }
+            .environment(\.canvasLocked, navigateMode)
             .coordinateSpace(name: "canvas")
             .clipped()
-            .background(Color(NSColor.controlBackgroundColor))
+            .background(Color.canvasBackground)
             .onContinuousHover { phase in
                 if case .active(let p) = phase { mouseLocation = p }
             }
             .gesture(magnifyGesture(viewSize: geo.size))
+            // Lock-mode pan. Child drag gestures (placement move, pin
+            // drag-to-route, waypoint drag) read `\.canvasLocked` and
+            // mask to `.none` when locked, so this is the only
+            // DragGesture left in the tree. `.subviews` mask when
+            // unlocked deactivates this gesture so editing works
+            // normally.
+            .highPriorityGesture(
+                lockPanGesture,
+                including: navigateMode ? .all : .subviews
+            )
             // Click-and-hold over any stacked content (placement on top of a
             // route, route under a via, etc.) opens a SwiftUI popover listing
             // every selectable item at the cursor. `.simultaneousGesture` so
@@ -369,19 +438,69 @@ struct PhysicalCanvasView: View {
         userAdjustedView = true
     }
 
+    /// Active only when `navigateMode` is on. Single-finger drag
+    /// anywhere on the canvas pans the viewport, beating every child
+    /// drag gesture (placement move, pin drag-to-route, waypoint drag)
+    /// via `.highPriorityGesture` on the canvas root. `.local` here is
+    /// the canvas's outer chain — already in window points — so the
+    /// translation goes straight onto `transform.offset` without any
+    /// `ptsPerMm` rescale.
+    private var lockPanGesture: some Gesture {
+        DragGesture(minimumDistance: 4, coordinateSpace: .local)
+            .onChanged { value in
+                if bgDragMode != .pan {
+                    bgDragMode = .pan
+                    panBaseline = transform.offset
+                }
+                transform = CanvasTransform(
+                    ptsPerMm: transform.ptsPerMm,
+                    offset: CGSize(
+                        width: panBaseline.width  + value.translation.width,
+                        height: panBaseline.height + value.translation.height
+                    )
+                )
+                userAdjustedView = true
+            }
+            .onEnded { _ in
+                bgDragMode = .none
+            }
+    }
+
     /// Trackpad pinch. The magnification value is cumulative within a
     /// single gesture, so we capture a baseline at gesture start and apply
     /// the delta against it each tick — otherwise repeated pinches would
     /// drift away from the user's intended scale.
+    ///
+    /// `MagnifyGesture` on iPad is extremely sensitive — natural finger
+    /// jitter while panning produces sub-pt distance changes that the
+    /// system reports as 1.02–1.05 magnifications and the canvas would
+    /// otherwise honour, hijacking the pan. We sit in a deadband until
+    /// the user moves their fingers apart (or together) by at least
+    /// `threshold` percent, and once we cross it the zoom is computed
+    /// relative to that crossing point so engagement is smooth instead
+    /// of snapping.
     private func magnifyGesture(viewSize: CGSize) -> some Gesture {
         MagnifyGesture()
             .onChanged { value in
-                if magnifyBaseline == nil { magnifyBaseline = transform }
+                if magnifyBaseline == nil {
+                    magnifyBaseline = transform
+                    zoomOriginMagnification = nil
+                }
                 guard let base = magnifyBaseline else { return }
+                let threshold = InputPlatform.isTouch ? 0.15 : 0.04
+                let origin: Double
+                if let z = zoomOriginMagnification {
+                    origin = z
+                } else if abs(value.magnification - 1.0) < threshold {
+                    return
+                } else {
+                    zoomOriginMagnification = value.magnification
+                    origin = value.magnification
+                }
                 let cursor = mouseLocation == .zero
                     ? CGPoint(x: viewSize.width / 2, y: viewSize.height / 2)
                     : mouseLocation
-                let factor = max(0.05, value.magnification)
+                let factor = max(0.05, value.magnification / origin)
                 let newScale = max(0.5, min(200.0, base.ptsPerMm * factor))
                 let nx = Double(cursor.x) - (Double(cursor.x) - base.offset.width)  * (newScale / base.ptsPerMm)
                 let ny = Double(cursor.y) - (Double(cursor.y) - base.offset.height) * (newScale / base.ptsPerMm)
@@ -392,7 +511,10 @@ struct PhysicalCanvasView: View {
                 userAdjustedView = true
                 lastViewSize = viewSize
             }
-            .onEnded { _ in magnifyBaseline = nil }
+            .onEnded { _ in
+                magnifyBaseline = nil
+                zoomOriginMagnification = nil
+            }
     }
 
     // MARK: - Background visuals
@@ -503,7 +625,13 @@ struct PhysicalCanvasView: View {
                         // route. Pin handles stay active so clicking a pin
                         // can still commit the route.
                         .allowsHitTesting(!routingState.inProgress)
-                        .gesture(placementDragGesture(placement))
+                        // Drag is the destructive op (move). In lock mode
+                        // the canvas-root pan gesture takes over; we mask
+                        // this one to `.none` so it can't snag touches.
+                        .gesture(
+                            placementDragGesture(placement),
+                            including: navigateMode ? .none : .gesture
+                        )
                         .onTapGesture(coordinateSpace: .named("canvas")) { pt in
                             handlePlacementTap(componentId: placement.componentId, at: pt)
                         }
@@ -544,13 +672,13 @@ struct PhysicalCanvasView: View {
         // routes traversing the body; without this, those routes are
         // unreachable. Cmd-click is preserved for multi-select on placements
         // — only plain clicks defer to the route.
-        if !NSEvent.modifierFlags.contains(.command),
+        if !ModifierKeys.commandHeld,
            let hit = routeSegmentHit(at: pt) {
             selection = .routeSegment(netId: hit.netId, segmentIndex: hit.segmentIndex)
             routingState = .idle
             return
         }
-        if NSEvent.modifierFlags.contains(.command) {
+        if ModifierKeys.commandHeld {
             // Cmd-click toggles in/out of the multi-selection without
             // disturbing whatever else is selected. Route segment goes away
             // when we transition into multi-select on placements.
@@ -573,7 +701,11 @@ struct PhysicalCanvasView: View {
         // .offset() above — a `.local` translation would collapse as the
         // view moves under the gesture, same pattern as the schematic
         // component drag.
-        DragGesture(minimumDistance: 2, coordinateSpace: .global)
+        // 2 pt is right for a precise trackpad cursor but turns finger
+        // micro-twitches into accidental drags on iPad — raise the
+        // threshold there.
+        let minDistance: Double = InputPlatform.isTouch ? 6 : 2
+        return DragGesture(minimumDistance: minDistance, coordinateSpace: .global)
             .onChanged { value in
                 if draggingPlacement == nil {
                     startPlacementDrag(grabbed: placement, translation: value.translation)
@@ -600,7 +732,7 @@ struct PhysicalCanvasView: View {
                 let allScrews = drag.originals.keys.allSatisfy { id in
                     document.circuit.logic.components.first(where: { $0.id == id })?.kind == .screw
                 }
-                let cmdHeld = NSEvent.modifierFlags.contains(.command)
+                let cmdHeld = ModifierKeys.commandHeld
                 let delta: Point
                 if allScrews && cmdHeld {
                     delta = raw
@@ -630,7 +762,10 @@ struct PhysicalCanvasView: View {
     /// route waypoint sitting on any pin of any dragged placement on top of
     /// whatever the selection already carries.
     private func startPlacementDrag(grabbed placement: Placement, translation: CGSize) {
-        let withRoutes = NSEvent.modifierFlags.contains(.command)
+        // Either the per-drag modifier (Cmd on macOS) or the sticky
+        // toolbar toggle opt in to the rubber-band carry. They compose so
+        // a power user on macOS who's also flipped the toggle still works.
+        let withRoutes = ModifierKeys.commandHeld || dragWithRoutes
         let dragSet: Set<UUID>
         var carriedWaypoints: Set<RouteWaypointAddress> = []
         if selection.contains(placement: placement.componentId), selection.placements.count > 1 {
@@ -753,12 +888,19 @@ struct PhysicalCanvasView: View {
         // Footprint exclusion-rect dimensions in pts, padded so small parts
         // stay easy to grab. The arrowhead glyph for ports / rails extends
         // well past the pin anchor — and the tip is exactly what users aim
-        // at — so give those kinds a generous minimum target.
+        // at — so give those kinds a generous minimum target. On iPad the
+        // pin handle (~26 pt hit zone) sits on top of the placement, so
+        // the body's own target has to be considerably bigger than the
+        // pin's to leave finger-sized slack around the glyph.
         let bounds = c.footprint(manufacturing, snapshots: librarySnapshots).boundingRect
         let isArrowLike: Bool = (c.kind == .port || c.kind == .vacuumSource || c.kind == .atmVent)
-        let minSize: Double = isArrowLike ? 60 : 40
-        let w = max(minSize, bounds.size.width * transform.ptsPerMm + 12)
-        let h = max(minSize, bounds.size.height * transform.ptsPerMm + 12)
+        let minSize: Double = {
+            if InputPlatform.isTouch { return isArrowLike ? 88 : 56 }
+            return isArrowLike ? 60 : 40
+        }()
+        let pad: Double = InputPlatform.isTouch ? 20 : 12
+        let w = max(minSize, bounds.size.width * transform.ptsPerMm + pad)
+        let h = max(minSize, bounds.size.height * transform.ptsPerMm + pad)
         return CGSize(width: w, height: h)
     }
 
@@ -777,13 +919,20 @@ struct PhysicalCanvasView: View {
                         if visible.contains(pinLayer) {
                             let world = placement.worldPosition(of: pin)
                             let screen = transform.toScreen(world)
+                            let id = placement.componentId
+                            let key = pin.key
                             PhysicalPinHandle(
                                 pinKey: pinDisplayLabel(component: component, key: pin.key),
                                 layer: pinLayer,
-                                isFirstOfRouting: isFirstRoutingPin(componentId: placement.componentId, key: pin.key)
-                            ) {
-                                handlePinTap(componentId: placement.componentId, pinKey: pin.key)
-                            }
+                                isFirstOfRouting: isFirstRoutingPin(componentId: id, key: key),
+                                onTap: { handlePinTap(componentId: id, pinKey: key) },
+                                onDragChanged: { canvasPt in
+                                    handlePinDragChanged(componentId: id, pinKey: key, at: canvasPt)
+                                },
+                                onDragEnded: { canvasPt in
+                                    handlePinDragEnded(componentId: id, pinKey: key, at: canvasPt)
+                                }
+                            )
                             .position(screen)
                             .offset(dragOffset(for: placement.componentId))
                         }
@@ -829,7 +978,10 @@ struct PhysicalCanvasView: View {
             ForEach(Array(displayed.enumerated()), id: \.offset) { i, world in
                 WaypointHandle()
                     .position(transform.toScreen(world))
-                    .gesture(handleDragGesture(netId: seg.netId, segIdx: seg.segmentIndex, idx: i, originals: originals))
+                    .gesture(
+                        handleDragGesture(netId: seg.netId, segIdx: seg.segmentIndex, idx: i, originals: originals),
+                        including: navigateMode ? .none : .gesture
+                    )
             }
         }
     }
@@ -862,7 +1014,8 @@ struct PhysicalCanvasView: View {
         // `.global` mirrors the schematic drag fix: the handle is positioned
         // by a view that moves with the gesture's local coord space, so local
         // translations collapse to zero.
-        DragGesture(minimumDistance: 1, coordinateSpace: .global)
+        let minDistance: Double = InputPlatform.isTouch ? 4 : 1
+        return DragGesture(minimumDistance: minDistance, coordinateSpace: .global)
             .onChanged { value in
                 if draggingWaypoint == nil {
                     draggingWaypoint = DraggingWaypoint(
@@ -984,8 +1137,9 @@ struct PhysicalCanvasView: View {
         else { return nil }
         let segment = route.segments[segIdx]
         let n = segment.waypoints.count
-        // Match the handle's hit area (~22pt square → ~11pt radius).
-        let threshold: Double = 11
+        // Match the handle's hit area (~22pt square → ~11pt radius on
+        // macOS, 28pt → ~14pt radius on iPad — see WaypointHandle).
+        let threshold: Double = InputPlatform.isTouch ? 14 : 11
         var best: (idx: Int, distance: Double)?
         for (i, wp) in segment.waypoints.enumerated() {
             guard i > 0, i < n - 1 else { continue }
@@ -1035,47 +1189,11 @@ struct PhysicalCanvasView: View {
         selection = .routeSegment(netId: hit.netId, segmentIndex: hit.segIdx)
     }
 
-    /// Bulk-delete everything in the current selection:
-    ///  * placements (just remove the placement; the logic-side component
-    ///    isn't touched — schematic edits delete those),
-    ///  * the focused route segment,
-    ///  * every segment that contains a marquee-selected waypoint (so a
-    ///    Cmd-marquee around a subcircuit can wipe the routes too).
-    ///
-    /// We collect the segment-removal set first, then process per-net in
-    /// descending segment-index order so removing earlier segments doesn't
-    /// shift indices of segments we still want to remove.
+    /// Bulk-delete everything in the current selection. Lives in
+    /// `PhysicalActions` so the inspector's contextual Delete button can
+    /// invoke the exact same path as the ⌫ shortcut.
     private func deleteCurrentSelection() {
-        if !selection.placements.isEmpty {
-            for id in selection.placements {
-                document.circuit.physical.placements.removeAll { $0.componentId == id }
-            }
-        }
-
-        // Build the (netId, segmentIndex) set to remove from waypoint hits
-        // and the focused route segment.
-        var toRemove: [UUID: Set<Int>] = [:]
-        for addr in selection.waypoints {
-            toRemove[addr.netId, default: []].insert(addr.segmentIndex)
-        }
-        if let seg = selection.routeSegment {
-            toRemove[seg.netId, default: []].insert(seg.segmentIndex)
-        }
-
-        for (netId, segIndices) in toRemove {
-            guard let rIdx = document.circuit.physical.routes.firstIndex(where: { $0.netId == netId })
-            else { continue }
-            // Descending so earlier removals don't shift later indices.
-            for sIdx in segIndices.sorted(by: >) {
-                if sIdx < document.circuit.physical.routes[rIdx].segments.count {
-                    document.circuit.physical.routes[rIdx].segments.remove(at: sIdx)
-                }
-            }
-            if document.circuit.physical.routes[rIdx].segments.isEmpty {
-                document.circuit.physical.routes.remove(at: rIdx)
-            }
-        }
-        selection = .none
+        PhysicalActions.delete(document: &document, selection: &selection)
     }
 
     private func projectPoint(_ p: CGPoint, ontoSegmentFrom a: CGPoint, to b: CGPoint) -> CGPoint {
@@ -1145,7 +1263,7 @@ struct PhysicalCanvasView: View {
         DragGesture(minimumDistance: 4, coordinateSpace: .local)
             .onChanged { value in
                 if bgDragMode == .none {
-                    if NSEvent.modifierFlags.contains(.option) {
+                    if ModifierKeys.optionHeld {
                         bgDragMode = .pan
                         panBaseline = transform.offset
                     } else {
@@ -1179,7 +1297,7 @@ struct PhysicalCanvasView: View {
                 // Tiny rectangles (sub-grid) are likely fumbled clicks — treat
                 // as a no-op rather than wiping the selection silently.
                 guard rect.width > 2 || rect.height > 2 else { return }
-                applyMarquee(screenRect: rect, additive: NSEvent.modifierFlags.contains(.command))
+                applyMarquee(screenRect: rect, additive: ModifierKeys.commandHeld)
             }
     }
 
@@ -1257,7 +1375,7 @@ struct PhysicalCanvasView: View {
             // here by computing point-to-polyline distance.
             if let hit = routeSegmentHit(at: pt) {
                 selection = .routeSegment(netId: hit.netId, segmentIndex: hit.segmentIndex)
-            } else if !NSEvent.modifierFlags.contains(.command) {
+            } else if !ModifierKeys.commandHeld {
                 // Cmd-tap on empty area preserves selection (so the user can
                 // Cmd-tap placements to extend a multi-selection without
                 // accidentally clearing it). Plain background tap deselects.
@@ -1331,9 +1449,12 @@ struct PhysicalCanvasView: View {
     /// the channel-stroke width of `pt` (screen pts). Nil if nothing is close.
     private func routeSegmentHit(at pt: CGPoint) -> (netId: UUID, segmentIndex: Int)? {
         // Match RoutesOverlay's stroke width and add a small slop so a click
-        // near the edge of the rendered channel still hits.
+        // near the edge of the rendered channel still hits. Fingers are
+        // less precise than a cursor, so the touch floor is a few pt wider.
         let channelStroke = max(1.5, manufacturing.channelDiameter * transform.ptsPerMm * 0.85)
-        let threshold = max(6.0, channelStroke / 2 + 3.0)
+        let slop: Double = InputPlatform.isTouch ? 5.0 : 3.0
+        let floor: Double = InputPlatform.isTouch ? 10.0 : 6.0
+        let threshold = max(floor, channelStroke / 2 + slop)
         var best: (netId: UUID, segmentIndex: Int, distance: Double)?
         for route in document.circuit.physical.routes {
             for (segIdx, segment) in route.segments.enumerated() {
@@ -1362,6 +1483,61 @@ struct PhysicalCanvasView: View {
         let projX = a.x + CGFloat(t) * dx
         let projY = a.y + CGFloat(t) * dy
         return hypot(Double(p.x - projX), Double(p.y - projY))
+    }
+
+    /// First tick of a drag that started on a pin: begin routing from this
+    /// pin (if idle) and update `mouseLocation` so `RoutingPreviewOverlay`
+    /// follows the finger. Routing-already-in-progress drags just update
+    /// the cursor without re-tapping the pin.
+    private func handlePinDragChanged(componentId: UUID, pinKey: String, at canvasPt: CGPoint) {
+        if !routingState.inProgress {
+            handlePinTap(componentId: componentId, pinKey: pinKey)
+        }
+        mouseLocation = canvasPt
+    }
+
+    /// Release on another pin commits the route to it; release in empty
+    /// space drops a waypoint at the release point so the user can keep
+    /// extending with subsequent taps. Mirrors the click-then-click flow,
+    /// just driven by a single drag instead.
+    private func handlePinDragEnded(componentId: UUID, pinKey: String, at canvasPt: CGPoint) {
+        if let target = pinHit(at: canvasPt) {
+            handlePinTap(componentId: target.componentId, pinKey: target.pinKey)
+            return
+        }
+        // No pin under the release: treat it the same as a tap on empty
+        // canvas at that point (extends the in-progress route there). Skip
+        // if routing isn't actually in flight — that can happen when the
+        // drag was too small to start one but somehow still reached
+        // onEnded with onChanged never firing.
+        if routingState.inProgress {
+            handleBackgroundTap(at: canvasPt)
+        }
+    }
+
+    /// Nearest visible pin under a canvas-local point, within a forgiving
+    /// touch-friendly radius. Mirrors the same world→screen projection the
+    /// renderer uses so the user's eye and the hit test stay aligned.
+    private func pinHit(at canvasPt: CGPoint) -> (componentId: UUID, pinKey: String)? {
+        let radius: Double = InputPlatform.isTouch ? 26 : 18
+        let radiusSq = radius * radius
+        var best: (componentId: UUID, pinKey: String, distSq: Double)?
+        for placement in document.circuit.physical.placements {
+            guard let component = component(for: placement.componentId) else { continue }
+            for pin in component.footprint(manufacturing, snapshots: librarySnapshots).pins {
+                let pinLayer = placement.resolvedLayer(of: pin, on: component)
+                guard visible.contains(pinLayer) else { continue }
+                let world = placement.worldPosition(of: pin)
+                let screen = transform.toScreen(world)
+                let dx = Double(canvasPt.x - screen.x)
+                let dy = Double(canvasPt.y - screen.y)
+                let d2 = dx * dx + dy * dy
+                if d2 <= radiusSq, d2 < (best?.distSq ?? .greatestFiniteMagnitude) {
+                    best = (placement.componentId, pin.key, d2)
+                }
+            }
+        }
+        return best.map { ($0.componentId, $0.pinKey) }
     }
 
     private func handlePinTap(componentId: UUID, pinKey: String) {
@@ -1507,60 +1683,12 @@ struct PhysicalCanvasView: View {
         deleteCurrentSelection()
     }
 
-    /// R rotates each selected placement by 90° in place. Multi-selection
-    /// rotates every member independently around its own anchor (rather
-    /// than rotating the bounding box around its centroid), which matches
-    /// what users typically want when they multi-select to "fix orientation
-    /// on a row of parts."
     private func rotateSelection() {
-        guard !selection.placements.isEmpty else { return }
-        for id in selection.placements {
-            guard let i = document.circuit.physical.placements.firstIndex(where: { $0.componentId == id })
-            else { continue }
-            let next: Rotation
-            switch document.circuit.physical.placements[i].rotation {
-            case .r0: next = .r90
-            case .r90: next = .r180
-            case .r180: next = .r270
-            case .r270: next = .r0
-            }
-            document.circuit.physical.placements[i].rotation = next
-        }
+        PhysicalActions.rotate(document: &document, selection: selection)
     }
 
     private func flipLayerSelection() {
-        guard !selection.placements.isEmpty else { return }
-        // Build the cycle order once — T0, T1, …, Tn-1, B0, B1, …, Bm-1.
-        // Pure-hole components (resistors are tubes; ports/vents/vacuum
-        // sources are edge bores) step one position along this cycle on
-        // each F press, so F walks them through every channel layer the
-        // board has. Transistors keep the "flip plate" behaviour because
-        // their dimple/dome geometry is pinned to the silicone-facing
-        // depth-0 layer.
-        let cycle = document.circuit.physical.layers(in: .top)
-            + document.circuit.physical.layers(in: .bottom)
-        for id in selection.placements {
-            guard let i = document.circuit.physical.placements.firstIndex(where: { $0.componentId == id })
-            else { continue }
-            let placement = document.circuit.physical.placements[i]
-            let component = document.circuit.logic.components.first(where: { $0.id == id })
-            let cyclesLayers: Bool = {
-                switch component?.kind {
-                case .resistor, .port, .vacuumSource, .atmVent: return true
-                default: return false
-                }
-            }()
-            if cyclesLayers, !cycle.isEmpty {
-                let current = Layer(plate: placement.layer, depth: placement.depth)
-                let idx = cycle.firstIndex(of: current) ?? 0
-                let next = cycle[(idx + 1) % cycle.count]
-                document.circuit.physical.placements[i].layer = next.plate
-                document.circuit.physical.placements[i].depth = next.depth
-            } else {
-                document.circuit.physical.placements[i].layer = placement.layer.opposite
-                document.circuit.physical.placements[i].depth = 0
-            }
-        }
+        PhysicalActions.flipLayer(document: &document, selection: selection)
     }
 
     // MARK: - Disambiguator (click-and-hold)
@@ -1758,18 +1886,92 @@ struct PhysicalPinHandle: View {
     let layer: Layer
     let isFirstOfRouting: Bool
     let onTap: () -> Void
+    /// Live drag callbacks used to let the user draw a route by dragging
+    /// from this pin and releasing on another. Locations are reported in
+    /// the canvas's "canvas" coordinate space so the receiver can hit-test
+    /// directly against the same screen positions it uses for pin rendering.
+    /// Defaults to no-op so existing call sites (and tests) don't need to
+    /// supply them.
+    var onDragChanged: (CGPoint) -> Void = { _ in }
+    var onDragEnded: (CGPoint) -> Void = { _ in }
 
     @State private var hovered = false
+    /// On touch platforms the pin label briefly pops on tap, so the user
+    /// can confirm which pin they hit (the `.help()` tooltip is hidden on
+    /// iPad and `.onHover` never fires).
+    @State private var touchChipUntil: Date?
+    /// When the canvas is locked into pan/zoom mode, the drag-to-route
+    /// gesture is masked to `.none` so the canvas's pan gesture wins.
+    @Environment(\.canvasLocked) private var canvasLocked: Bool
 
     var body: some View {
-        Circle()
+        // The macOS dot is intentionally tiny because the cursor can land
+        // it precisely; on iPad bump the dot and hit zone above the touch
+        // HIG floor.
+        let dot: CGFloat = InputPlatform.isTouch ? 11 : 9
+        let hit: CGFloat = InputPlatform.isTouch ? 26 : 20
+        return Circle()
             .fill(fillColor)
             .overlay(Circle().stroke(strokeColor, lineWidth: 1.0))
-            .frame(width: 9, height: 9)
-            .contentShape(Rectangle().size(width: 20, height: 20))
+            .frame(width: dot, height: dot)
+            .contentShape(Rectangle().size(width: hit, height: hit))
             .onHover { hovered = $0 }
-            .onTapGesture { onTap() }
+            .onTapGesture {
+                if InputPlatform.isTouch { flashTouchChip() }
+                onTap()
+            }
+            // Drag-from-pin starts (or extends) a route and follows the
+            // finger/cursor. minimumDistance keeps a slight wobble from
+            // turning a tap into an accidental drag — taps under that
+            // threshold still fall through to .onTapGesture. The
+            // coordinate space name is set on PhysicalCanvasView's outer
+            // ZStack and matches the one `mouseLocation` lives in.
+            .gesture(
+                DragGesture(minimumDistance: InputPlatform.isTouch ? 8 : 4,
+                            coordinateSpace: .named("canvas"))
+                    .onChanged { value in onDragChanged(value.location) }
+                    .onEnded   { value in onDragEnded(value.location) },
+                including: canvasLocked ? .none : .gesture
+            )
+            .overlay(alignment: .bottom) {
+                if showChip {
+                    pinLabelChip
+                        .fixedSize()
+                        .offset(y: -16)
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+                }
+            }
+            .animation(.easeOut(duration: 0.08), value: hovered)
+            .animation(.easeOut(duration: 0.12), value: touchChipUntil)
             .help(pinKey)
+    }
+
+    private var showChip: Bool {
+        if hovered { return true }
+        if let until = touchChipUntil, until > .now { return true }
+        return false
+    }
+
+    private var pinLabelChip: some View {
+        Text(pinKey)
+            .font(.system(size: 10, weight: .semibold))
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 4))
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(Color.primary.opacity(0.25), lineWidth: 0.5)
+            )
+    }
+
+    private func flashTouchChip() {
+        let deadline = Date.now.addingTimeInterval(1.4)
+        touchChipUntil = deadline
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.4))
+            if touchChipUntil == deadline { touchChipUntil = nil }
+        }
     }
 
     private var fillColor: Color {
@@ -1797,11 +1999,19 @@ struct WaypointHandle: View {
     @State private var hovered = false
 
     var body: some View {
-        Circle()
+        // On touch the hover-grow affordance never fires, so the handle is
+        // permanently a bit bigger and the hit rect grows past the touch HIG
+        // floor. Macs keep the dainty default so dense routes don't look
+        // like a polka-dot pattern.
+        let base: CGFloat = InputPlatform.isTouch ? 12 : 10
+        let active: CGFloat = InputPlatform.isTouch ? 14 : 13
+        let hit: CGFloat = InputPlatform.isTouch ? 28 : 22
+        let size = hovered ? active : base
+        return Circle()
             .fill(Color.accentColor)
             .overlay(Circle().stroke(Color.white, lineWidth: 1.2))
-            .frame(width: hovered ? 13 : 10, height: hovered ? 13 : 10)
-            .contentShape(Rectangle().size(width: 22, height: 22))
+            .frame(width: size, height: size)
+            .contentShape(Rectangle().size(width: hit, height: hit))
             .onHover { hovered = $0 }
             .help("Drag to reshape route")
             .animation(.easeOut(duration: 0.08), value: hovered)
@@ -1811,13 +2021,27 @@ struct WaypointHandle: View {
 // MARK: - Right-click catcher
 
 /// SwiftUI on macOS doesn't expose secondary-button taps, so we drop a thin
-/// NSView into the hierarchy that:
-///  * returns `nil` from `hitTest` so left clicks (and other gestures) pass
-///    through to sibling SwiftUI views beneath it,
-///  * registers a local NSEvent monitor while attached to a window so that
-///    right-clicks anywhere over the host view are observed and reported
-///    in SwiftUI-style (Y-down) coordinates.
-struct RightClickCatcher: NSViewRepresentable {
+/// NSView into the hierarchy that monitors `.rightMouseDown` and forwards
+/// the location in SwiftUI-style (Y-down) coordinates. The view returns
+/// `nil` from `hitTest` so left clicks pass through to sibling SwiftUI
+/// views beneath it. On iOS / iPad there's no secondary-click concept, so
+/// this is a no-op view; right-click-driven actions (removing a pin from
+/// a net, deleting an interior waypoint) are unreachable on touch in v1.
+struct RightClickCatcher: View {
+    let onRightClick: (CGPoint) -> Void
+
+    var body: some View {
+        #if canImport(AppKit)
+        RightClickCatcherRepresentable(onRightClick: onRightClick)
+        #else
+        Color.clear.allowsHitTesting(false)
+        #endif
+    }
+}
+
+#if canImport(AppKit)
+
+private struct RightClickCatcherRepresentable: NSViewRepresentable {
     let onRightClick: (CGPoint) -> Void
 
     func makeNSView(context: Context) -> RightClickCatcherView {
@@ -1863,6 +2087,8 @@ final class RightClickCatcherView: NSView {
         if let monitor { NSEvent.removeMonitor(monitor) }
     }
 }
+
+#endif
 
 // MARK: - Drop delegate for parking-lot drops
 
