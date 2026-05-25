@@ -55,6 +55,13 @@ struct PhysicalCanvasView: View {
     /// modifier mid-drag doesn't flip behaviour at the very end.
     @State private var bgDragMode: BackgroundDragMode = .none
     @State private var panBaseline: CGSize = .zero
+    /// Sticky toggle that puts the canvas into pan/zoom-only mode. The
+    /// race-fix in `TwoFingerPanCatcher.onMultiTouchBegan` cancels most
+    /// stray component drags, but it can't help when finger #1 lands
+    /// well before #2 — SwiftUI commits to the drag before any
+    /// multi-touch arbitration. Locking the canvas is the bulletproof
+    /// fallback: single-finger drags pan instead of moving placements.
+    @State private var navigateMode: Bool = false
 
     enum BackgroundDragMode { case none, marquee, pan }
 
@@ -148,7 +155,11 @@ struct PhysicalCanvasView: View {
                     }
                     // Drag on empty canvas → marquee select. Min-distance 4
                     // gives SwiftUI room to disambiguate from a click.
-                    .gesture(marqueeGesture)
+                    // Masked off in lock mode so a pinch finger that
+                    // happens to land on background can't draw a stray
+                    // marquee box — the canvas-root `lockPanGesture`
+                    // handles single-finger pans there instead.
+                    .gesture(marqueeGesture, including: navigateMode ? .none : .gesture)
 
                 gridLines(in: geo.size)
                 boardOutline
@@ -253,16 +264,29 @@ struct PhysicalCanvasView: View {
                 // marquee / component move / pin route. macOS pan is
                 // handled by ScrollEventCatcher and Option-drag; this
                 // catcher no-ops there.
-                TwoFingerPanCatcher { dx, dy in
-                    transform = CanvasTransform(
-                        ptsPerMm: transform.ptsPerMm,
-                        offset: CGSize(
-                            width: transform.offset.width  + Double(dx),
-                            height: transform.offset.height + Double(dy)
+                TwoFingerPanCatcher(
+                    onPan: { dx, dy in
+                        transform = CanvasTransform(
+                            ptsPerMm: transform.ptsPerMm,
+                            offset: CGSize(
+                                width: transform.offset.width  + Double(dx),
+                                height: transform.offset.height + Double(dy)
+                            )
                         )
-                    )
-                    userAdjustedView = true
-                }
+                        userAdjustedView = true
+                    },
+                    onMultiTouchBegan: {
+                        // Second finger landed — drop any single-finger
+                        // drag the first finger may have started so
+                        // pan/pinch wins cleanly. The placement-drag
+                        // `.onEnded` later sees `draggingPlacement == nil`
+                        // and bails out without committing a move.
+                        draggingPlacement = nil
+                        draggingWaypoint = nil
+                        marquee = nil
+                        bgDragMode = .none
+                    }
+                )
 
                 // Zoom controls floating in the top-right corner. Sits on
                 // top of all canvas content; ignores hits otherwise.
@@ -270,12 +294,24 @@ struct PhysicalCanvasView: View {
                     zoomPercent: zoomPercent(viewSize: geo.size),
                     onZoomOut: { zoomBy(1 / 1.25, viewSize: geo.size) },
                     onFit: { recomputeTransform(viewSize: geo.size); userAdjustedView = false },
-                    onZoomIn: { zoomBy(1.25, viewSize: geo.size) }
+                    onZoomIn: { zoomBy(1.25, viewSize: geo.size) },
+                    isLocked: navigateMode,
+                    onToggleLock: {
+                        navigateMode.toggle()
+                        // Drop in-flight gesture state so the mode flip
+                        // doesn't leave a half-applied drag behind.
+                        draggingPlacement = nil
+                        draggingWaypoint = nil
+                        marquee = nil
+                        bgDragMode = .none
+                        if navigateMode { routingState = .idle }
+                    }
                 )
                 .padding(8)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                 .allowsHitTesting(true)
             }
+            .environment(\.canvasLocked, navigateMode)
             .coordinateSpace(name: "canvas")
             .clipped()
             .background(Color.canvasBackground)
@@ -283,6 +319,16 @@ struct PhysicalCanvasView: View {
                 if case .active(let p) = phase { mouseLocation = p }
             }
             .gesture(magnifyGesture(viewSize: geo.size))
+            // Lock-mode pan. Child drag gestures (placement move, pin
+            // drag-to-route, waypoint drag) read `\.canvasLocked` and
+            // mask to `.none` when locked, so this is the only
+            // DragGesture left in the tree. `.subviews` mask when
+            // unlocked deactivates this gesture so editing works
+            // normally.
+            .highPriorityGesture(
+                lockPanGesture,
+                including: navigateMode ? .all : .subviews
+            )
             // Click-and-hold over any stacked content (placement on top of a
             // route, route under a via, etc.) opens a SwiftUI popover listing
             // every selectable item at the cursor. `.simultaneousGesture` so
@@ -390,6 +436,34 @@ struct PhysicalCanvasView: View {
             offset: CGSize(width: newOffsetX, height: newOffsetY)
         )
         userAdjustedView = true
+    }
+
+    /// Active only when `navigateMode` is on. Single-finger drag
+    /// anywhere on the canvas pans the viewport, beating every child
+    /// drag gesture (placement move, pin drag-to-route, waypoint drag)
+    /// via `.highPriorityGesture` on the canvas root. `.local` here is
+    /// the canvas's outer chain — already in window points — so the
+    /// translation goes straight onto `transform.offset` without any
+    /// `ptsPerMm` rescale.
+    private var lockPanGesture: some Gesture {
+        DragGesture(minimumDistance: 4, coordinateSpace: .local)
+            .onChanged { value in
+                if bgDragMode != .pan {
+                    bgDragMode = .pan
+                    panBaseline = transform.offset
+                }
+                transform = CanvasTransform(
+                    ptsPerMm: transform.ptsPerMm,
+                    offset: CGSize(
+                        width: panBaseline.width  + value.translation.width,
+                        height: panBaseline.height + value.translation.height
+                    )
+                )
+                userAdjustedView = true
+            }
+            .onEnded { _ in
+                bgDragMode = .none
+            }
     }
 
     /// Trackpad pinch. The magnification value is cumulative within a
@@ -551,7 +625,13 @@ struct PhysicalCanvasView: View {
                         // route. Pin handles stay active so clicking a pin
                         // can still commit the route.
                         .allowsHitTesting(!routingState.inProgress)
-                        .gesture(placementDragGesture(placement))
+                        // Drag is the destructive op (move). In lock mode
+                        // the canvas-root pan gesture takes over; we mask
+                        // this one to `.none` so it can't snag touches.
+                        .gesture(
+                            placementDragGesture(placement),
+                            including: navigateMode ? .none : .gesture
+                        )
                         .onTapGesture(coordinateSpace: .named("canvas")) { pt in
                             handlePlacementTap(componentId: placement.componentId, at: pt)
                         }
@@ -898,7 +978,10 @@ struct PhysicalCanvasView: View {
             ForEach(Array(displayed.enumerated()), id: \.offset) { i, world in
                 WaypointHandle()
                     .position(transform.toScreen(world))
-                    .gesture(handleDragGesture(netId: seg.netId, segIdx: seg.segmentIndex, idx: i, originals: originals))
+                    .gesture(
+                        handleDragGesture(netId: seg.netId, segIdx: seg.segmentIndex, idx: i, originals: originals),
+                        including: navigateMode ? .none : .gesture
+                    )
             }
         }
     }
@@ -1817,6 +1900,9 @@ struct PhysicalPinHandle: View {
     /// can confirm which pin they hit (the `.help()` tooltip is hidden on
     /// iPad and `.onHover` never fires).
     @State private var touchChipUntil: Date?
+    /// When the canvas is locked into pan/zoom mode, the drag-to-route
+    /// gesture is masked to `.none` so the canvas's pan gesture wins.
+    @Environment(\.canvasLocked) private var canvasLocked: Bool
 
     var body: some View {
         // The macOS dot is intentionally tiny because the cursor can land
@@ -1844,7 +1930,8 @@ struct PhysicalPinHandle: View {
                 DragGesture(minimumDistance: InputPlatform.isTouch ? 8 : 4,
                             coordinateSpace: .named("canvas"))
                     .onChanged { value in onDragChanged(value.location) }
-                    .onEnded   { value in onDragEnded(value.location) }
+                    .onEnded   { value in onDragEnded(value.location) },
+                including: canvasLocked ? .none : .gesture
             )
             .overlay(alignment: .bottom) {
                 if showChip {

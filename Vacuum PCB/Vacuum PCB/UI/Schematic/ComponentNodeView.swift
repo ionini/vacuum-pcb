@@ -13,6 +13,11 @@ struct ComponentNodeView: View {
     /// reads it to apply the same offset so the whole group follows
     /// together.
     @Binding var multiDrag: SchematicMultiDrag?
+    /// Bumped by the parent canvas whenever a second finger touches down.
+    /// We watch this and abort any single-finger drag in flight so the
+    /// component snaps back instead of trailing the user's first finger
+    /// during a pan/pinch.
+    var dragInvalidation: Int = 0
     /// Forwarded straight to each `PinHandleView` so SchematicCanvasView
     /// can hit-test the drop pin across every component. Receives the
     /// pin's owning component id + pin key plus the drag location in
@@ -21,6 +26,9 @@ struct ComponentNodeView: View {
     var onPinDragEnded: (PinRef, CGPoint) -> Void = { _, _ in }
 
     @State private var dragOffset: CGSize = .zero
+    /// Set when `dragInvalidation` changes during a live drag. The drag
+    /// gesture's `.onEnded` reads this and skips committing the move.
+    @State private var dragCancelled: Bool = false
     @State private var isRenaming = false
     @State private var renameDraft: String = ""
     @FocusState private var renameFieldFocused: Bool
@@ -31,6 +39,10 @@ struct ComponentNodeView: View {
     /// user actually dragged — at 2× zoom a 100 px drag should move the
     /// component 50 schematic units, not 100.
     @Environment(\.schematicZoom) private var schematicZoom: Double
+    /// When the canvas is locked into pan/zoom mode, our drag gesture is
+    /// masked to `.none` so a stray finger landing on this component
+    /// during a pinch can't kick off a drag.
+    @Environment(\.canvasLocked) private var canvasLocked: Bool
 
     private var isSelected: Bool {
         selection.contains(component: component.id)
@@ -60,7 +72,13 @@ struct ComponentNodeView: View {
                     renameDraft = component.label
                     isRenaming = true
                 }
-                .gesture(dragGesture)
+                // `.gesture(_, including: .none)` keeps the modifier
+                // wired in the view tree (so SwiftUI preserves the
+                // ComponentNodeView's state) while making the gesture
+                // itself inert. Lock mode flips this so a stray finger
+                // landing on the symbol during a pinch can't snag a
+                // drag.
+                .gesture(dragGesture, including: canvasLocked ? .none : .gesture)
 
             // Pin handles
             ForEach(component.pinKeys(snapshots: snapshots), id: \.self) { key in
@@ -83,6 +101,18 @@ struct ComponentNodeView: View {
             }
         }
         .offset(effectiveOffset)
+        .onChange(of: dragInvalidation) { _, _ in
+            // A second finger landed on the canvas — drop any in-flight
+            // single-finger drag this node was tracking. SwiftUI's
+            // DragGesture itself won't necessarily fire `.onEnded` in
+            // response (the gesture isn't cancelled at the UIKit layer),
+            // so we reset the visible offset here and mark cancelled so
+            // a delayed `.onEnded` doesn't commit a stale position.
+            if dragOffset != .zero || multiDrag?.participants.contains(component.id) == true {
+                dragOffset = .zero
+                dragCancelled = true
+            }
+        }
     }
 
     private func handleSymbolTap() {
@@ -112,6 +142,10 @@ struct ComponentNodeView: View {
         let minDistance: Double = InputPlatform.isTouch ? 6 : 2
         return DragGesture(minimumDistance: minDistance, coordinateSpace: .global)
             .onChanged { value in
+                // Skip ticks that arrive after a multi-touch cancel so a
+                // trailing finger movement doesn't re-inflate the offset
+                // we just zeroed.
+                if dragCancelled { return }
                 if multiDrag == nil && dragOffset == .zero {
                     // Decide on first tick: if this node is part of a
                     // multi-selection, drive the shared state so the rest
@@ -129,6 +163,11 @@ struct ComponentNodeView: View {
                 }
             }
             .onEnded { value in
+                if dragCancelled {
+                    dragCancelled = false
+                    dragOffset = .zero
+                    return
+                }
                 if let multi = multiDrag {
                     commitMultiDrag(multi, finalTranslation: unscaled(value.translation))
                     multiDrag = nil

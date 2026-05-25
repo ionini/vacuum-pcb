@@ -18,6 +18,12 @@ import UIKit
 /// finger.
 struct TwoFingerPanCatcher: View {
     let onPan: (CGFloat, CGFloat) -> Void
+    /// Fires the instant a second finger touches down — before the pan
+    /// recognizer's movement threshold has been crossed. Canvases use it
+    /// to abort any single-finger drag that started a few ms earlier so
+    /// the user can pan/pinch without dragging the component their first
+    /// finger happens to be over.
+    var onMultiTouchBegan: () -> Void = {}
 
     var body: some View {
         #if canImport(UIKit) && !targetEnvironment(macCatalyst)
@@ -27,7 +33,7 @@ struct TwoFingerPanCatcher: View {
         // bounds filter that we've since removed, and the explicit frame
         // also keeps the diagnostics tooling (Reveal etc.) from claiming
         // the catcher "isn't there".
-        TwoFingerPanCatcherRepresentable(onPan: onPan)
+        TwoFingerPanCatcherRepresentable(onPan: onPan, onMultiTouchBegan: onMultiTouchBegan)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .allowsHitTesting(false)
         #else
@@ -40,21 +46,33 @@ struct TwoFingerPanCatcher: View {
 
 private struct TwoFingerPanCatcherRepresentable: UIViewRepresentable {
     let onPan: (CGFloat, CGFloat) -> Void
+    let onMultiTouchBegan: () -> Void
 
     func makeUIView(context: Context) -> TwoFingerPanCatcherView {
         let v = TwoFingerPanCatcherView()
         v.onPan = onPan
+        v.onMultiTouchBegan = onMultiTouchBegan
         return v
     }
 
     func updateUIView(_ uiView: TwoFingerPanCatcherView, context: Context) {
         uiView.onPan = onPan
+        uiView.onMultiTouchBegan = onMultiTouchBegan
     }
 }
 
 final class TwoFingerPanCatcherView: UIView, UIGestureRecognizerDelegate {
     var onPan: ((CGFloat, CGFloat) -> Void)?
+    var onMultiTouchBegan: (() -> Void)?
     private let panRecognizer = UIPanGestureRecognizer()
+    /// Fires the moment two fingers are down (zero-duration long press,
+    /// two touches required), *before* the pan recognizer's movement
+    /// threshold has been crossed. The pan recognizer alone wouldn't be
+    /// enough: by the time it transitions to .began, SwiftUI's
+    /// DragGesture on a component the first finger landed on has already
+    /// committed to a drag. This detector races ahead and signals the
+    /// canvas to abort that drag.
+    private let multiTouchDetector = UILongPressGestureRecognizer()
     private weak var installedWindow: UIWindow?
 
     override init(frame: CGRect) {
@@ -64,6 +82,17 @@ final class TwoFingerPanCatcherView: UIView, UIGestureRecognizerDelegate {
         panRecognizer.maximumNumberOfTouches = 2
         panRecognizer.addTarget(self, action: #selector(handlePan(_:)))
         panRecognizer.delegate = self
+
+        multiTouchDetector.minimumPressDuration = 0
+        multiTouchDetector.numberOfTouchesRequired = 2
+        // Don't disrupt the SwiftUI gestures we coexist with — we only
+        // need the .began signal; the in-flight touches must keep flowing
+        // to the pan recognizer and MagnifyGesture.
+        multiTouchDetector.cancelsTouchesInView = false
+        multiTouchDetector.delaysTouchesBegan = false
+        multiTouchDetector.delaysTouchesEnded = false
+        multiTouchDetector.addTarget(self, action: #selector(handleMultiTouchDetect(_:)))
+        multiTouchDetector.delegate = self
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -79,9 +108,11 @@ final class TwoFingerPanCatcherView: UIView, UIGestureRecognizerDelegate {
         super.didMoveToWindow()
         if let installedWindow {
             installedWindow.removeGestureRecognizer(panRecognizer)
+            installedWindow.removeGestureRecognizer(multiTouchDetector)
         }
         installedWindow = window
         window?.addGestureRecognizer(panRecognizer)
+        window?.addGestureRecognizer(multiTouchDetector)
     }
 
     @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
@@ -91,6 +122,12 @@ final class TwoFingerPanCatcherView: UIView, UIGestureRecognizerDelegate {
         // existing transform without subtracting a baseline.
         recognizer.setTranslation(.zero, in: window)
         onPan?(t.x, t.y)
+    }
+
+    @objc private func handleMultiTouchDetect(_ recognizer: UILongPressGestureRecognizer) {
+        if recognizer.state == .began {
+            onMultiTouchBegan?()
+        }
     }
 
     // MARK: - UIGestureRecognizerDelegate

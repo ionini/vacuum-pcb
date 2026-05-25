@@ -39,6 +39,19 @@ struct SchematicCanvasView: View {
     @State private var bgDragMode: BackgroundDragMode = .none
     @State private var panBaseline: CGSize = .zero
     @State private var lastViewSize: CGSize = CGSize(width: 800, height: 600)
+    /// Monotonic tick incremented whenever a second finger touches down.
+    /// `ComponentNodeView` observes this and resets its in-flight drag so
+    /// the first finger's accidental component grab doesn't survive into
+    /// a two-finger pan/pinch.
+    @State private var dragInvalidation: Int = 0
+    /// Sticky toggle that puts the canvas into pan/zoom-only mode. The
+    /// `dragInvalidation` race-fix above wins most multi-touch starts,
+    /// but it can't help when the user lands finger #1 well before #2 —
+    /// the SwiftUI DragGesture commits to a component drag before any
+    /// system-level multi-touch arbitration runs. Locking the canvas is
+    /// the bulletproof fallback: single-finger drags pan instead of
+    /// moving components.
+    @State private var navigateMode: Bool = false
     /// Window-space mouse location, captured by an NSEvent monitor mirroring
     /// the right-click catcher. Used so ⌘= / ⌘− / pinch all zoom about the
     /// point the user is actually looking at, not the canvas centre.
@@ -133,28 +146,59 @@ struct SchematicCanvasView: View {
                 // marquee / component move / pin net-draw. Pan coords are
                 // in window pts, applied directly to `pan` which is also
                 // window-pt space.
-                TwoFingerPanCatcher { dx, dy in
-                    pan = CGSize(
-                        width: pan.width  + Double(dx),
-                        height: pan.height + Double(dy)
-                    )
-                    userAdjustedView = true
-                }
+                TwoFingerPanCatcher(
+                    onPan: { dx, dy in
+                        pan = CGSize(
+                            width: pan.width  + Double(dx),
+                            height: pan.height + Double(dy)
+                        )
+                        userAdjustedView = true
+                    },
+                    onMultiTouchBegan: {
+                        // Second finger landed — abort any single-finger
+                        // work the first finger started so pan/pinch wins.
+                        multiDrag = nil
+                        marquee = nil
+                        bgDragMode = .none
+                        dragInvalidation &+= 1
+                    }
+                )
 
                 ZoomToolbar(
                     zoomPercent: zoom,
                     onZoomOut: { zoomBy(1 / 1.25, atWindowPoint: windowCursor, viewSize: geo.size) },
                     onFit: { fitToView(viewSize: geo.size) },
-                    onZoomIn: { zoomBy(1.25, atWindowPoint: windowCursor, viewSize: geo.size) }
+                    onZoomIn: { zoomBy(1.25, atWindowPoint: windowCursor, viewSize: geo.size) },
+                    isLocked: navigateMode,
+                    onToggleLock: {
+                        navigateMode.toggle()
+                        // Drop any in-flight selection/drag state so the
+                        // mode flip doesn't leave the canvas mid-gesture.
+                        multiDrag = nil
+                        marquee = nil
+                        bgDragMode = .none
+                        if navigateMode { netDrawState = .idle }
+                    }
                 )
                 .padding(8)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                 .allowsHitTesting(true)
             }
+            .environment(\.canvasLocked, navigateMode)
             .coordinateSpace(name: "schematic-screen")
             .clipped()
             .contentShape(Rectangle())
             .gesture(magnifyGesture(viewSize: geo.size))
+            // Lock-mode pan. Child drag gestures (component move, pin
+            // drag-to-route) read `\.canvasLocked` from the environment
+            // and mask themselves to `.none` when locked, so this is the
+            // only DragGesture left in the tree. `.subviews` mask when
+            // unlocked deactivates this gesture so editing works
+            // normally.
+            .highPriorityGesture(
+                lockPanGesture,
+                including: navigateMode ? .all : .subviews
+            )
             .onContinuousHover(coordinateSpace: .named("schematic-screen")) { phase in
                 if case .active(let p) = phase { windowCursor = p }
             }
@@ -188,7 +232,15 @@ struct SchematicCanvasView: View {
                     }
                     netDrawState = .idle
                 }
-                .gesture(marqueeGesture)
+                // In lock mode the canvas-root `lockPanGesture` owns
+                // single-finger drags. Masking marquee to `.none` here
+                // keeps it from snagging the second pinch finger that
+                // happens to land on background and drawing a stray
+                // selection box. SwiftUI's arbitration assigns separate
+                // fingers to separate DragGestures during multi-touch,
+                // so this needs to be off explicitly — not just shadowed
+                // by the high-priority gesture above.
+                .gesture(marqueeGesture, including: navigateMode ? .none : .gesture)
 
             NetLinesView(document: document.circuit, selection: selection)
 
@@ -201,6 +253,7 @@ struct SchematicCanvasView: View {
                     selection: $selection,
                     netDrawState: $netDrawState,
                     multiDrag: $multiDrag,
+                    dragInvalidation: dragInvalidation,
                     onPinDragChanged: handlePinDragChanged,
                     onPinDragEnded: handlePinDragEnded
                 )
@@ -291,6 +344,32 @@ struct SchematicCanvasView: View {
         userAdjustedView = true
     }
 
+    /// Active only when `navigateMode` is on. A single-finger drag
+    /// anywhere on the canvas pans the viewport, beating any child drag
+    /// gesture (component move, pin drag-to-route) thanks to its
+    /// `.highPriorityGesture` attachment on the canvas root. The outer
+    /// modifier chain is outside the scaleEffect/offset subtree, so
+    /// `value.translation` arrives in window points already — no zoom
+    /// rescale (unlike `marqueeGesture`, which lives inside the scaled
+    /// subtree and divides accordingly).
+    private var lockPanGesture: some Gesture {
+        DragGesture(minimumDistance: 4, coordinateSpace: .local)
+            .onChanged { value in
+                if bgDragMode != .pan {
+                    bgDragMode = .pan
+                    panBaseline = pan
+                }
+                pan = CGSize(
+                    width: panBaseline.width  + value.translation.width,
+                    height: panBaseline.height + value.translation.height
+                )
+                userAdjustedView = true
+            }
+            .onEnded { _ in
+                bgDragMode = .none
+            }
+    }
+
     /// See the matching comment on `PhysicalCanvasView.magnifyGesture`
     /// for the deadband rationale.
     private func magnifyGesture(viewSize: CGSize) -> some Gesture {
@@ -356,7 +435,10 @@ struct SchematicCanvasView: View {
     private var marqueeGesture: some Gesture {
         // Plain drag = marquee (in schematic coords). Option-held drag =
         // pan the viewport (in window coords). Mode is latched at first
-        // tick so the user can release Option mid-gesture without flipping.
+        // tick so the user can release Option mid-gesture without
+        // flipping. Lock-mode pan goes through `lockPanGesture` on the
+        // canvas root instead — this whole gesture is masked off when
+        // locked.
         DragGesture(minimumDistance: 4, coordinateSpace: .local)
             .onChanged { value in
                 if bgDragMode == .none {

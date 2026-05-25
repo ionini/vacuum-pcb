@@ -24,6 +24,9 @@ struct PinHandleView: View {
     /// On touch platforms the chip is surfaced by a tap (and self-dismisses
     /// after a beat) since `.onHover` never fires without a cursor.
     @State private var touchChipUntil: Date?
+    /// When the canvas is locked into pan/zoom mode, the drag-to-route
+    /// gesture is masked to `.none` so the canvas's pan gesture wins.
+    @Environment(\.canvasLocked) private var canvasLocked: Bool
 
     init(
         pinKey: String,
@@ -67,7 +70,8 @@ struct PinHandleView: View {
                 DragGesture(minimumDistance: InputPlatform.isTouch ? 8 : 4,
                             coordinateSpace: .named("schematic-canvas"))
                     .onChanged { value in onDragChanged(value.location) }
-                    .onEnded   { value in onDragEnded(value.location) }
+                    .onEnded   { value in onDragEnded(value.location) },
+                including: canvasLocked ? .none : .gesture
             )
             .overlay(alignment: .bottom) {
                 if showChip {
