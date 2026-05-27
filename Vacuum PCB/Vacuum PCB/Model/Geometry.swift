@@ -47,6 +47,47 @@ enum Plate: String, Codable, CaseIterable, Hashable {
     var uiPrefix: String { self == .top ? "T" : "B" }
 }
 
+/// Which side of a rectangular `boardOutline` a connector is attached to.
+/// `north` is +Y, `south` is -Y, `east` is +X, `west` is -X. Used by
+/// `EdgeAnchor` on `Placement` to constrain connector placements to the
+/// plate perimeter and to drive the protrusion's outward direction in the
+/// CAD pipeline.
+enum Edge: String, Codable, CaseIterable, Hashable {
+    case north, south, east, west
+
+    /// Unit vector pointing outward from the plate along this edge.
+    var outwardNormal: Point {
+        switch self {
+        case .north: return Point(x: 0, y: 1)
+        case .south: return Point(x: 0, y: -1)
+        case .east:  return Point(x: 1, y: 0)
+        case .west:  return Point(x: -1, y: 0)
+        }
+    }
+
+    /// Unit vector running along this edge in the +offsetAlongEdge direction.
+    /// For horizontal edges (north/south) offset increases with +X; for
+    /// vertical edges (east/west) offset increases with +Y.
+    var tangent: Point {
+        switch self {
+        case .north, .south: return Point(x: 1, y: 0)
+        case .east, .west:   return Point(x: 0, y: 1)
+        }
+    }
+
+    /// Rotation that points a connector footprint outward along this edge.
+    /// Footprints are authored at `r0` with the outward direction along +X
+    /// (east); the other three edges are 90° rotations of that.
+    var outwardRotation: Rotation {
+        switch self {
+        case .east:  return .r0
+        case .north: return .r90
+        case .west:  return .r180
+        case .south: return .r270
+        }
+    }
+}
+
 /// Identifies one channel layer in the assembly. `plate` picks which plate
 /// the layer lives in; `depth` counts outward from the silicone-facing
 /// surface (0 = the silicone-facing channel — the only depth that exists in

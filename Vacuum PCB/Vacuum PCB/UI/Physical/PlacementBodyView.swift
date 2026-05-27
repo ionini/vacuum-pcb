@@ -39,6 +39,8 @@ struct PlacementBodyView: View {
                         drawScrew(in: &ctx)
                     case .led:
                         drawLED(in: &ctx)
+                    case .connector:
+                        drawConnector(in: &ctx)
                     }
                 }
 
@@ -244,6 +246,51 @@ struct PlacementBodyView: View {
         let dotR = manufacturing.channelDiameter / 2 * transform.ptsPerMm
         let dotRect = CGRect(x: -dotR, y: -dotR, width: 2 * dotR, height: 2 * dotR)
         ctx.fill(Path(ellipseIn: dotRect), with: .color(dimpleColor))
+    }
+
+    private func drawConnector(in ctx: inout GraphicsContext) {
+        // Outline = footprint's exclusion rect (the rectangular protrusion);
+        // pins drawn as small filled circles at each FootprintPin; end-cap
+        // screws drawn as small circles at the two ends of the slot row.
+        // All drawn in local coords (the GraphicsContext is already
+        // translated to placement.position and rotated by placement.rotation).
+        let fp = component.footprint(manufacturing)
+        let role = component.connectorRole ?? .bottomExtend
+        let bodyPlate: Plate = role == .bottomExtend ? .bottom : .top
+        let bodyColor = plateColor(bodyPlate)
+        let pitch = manufacturing.gridPitch * transform.ptsPerMm
+
+        // Protrusion outline.
+        let rect = CGRect(
+            x: fp.exclusionRect.origin.x * transform.ptsPerMm,
+            y: fp.exclusionRect.origin.y * transform.ptsPerMm,
+            width: fp.exclusionRect.size.width * transform.ptsPerMm,
+            height: fp.exclusionRect.size.height * transform.ptsPerMm
+        )
+        ctx.fill(Path(roundedRect: rect, cornerSize: CGSize(width: 1, height: 1)),
+                 with: .color(bodyColor.opacity(0.18)))
+        ctx.stroke(Path(roundedRect: rect, cornerSize: CGSize(width: 1, height: 1)),
+                   with: .color(bodyColor), lineWidth: 1.0)
+
+        // Pin tubes — small filled circles at each pin's local offset.
+        let tubeR = manufacturing.channelDiameter / 2 * transform.ptsPerMm
+        for pin in fp.pins {
+            let px = pin.offset.x * transform.ptsPerMm
+            let py = pin.offset.y * transform.ptsPerMm
+            let rect = CGRect(x: px - tubeR, y: py - tubeR, width: 2 * tubeR, height: 2 * tubeR)
+            ctx.fill(Path(ellipseIn: rect), with: .color(bodyColor))
+        }
+
+        // End-cap screws — two clearance-bore circles at the row ends.
+        let halfRow = fp.exclusionRect.size.height / 2 * transform.ptsPerMm
+        let endX = (fp.exclusionRect.origin.x + fp.exclusionRect.size.width / 2) * transform.ptsPerMm
+        let throughR = ScrewGeometry.throughDiameter / 2 * transform.ptsPerMm
+        for ySign in [-1.0, 1.0] {
+            let cy = ySign * (halfRow - pitch / 2)
+            let r = CGRect(x: endX - throughR, y: cy - throughR,
+                           width: 2 * throughR, height: 2 * throughR)
+            ctx.stroke(Path(ellipseIn: r), with: .color(Color.primary.opacity(0.7)), lineWidth: 0.8)
+        }
     }
 
     private func drawSelectionRing(in ctx: inout GraphicsContext) {

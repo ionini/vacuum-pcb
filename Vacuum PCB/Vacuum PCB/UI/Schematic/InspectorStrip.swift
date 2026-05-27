@@ -88,6 +88,23 @@ struct InspectorStrip: View {
                 .labelsHidden()
                 .fixedSize()
             }
+            if c.kind == .connector {
+                Stepper(
+                    value: connectorPinCountBinding(c),
+                    in: 1...32
+                ) {
+                    Text("\(c.connectorPinCount ?? 1) pin\((c.connectorPinCount ?? 1) == 1 ? "" : "s")")
+                        .font(.system(size: 12))
+                }
+                .fixedSize()
+                Picker("Role", selection: connectorRoleBinding(c)) {
+                    Text("Carries silicone").tag(ConnectorRole.bottomExtend)
+                    Text("Mates with silicone").tag(ConnectorRole.topExtend)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+            }
             if c.kind == .subpart {
                 subpartLibrarySync(c)
             }
@@ -159,6 +176,50 @@ struct InspectorStrip: View {
         )
     }
 
+    private func connectorPinCountBinding(_ c: Component) -> Binding<Int> {
+        Binding(
+            get: { c.connectorPinCount ?? 1 },
+            set: { newCount in
+                let clamped = max(1, newCount)
+                guard let i = document.circuit.logic.components.firstIndex(where: { $0.id == c.id }) else { return }
+                let oldCount = document.circuit.logic.components[i].connectorPinCount ?? 1
+                document.circuit.logic.components[i].connectorPinCount = clamped
+                // Drop net memberships for any pin whose index exceeds the
+                // new count — otherwise stepping down leaves orphan PinRefs
+                // pointing at pins that no longer exist in the footprint.
+                if clamped < oldCount {
+                    for netIdx in document.circuit.logic.nets.indices {
+                        document.circuit.logic.nets[netIdx].pins.removeAll { pin in
+                            guard pin.componentId == c.id,
+                                  let n = Int(pin.pinKey)
+                            else { return false }
+                            return n > clamped
+                        }
+                    }
+                    document.circuit.logic.nets.removeAll { $0.pins.count < 2 }
+                }
+            }
+        )
+    }
+
+    private func connectorRoleBinding(_ c: Component) -> Binding<ConnectorRole> {
+        Binding(
+            get: { c.connectorRole ?? .bottomExtend },
+            set: { newRole in
+                guard let i = document.circuit.logic.components.firstIndex(where: { $0.id == c.id }) else { return }
+                document.circuit.logic.components[i].connectorRole = newRole
+                // Connector pin layer follows the role: `.bottomExtend`
+                // pins live on the bottom plate, `.topExtend` on the top.
+                // Sync `placement.layer` so the existing pin-resolution
+                // path (`Placement.resolvedPlate(of:)`) lands routes on
+                // the right plate after the toggle.
+                if let pIdx = document.circuit.physical.placements.firstIndex(where: { $0.componentId == c.id }) {
+                    document.circuit.physical.placements[pIdx].layer = newRole == .bottomExtend ? .bottom : .top
+                }
+            }
+        )
+    }
+
     // MARK: - Selected net
 
     private func netInspector(_ n: Net) -> some View {
@@ -205,6 +266,7 @@ extension ComponentKind {
         case .subpart:       return "Subpart"
         case .screw:         return "Screw"
         case .led:           return "LED"
+        case .connector:     return "Connector"
         }
     }
 }

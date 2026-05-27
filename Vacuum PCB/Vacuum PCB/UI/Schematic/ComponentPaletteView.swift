@@ -22,6 +22,7 @@ struct ComponentPaletteView: View {
             paletteButton(label: "ATM", subtitle: "Vent",       kind: .atmVent)
             paletteButton(label: "IN",  subtitle: "Input",      kind: .port, dir: .input)
             paletteButton(label: "OUT", subtitle: "Output",     kind: .port, dir: .output)
+            paletteButton(label: "J",   subtitle: "Connector",  kind: .connector)
 
             if !library.parts.isEmpty {
                 Divider().padding(.vertical, 4)

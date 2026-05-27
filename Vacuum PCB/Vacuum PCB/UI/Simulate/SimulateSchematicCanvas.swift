@@ -80,6 +80,7 @@ struct SimulateSchematicCanvas: View {
         case .subpart:    AnyShape(RoundedRectangle(cornerRadius: 6))
         case .screw:      AnyShape(Circle())
         case .led:        AnyShape(Circle())
+        case .connector:  AnyShape(RoundedRectangle(cornerRadius: 4))
         }
     }
 
@@ -112,6 +113,14 @@ struct SimulateSchematicCanvas: View {
             }
             return sum / Double(keys.count)
         case .screw: return 1
+        case .connector:
+            // Average every connector pin's net pressure so the symbol tint
+            // reflects the rail-level state of the mating side.
+            let n = max(1, component.connectorPinCount ?? 1)
+            let sum = (1...n).reduce(0.0) {
+                $0 + netPressure(pin: PinRef(componentId: component.id, pinKey: "\($1)"))
+            }
+            return sum / Double(n)
         }
     }
 
@@ -150,6 +159,9 @@ struct SimulateSchematicCanvas: View {
             Text(PressureColor.formatted(pressure))
         case .screw:
             EmptyView()
+        case .connector:
+            let n = component.connectorPinCount ?? 1
+            Text("J \(n)P · \(PressureColor.formatted(pressure))")
         }
     }
 

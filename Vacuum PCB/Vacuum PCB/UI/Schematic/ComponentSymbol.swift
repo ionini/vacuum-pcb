@@ -52,7 +52,33 @@ struct ComponentSymbolMetrics {
                 size: CGSize(width: 90, height: 90),
                 pinOffsets: ["p": CGPoint(x: -45, y: 0)]
             )
+        case .connector:
+            // Connector metrics need the instance's pin count — go through
+            // `metrics(for: Component)` to lay pins out properly. Return a
+            // minimal placeholder for defensive callers (matches the subpart
+            // fallback above).
+            return ComponentSymbolMetrics(size: CGSize(width: 70, height: 70), pinOffsets: [:])
         }
+    }
+
+    /// Connector symbol metrics. Rectangle with N pins arranged along the
+    /// inward edge (-X side at r0); the outward edge (+X side) is the visual
+    /// hint of "this is the side that protrudes off the plate". Vertical
+    /// pitch follows the schematic's existing 28-point spacing.
+    private static func connectorMetrics(pinCount: Int) -> ComponentSymbolMetrics {
+        let n = max(1, pinCount)
+        let spacing: CGFloat = 28
+        let margin: CGFloat = 28
+        let height = max(70, CGFloat(n) * spacing + margin)
+        let width: CGFloat = 80
+        let halfW = width / 2
+        let band = CGFloat(n - 1) * spacing
+        var offsets: [String: CGPoint] = [:]
+        for i in 0..<n {
+            let y = -band / 2 + CGFloat(i) * spacing
+            offsets["\(i + 1)"] = CGPoint(x: -halfW, y: y)
+        }
+        return ComponentSymbolMetrics(size: CGSize(width: width, height: height), pinOffsets: offsets)
     }
 
     /// Library-aware metrics. For primitives this delegates to the kind-only
@@ -62,6 +88,9 @@ struct ComponentSymbolMetrics {
     /// document's `librarySnapshots` so the schematic symbol matches what the
     /// CAD pipeline will export.
     static func metrics(for component: Component, snapshots: [String: CircuitDocument] = [:]) -> ComponentSymbolMetrics {
+        if component.kind == .connector {
+            return connectorMetrics(pinCount: component.connectorPinCount ?? 1)
+        }
         guard component.kind == .subpart,
               let part = component.resolvedPart(snapshots: snapshots)
         else { return metrics(for: component.kind) }
@@ -162,6 +191,7 @@ struct ComponentSymbolView: View {
         case .subpart:    AnyShape(RoundedRectangle(cornerRadius: 6))
         case .screw:      AnyShape(Circle())
         case .led:        AnyShape(Circle())
+        case .connector:  AnyShape(RoundedRectangle(cornerRadius: 4))
         }
     }
 
@@ -192,6 +222,11 @@ struct ComponentSymbolView: View {
             if component.kind == .led {
                 Text("LED").font(.system(size: 9)).foregroundStyle(.secondary)
             }
+            if component.kind == .connector {
+                let n = component.connectorPinCount ?? 1
+                let roleTag = (component.connectorRole ?? .bottomExtend) == .bottomExtend ? "▼" : "▲"
+                Text("\(n)P \(roleTag)").font(.system(size: 9)).foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -209,6 +244,7 @@ struct ComponentSymbolView: View {
         case .subpart:       return Color.teal.opacity(0.18)
         case .screw:         return Color.gray.opacity(0.25)
         case .led:           return Color.yellow.opacity(0.30)
+        case .connector:     return Color.indigo.opacity(0.18)
         }
     }
 

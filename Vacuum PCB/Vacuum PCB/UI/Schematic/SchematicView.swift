@@ -71,7 +71,9 @@ struct SchematicInspector: View {
             kind: kind,
             label: label,
             resistorSize: kind == .resistor ? .medium : nil,
-            portDirection: portDirection
+            portDirection: portDirection,
+            connectorPinCount: kind == .connector ? 4 : nil,
+            connectorRole: kind == .connector ? .bottomExtend : nil
         )
         document.circuit.logic.components.append(component)
         document.circuit.schematic.setPosition(spawnPosition(), for: id)

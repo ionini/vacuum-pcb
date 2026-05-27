@@ -22,6 +22,30 @@ enum ComponentKind: String, Codable, CaseIterable {
     /// the net is at vacuum the silicone gets sucked into the dimple
     /// (LED "on"); at atmosphere it sits flat (LED "off").
     case led
+    /// Multi-pin edge interface for mating two physically separate plate
+    /// stacks (each plate stack is its own `.vpcb` design). Adds a
+    /// rectangular protrusion to the plate outline at the chosen edge,
+    /// carrying N exposed tubes flanked by two end-cap screws. Mating to
+    /// the matching half is the user's responsibility outside the app:
+    /// design both halves as separate `.vpcb` files with opposite roles
+    /// and matching pin counts.
+    case connector
+}
+
+/// Which side of the connector pair this instance is. Mating is asymmetric:
+/// the silicone is only carried by one half so the gasket isn't doubled at
+/// the joint.
+enum ConnectorRole: String, Codable, CaseIterable {
+    /// Bottom plate **and** silicone extend out as a protrusion. Tubes rise
+    /// from the bottom plate through the silicone, exposed at the top of
+    /// the silicone (no top plate above the protrusion area). This half
+    /// carries the gasket; mates against a `.topExtend` half from another
+    /// `.vpcb`.
+    case bottomExtend
+    /// Top plate extends out as a protrusion. Tubes drop from the top plate
+    /// to its underside, exposed there (no bottom plate or silicone below
+    /// the protrusion area). Mates against a `.bottomExtend` half.
+    case topExtend
 }
 
 enum ResistorSize: String, Codable, CaseIterable {
@@ -52,6 +76,12 @@ struct Component: Codable, Identifiable, Hashable {
     /// the user's parts folder don't silently cascade into saved designs. Nil
     /// only for sub-parts whose library file was missing at migration time.
     var partRefHash: String?
+    /// Pin count for `.connector` instances. Drives the footprint pin list
+    /// and the physical protrusion's slot count. Nil for non-connector kinds.
+    var connectorPinCount: Int?
+    /// Role for `.connector` instances. See `ConnectorRole`. Nil for
+    /// non-connector kinds.
+    var connectorRole: ConnectorRole?
 
     init(
         id: UUID = UUID(),
@@ -60,7 +90,9 @@ struct Component: Codable, Identifiable, Hashable {
         resistorSize: ResistorSize? = nil,
         portDirection: PortDirection? = nil,
         partRef: String? = nil,
-        partRefHash: String? = nil
+        partRefHash: String? = nil,
+        connectorPinCount: Int? = nil,
+        connectorRole: ConnectorRole? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -69,6 +101,8 @@ struct Component: Codable, Identifiable, Hashable {
         self.portDirection = portDirection
         self.partRef = partRef
         self.partRefHash = partRefHash
+        self.connectorPinCount = connectorPinCount
+        self.connectorRole = connectorRole
     }
 }
 
@@ -122,6 +156,8 @@ extension LogicGraph {
             prefix = "S"; allowUnnumbered = false
         case .led:
             prefix = "D"; allowUnnumbered = false
+        case .connector:
+            prefix = "J"; allowUnnumbered = false
         }
         if allowUnnumbered, !used.contains(prefix) {
             return prefix

@@ -645,6 +645,32 @@ enum PhysicalActions {
             guard let i = document.circuit.physical.placements
                 .firstIndex(where: { $0.componentId == id })
             else { continue }
+            let component = document.circuit.logic.components.first(where: { $0.id == id })
+            // Connectors derive rotation from their edge — cycle the edge
+            // (and re-derive rotation) instead of rotating in place, so the
+            // protrusion stays attached to a perimeter edge.
+            if component?.kind == .connector,
+               let anchor = document.circuit.physical.placements[i].edgeAnchor {
+                let next: Edge
+                switch anchor.edge {
+                case .south: next = .east
+                case .east:  next = .north
+                case .north: next = .west
+                case .west:  next = .south
+                }
+                let outline = document.circuit.physical.boardOutline
+                let m = document.circuit.manufacturing
+                let fp = component!.footprint(m)
+                let clearance = fp.exclusionRect.size.height / 2 + m.gridPitch
+                let len = (next == .north || next == .south) ? outline.size.width : outline.size.height
+                var offset = anchor.offsetAlongEdge
+                offset = max(clearance, min(len - clearance, offset))
+                let newAnchor = EdgeAnchor(edge: next, offsetAlongEdge: offset)
+                document.circuit.physical.placements[i].edgeAnchor = newAnchor
+                document.circuit.physical.placements[i].position = newAnchor.worldPosition(in: outline)
+                document.circuit.physical.placements[i].rotation = next.outwardRotation
+                continue
+            }
             let next: Rotation
             switch document.circuit.physical.placements[i].rotation {
             case .r0:   next = .r90
@@ -654,6 +680,34 @@ enum PhysicalActions {
             }
             document.circuit.physical.placements[i].rotation = next
         }
+    }
+
+    /// Snap a connector placement to the nearest plate edge, updating
+    /// `edgeAnchor`, `position`, `rotation`, and `layer` (from role).
+    /// Shared between the parking-lot drop path and the drag-end path so
+    /// connectors behave identically regardless of which entry point
+    /// drove the move.
+    static func snapConnector(
+        in circuit: inout CircuitDocument,
+        placementIndex i: Int,
+        component: Component,
+        world: Point
+    ) {
+        let outline = circuit.physical.boardOutline
+        let m = circuit.manufacturing
+        let fp = component.footprint(m)
+        let clearance = fp.exclusionRect.size.height / 2 + m.gridPitch
+        let anchor = EdgeAnchor.snapping(
+            worldPoint: world,
+            to: outline,
+            minClearance: clearance,
+            gridSnap: m.gridPitch
+        )
+        circuit.physical.placements[i].edgeAnchor = anchor
+        circuit.physical.placements[i].position = anchor.worldPosition(in: outline)
+        circuit.physical.placements[i].rotation = anchor.edge.outwardRotation
+        let role = component.connectorRole ?? .bottomExtend
+        circuit.physical.placements[i].layer = role == .bottomExtend ? .bottom : .top
     }
 
     /// Cycle each selected placement's layer. Pure-hole components

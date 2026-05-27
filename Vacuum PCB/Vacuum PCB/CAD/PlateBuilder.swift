@@ -66,6 +66,16 @@ enum PlateBuilder {
         // around protruding screw heads / nuts, but kept generic.
         var topAdditions: [Mesh] = []
         var bottomAdditions: [Mesh] = []
+        // Connector protrusions — intentionally extend past `boardOutline`,
+        // so they bypass `buildPlateCSG`'s outline clipper (which exists to
+        // keep volcano domes from overhanging the board edge).
+        var topUnclippedAdditions: [Mesh] = []
+        var bottomUnclippedAdditions: [Mesh] = []
+        // Silicone (stencil) extensions added by `.bottomExtend` connectors
+        // — the silicone gasket extends with the bottom plate into the
+        // protrusion area so the mating side's top plate can clamp against
+        // it. Empty when no `.bottomExtend` connector is present.
+        var stencilExtensions: [Mesh] = []
 
         // Resolve current pin world positions per plate before channels run,
         // so the channel-build loop can extend any segment whose endpoint
@@ -224,6 +234,122 @@ enum PlateBuilder {
                 bottomCutters.append(contentsOf: screw.bottomCutters)
                 topAdditions.append(contentsOf: screw.topAdditions)
                 bottomAdditions.append(contentsOf: screw.bottomAdditions)
+
+            case .connector:
+                let role = component.connectorRole ?? .bottomExtend
+                let fp = component.footprint(m)
+                // Protrusion slab in world coordinates. The footprint's
+                // exclusionRect sits in local space at r0 (origin at the
+                // inner edge midpoint, extending along local +X). Rotated
+                // and translated into world; built as a flat AABB at the
+                // protrusion's centroid (rotation is one of r0/r90/r180/
+                // r270 for connectors, so the AABB stays axis-aligned).
+                let halfExt = fp.exclusionRect.size.width / 2
+                let halfRow = fp.exclusionRect.size.height / 2
+                let localCentroid = Point(x: halfExt, y: 0)
+                let worldCentroid = placement.worldPosition(of: FootprintPin(
+                    key: "_centroid", offset: localCentroid, relativeLayer: .same
+                ))
+                // After rotation, width and height align with world axes
+                // because connector rotations are always axis-aligned.
+                let isHorizontal = placement.rotation == .r0 || placement.rotation == .r180
+                let slabWidth = isHorizontal ? 2 * halfExt : 2 * halfRow
+                let slabHeight = isHorizontal ? 2 * halfRow : 2 * halfExt
+
+                let bodyPlateThickness: Double
+                let bodyPlateCenterZ: Double
+                switch role {
+                case .bottomExtend:
+                    bodyPlateThickness = bottomThickness
+                    bodyPlateCenterZ = bottomInnerZ - bottomThickness / 2
+                case .topExtend:
+                    bodyPlateThickness = topThickness
+                    bodyPlateCenterZ = topInnerZ + topThickness / 2
+                }
+                let bodySlab = Mesh.cube(
+                    center: Vector(worldCentroid.x, worldCentroid.y, bodyPlateCenterZ),
+                    size: Vector(slabWidth, slabHeight, bodyPlateThickness)
+                )
+                switch role {
+                case .bottomExtend:
+                    bottomUnclippedAdditions.append(bodySlab)
+                    // Silicone extends with the bottom plate. Build a
+                    // matching slab at z=0 spanning the silicone gap and
+                    // hand it to the stencil pass so the printed gasket
+                    // template includes the protrusion area.
+                    let siliconeSlab = Mesh.cube(
+                        center: Vector(worldCentroid.x, worldCentroid.y, 0),
+                        size: Vector(slabWidth, slabHeight, m.siliconeThickness)
+                    )
+                    stencilExtensions.append(siliconeSlab)
+                case .topExtend:
+                    topUnclippedAdditions.append(bodySlab)
+                }
+
+                // Tube cutters at each pin. The tube spans the protrusion's
+                // full vertical extent so the route channel in the plate
+                // body reaches the mating face.
+                let tubeRadius = m.channelDiameter / 2
+                let eps = 0.05
+                for pin in fp.pins {
+                    let pinWorld = placement.worldPosition(of: pin)
+                    let zLo: Double
+                    let zHi: Double
+                    switch role {
+                    case .bottomExtend:
+                        zLo = bottomInnerZ - bottomThickness - eps
+                        zHi = topInnerZ + eps  // up through silicone, exposed at silicone's top face
+                    case .topExtend:
+                        zLo = topInnerZ - eps  // bottom face of top plate (silicone gap level)
+                        zHi = topInnerZ + topThickness + eps
+                    }
+                    let length = zHi - zLo
+                    let cz = (zLo + zHi) / 2
+                    let tube = Mesh.cylinder(radius: tubeRadius, height: length, slices: 16)
+                        .rotated(by: Euclid.Rotation.pitch(.halfPi))
+                        .translated(by: Vector(pinWorld.x, pinWorld.y, cz))
+                    switch role {
+                    case .bottomExtend: bottomCutters.append(tube)
+                    case .topExtend:    topCutters.append(tube)
+                    }
+                }
+
+                // End-cap screw clearance bores. Two through-holes at the
+                // ends of the slot row — V1 doesn't carve countersink /
+                // nut pockets here because each connector half only
+                // contributes half of the bolted joint; the user adds
+                // washers / hex caps at assembly, and a future revision
+                // can promote the cavities to a per-role choice.
+                let throughR = ScrewGeometry.throughDiameter / 2
+                let pitch = m.gridPitch
+                for ySign in [-1.0, 1.0] {
+                    // Slot 0 (south end-cap) at local y = -halfRow + pitch/2;
+                    // slot (slots-1) (north end-cap) at local y = halfRow - pitch/2.
+                    let localY = ySign * (halfRow - pitch / 2)
+                    let endLocal = Point(x: halfExt, y: localY)
+                    let endWorld = placement.worldPosition(of: FootprintPin(
+                        key: "_endcap", offset: endLocal, relativeLayer: .same
+                    ))
+                    let zLo: Double
+                    let zHi: Double
+                    switch role {
+                    case .bottomExtend:
+                        zLo = bottomInnerZ - bottomThickness - eps
+                        zHi = topInnerZ + eps
+                    case .topExtend:
+                        zLo = topInnerZ - eps
+                        zHi = topInnerZ + topThickness + eps
+                    }
+                    let length = zHi - zLo
+                    let cz = (zLo + zHi) / 2
+                    let bore = Mesh.cylinder(radius: throughR, height: length, slices: 24)
+                        .rotated(by: Euclid.Rotation.pitch(.halfPi))
+                        .translated(by: Vector(endWorld.x, endWorld.y, cz))
+                    switch role {
+                    case .bottomExtend: bottomCutters.append(bore)
+                    case .topExtend:    topCutters.append(bore)
+                    }
+                }
             }
         }
 
@@ -281,7 +407,9 @@ enum PlateBuilder {
             switch index {
             case 0:
                 topOut = buildPlateCSG(
-                    base: top, additions: topAdditions, cutters: topCutters,
+                    base: top, additions: topAdditions,
+                    unclippedAdditions: topUnclippedAdditions,
+                    cutters: topCutters,
                     outline: outline, innerZ: topInnerZ,
                     thickness: topThickness, side: .top,
                     cornerRadius: m.plateCornerFillet,
@@ -290,7 +418,9 @@ enum PlateBuilder {
                 )
             default:
                 bottomOut = buildPlateCSG(
-                    base: bottom, additions: bottomAdditions, cutters: bottomCutters,
+                    base: bottom, additions: bottomAdditions,
+                    unclippedAdditions: bottomUnclippedAdditions,
+                    cutters: bottomCutters,
                     outline: outline, innerZ: bottomInnerZ,
                     thickness: bottomThickness, side: .bottom,
                     cornerRadius: m.plateCornerFillet,
@@ -316,9 +446,38 @@ enum PlateBuilder {
             else { continue }
             stencilCutters.append((placement.position, ScrewGeometry.throughDiameter))
         }
+        // `.bottomExtend` connector tubes and end-caps pass through the
+        // extended silicone region — punch the same holes in the stencil so
+        // the cutting template lines up with the printed protrusion.
+        for placement in doc.physical.placements {
+            guard let component = componentsById[placement.componentId],
+                  component.kind == .connector,
+                  (component.connectorRole ?? .bottomExtend) == .bottomExtend
+            else { continue }
+            let fp = component.footprint(m)
+            for pin in fp.pins {
+                let pinWorld = placement.worldPosition(of: pin)
+                stencilCutters.append((pinWorld, m.channelDiameter))
+            }
+            // End-cap screw clearance holes — same layout as the bottom
+            // plate's end-cap bores so the stencil punches match.
+            let halfExt = fp.exclusionRect.size.width / 2
+            let halfRow = fp.exclusionRect.size.height / 2
+            let pitch = m.gridPitch
+            for ySign in [-1.0, 1.0] {
+                let localY = ySign * (halfRow - pitch / 2)
+                let endLocal = Point(x: halfExt, y: localY)
+                let endWorld = placement.worldPosition(of: FootprintPin(
+                    key: "_endcap", offset: endLocal, relativeLayer: .same
+                ))
+                stencilCutters.append((endWorld, ScrewGeometry.throughDiameter))
+            }
+        }
         let stencil = buildStencil(
             outline: outline, thickness: m.stencilThickness,
-            cornerRadius: m.plateCornerFillet, cutters: stencilCutters
+            cornerRadius: m.plateCornerFillet,
+            extensions: stencilExtensions,
+            cutters: stencilCutters
         )
 
         // `makeWatertight()` is intentionally NOT called here. Euclid's BSP
@@ -343,6 +502,7 @@ enum PlateBuilder {
     /// empty mesh when thickness ≤ 0 — the user has disabled stencil export.
     private static func buildStencil(
         outline: Rect, thickness: Double, cornerRadius: Double,
+        extensions: [Mesh] = [],
         cutters: [(position: Point, diameter: Double)]
     ) -> Mesh {
         guard thickness > 0 else { return .empty }
@@ -351,10 +511,16 @@ enum PlateBuilder {
         // the lower face at z = -half and the upper face at z = +half, which
         // is exactly the centred-on-zero slab we want. The polygon winding
         // it produces is correct for an exterior solid.
-        let slab = plateBase(
+        var slab = plateBase(
             outline: outline, thickness: thickness,
             innerZ: -half, side: .top, edgeChamfer: cornerRadius
         )
+        // `.bottomExtend` connectors carry the silicone into the protrusion
+        // area — each extension is a slab in the silicone gap that unions
+        // onto the base stencil so the cutting template includes it.
+        if !extensions.isEmpty {
+            slab = slab.union(Mesh.union(extensions))
+        }
         guard !cutters.isEmpty else { return slab }
         let eps = 0.1
         let cylHeight = thickness + 2 * eps
@@ -372,7 +538,9 @@ enum PlateBuilder {
     /// features-only preview. Runs on a single side so the two plates can
     /// be processed in parallel.
     private static func buildPlateCSG(
-        base: Mesh, additions: [Mesh], cutters: [Mesh],
+        base: Mesh, additions: [Mesh],
+        unclippedAdditions: [Mesh] = [],
+        cutters: [Mesh],
         outline: Rect, innerZ: Double, thickness: Double, side: Plate,
         cornerRadius: Double, additionOvershoot: Double,
         previewOvershoot: Double
@@ -391,6 +559,11 @@ enum PlateBuilder {
             )
             let clipped = Mesh.union(additions).intersection(clipper)
             plate = plate.union(clipped)
+        }
+        // Connector protrusions are intentionally outside the outline —
+        // union without clipping so the slab extends past `boardOutline`.
+        if !unclippedAdditions.isEmpty {
+            plate = plate.union(Mesh.union(unclippedAdditions))
         }
         let featuresUnion = cutters.isEmpty ? Mesh.empty : Mesh.union(cutters)
         if !cutters.isEmpty {

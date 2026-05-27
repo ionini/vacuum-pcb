@@ -173,6 +173,12 @@ struct SimulatePhysicalCanvas: View {
         case .atmVent:       return 1
         case .port, .led:    return pressure(of: "p")
         case .subpart, .screw: return 1
+        case .connector:
+            // Average across the connector's N pins so the body tint reads
+            // as the rail-level pressure on the mating side.
+            let n = max(1, component.connectorPinCount ?? 1)
+            let avg = (1...n).map { pressure(of: "\($0)") }.reduce(0, +) / Double(n)
+            return avg
         }
     }
 
@@ -248,6 +254,35 @@ struct SimulatePhysicalCanvas: View {
             }
         case .subpart, .screw:
             break
+        case .connector:
+            // Draw the protrusion outline + a row of pin dots so the
+            // simulate view distinguishes connectors from ports.
+            let fp = component.footprint(m)
+            let local = { (p: Point) -> CGPoint in
+                let r = self.rotated(p, angle: placement.rotation.radians)
+                return CGPoint(
+                    x: center.x + r.x * transform.ptsPerMm,
+                    y: center.y + r.y * transform.ptsPerMm
+                )
+            }
+            let corners = [
+                Point(x: fp.exclusionRect.minX, y: fp.exclusionRect.minY),
+                Point(x: fp.exclusionRect.maxX, y: fp.exclusionRect.minY),
+                Point(x: fp.exclusionRect.maxX, y: fp.exclusionRect.maxY),
+                Point(x: fp.exclusionRect.minX, y: fp.exclusionRect.maxY),
+            ].map(local)
+            var rect = Path()
+            rect.move(to: corners[0])
+            for c in corners.dropFirst() { rect.addLine(to: c) }
+            rect.closeSubpath()
+            ctx.fill(rect, with: .color(fill))
+            ctx.stroke(rect, with: .color(stroke), lineWidth: 1.2)
+            let pinR = m.channelDiameter / 2 * transform.ptsPerMm
+            for pin in fp.pins {
+                let p = local(pin.offset)
+                let r = CGRect(x: p.x - pinR, y: p.y - pinR, width: 2 * pinR, height: 2 * pinR)
+                ctx.fill(Path(ellipseIn: r), with: .color(stroke))
+            }
         }
 
         // Label centred just below the body.

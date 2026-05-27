@@ -172,6 +172,14 @@ struct PneumaticNetwork {
                 // No edge contribution in v1. Subpart internals live behind
                 // boundary pins (parent nets only); screws are mechanical.
                 break
+            case .connector:
+                // V1: connector pins are external terminals — the simulator
+                // doesn't impose a boundary here. If the user wants the
+                // mating side to drive vacuum/atmosphere, they wire a
+                // vacuumSource / atmVent to the connector's net in the
+                // schematic. Without an explicit boundary, the connector net
+                // floats and inherits whatever other components connect to it.
+                break
             }
         }
 

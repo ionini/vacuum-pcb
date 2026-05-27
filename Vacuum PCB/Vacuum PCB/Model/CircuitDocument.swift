@@ -8,7 +8,11 @@ struct CircuitDocument: Codable, Hashable {
     /// snapshot dictionary keyed by that hash. Subpart resolution reads the
     /// snapshot, never the live library, so library edits don't cascade into
     /// saved designs. Migrations run transparently in `decoded(from:)`.
-    static let currentSchemaVersion = 3
+    /// v4: introduces `.connector` primitives — adds `connectorPinCount` /
+    /// `connectorRole` to `Component`, `edgeAnchor` to `Placement`, and the
+    /// `Edge` enum. All new fields are optional / decodeIfPresent, so v3
+    /// docs round-trip unchanged with no explicit migration step.
+    static let currentSchemaVersion = 4
 
     var schemaVersion: Int
     var manufacturing: ManufacturingConstants
@@ -123,7 +127,15 @@ extension CircuitDocument {
                   comp.kind == .subpart,
                   let filename = comp.partRef,
                   !visiting.contains(filename),
-                  let part = comp.resolvedPart(snapshots: self.librarySnapshots)
+                  let part = comp.resolvedPart(snapshots: self.librarySnapshots),
+                  // V1: parts that contain `.connector` primitives can't be
+                  // used as subparts — the connector is a top-level-only
+                  // edge feature. The palette refuses to add such parts;
+                  // this guard is defense-in-depth for cases where a
+                  // connector-bearing part snuck in via cloud sync / file
+                  // edit. Treat the same as the missing-part case: skip
+                  // expansion, leave dangling.
+                  !part.document.containsConnector
             else { continue }
 
             // Pre-flatten the child so any subparts inside it are already
@@ -259,6 +271,16 @@ extension CircuitDocument {
             && lhs.logic == rhs.logic
             && lhs.schematic == rhs.schematic
             && lhs.physical == rhs.physical
+    }
+}
+
+extension CircuitDocument {
+    /// True when this document has any `.connector` primitive in its logic
+    /// graph. Connector-bearing designs can't be reused as subparts in V1 —
+    /// the palette refuses to import them and `flattened()` skips any
+    /// existing subpart instance whose snapshot reports true here.
+    var containsConnector: Bool {
+        logic.components.contains(where: { $0.kind == .connector })
     }
 }
 

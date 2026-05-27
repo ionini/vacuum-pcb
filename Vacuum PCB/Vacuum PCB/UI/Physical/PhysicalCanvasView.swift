@@ -1676,7 +1676,22 @@ struct PhysicalCanvasView: View {
     private func movePlacement(_ componentId: UUID, to position: Point) {
         guard let i = document.circuit.physical.placements.firstIndex(where: { $0.componentId == componentId })
         else { return }
-        document.circuit.physical.placements[i].position = position
+        let component = document.circuit.logic.components.first(where: { $0.id == componentId })
+        if component?.kind == .connector {
+            applyConnectorEdgeSnap(placementIndex: i, component: component!, world: position)
+        } else {
+            document.circuit.physical.placements[i].position = position
+        }
+    }
+
+    /// Snap a connector's drag/drop destination to the nearest plate edge.
+    /// Thin wrapper over `PhysicalActions.snapConnector` so the in-view
+    /// drag handler and the parking-lot drop delegate share one path.
+    private func applyConnectorEdgeSnap(placementIndex i: Int, component: Component, world: Point) {
+        PhysicalActions.snapConnector(
+            in: &document.circuit, placementIndex: i,
+            component: component, world: world
+        )
     }
 
     private func deleteSelection() {
@@ -1837,6 +1852,7 @@ struct PhysicalCanvasView: View {
         case .subpart:      return "subpart"
         case .screw:        return "screw"
         case .led:          return "LED"
+        case .connector:    return "connector"
         }
     }
 
@@ -1850,6 +1866,7 @@ struct PhysicalCanvasView: View {
         case .subpart:      return "rectangle.dashed"
         case .screw:        return "circle.grid.cross"
         case .led:          return "lightbulb"
+        case .connector:    return "rectangle.connected.to.line.below"
         }
     }
 
@@ -2122,13 +2139,32 @@ struct ParkingDropDelegate: DropDelegate {
     }
 
     private func createOrMovePlacement(id: UUID, to world: Point) {
+        let component = document.circuit.logic.components.first(where: { $0.id == id })
         if let i = document.circuit.physical.placements.firstIndex(where: { $0.componentId == id }) {
-            document.circuit.physical.placements[i].position = world
+            if component?.kind == .connector {
+                PhysicalActions.snapConnector(
+                    in: &document.circuit, placementIndex: i,
+                    component: component!, world: world
+                )
+            } else {
+                document.circuit.physical.placements[i].position = world
+            }
+        } else if component?.kind == .connector {
+            // First drop on the canvas: append a Placement, then snap it
+            // onto the nearest edge (which also fills in edgeAnchor /
+            // rotation / layer from the role).
+            document.circuit.physical.placements.append(
+                Placement(componentId: id, position: world, rotation: .r0, layer: .bottom)
+            )
+            let newIdx = document.circuit.physical.placements.count - 1
+            PhysicalActions.snapConnector(
+                in: &document.circuit, placementIndex: newIdx,
+                component: component!, world: world
+            )
         } else {
             // Default layer: bottom for dimple-bearing kinds (transistor,
             // LED) so the viewing/source/drain features land on the top
             // plate; top for everything else.
-            let component = document.circuit.logic.components.first(where: { $0.id == id })
             let dimpleKinds: Set<ComponentKind> = [.transistor, .led]
             let defaultPlate: Plate = (component.map { dimpleKinds.contains($0.kind) } ?? false) ? .bottom : .top
             document.circuit.physical.placements.append(

@@ -163,6 +163,26 @@ enum SimulatorExporter {
                         topMidZ: topMidZ, bottomMidZ: bottomMidZ
                     ))
                 }
+
+            case .connector:
+                // V1 doesn't model the mating in the simulator export — the
+                // tubes are open to the outside, so they read as atmosphere
+                // for any external pressure-domain analysis. Each pin still
+                // needs fluid volume at its terminus so the route channel
+                // reaches the silicone face; drop a bore on the connector's
+                // plate (which follows the role, set on `placement.layer`
+                // when the component is created).
+                let footprint = component.footprint(m)
+                for pin in footprint.pins {
+                    let pinPlate = placement.resolvedPlate(of: pin)
+                    let pinWorld = placement.worldPosition(of: pin)
+                    fluidParts.append(dropBoreMesh(
+                        at: pinWorld, onPlate: pinPlate,
+                        radius: m.channelDiameter / 2,
+                        topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ,
+                        topMidZ: topMidZ, bottomMidZ: bottomMidZ
+                    ))
+                }
             }
         }
 

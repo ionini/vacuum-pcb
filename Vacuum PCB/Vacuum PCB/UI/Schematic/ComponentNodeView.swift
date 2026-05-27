@@ -268,6 +268,8 @@ struct ComponentNodeView: View {
             return nil
         case .led:
             return "Indicator"
+        case .connector:
+            return "Connector pin \(key)"
         }
     }
 

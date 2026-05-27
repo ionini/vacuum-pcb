@@ -1,5 +1,83 @@
 import Foundation
 
+/// Anchors a connector placement to one edge of the plate's `boardOutline`.
+/// `offsetAlongEdge` is in mm, measured from the edge's start corner
+/// (south/north → from the west end at +X; east/west → from the south end
+/// at +Y), to the **centre** of the connector's slot row. The placement's
+/// `position` and `rotation` are derived from this anchor + the outline at
+/// render / drag time; the stored `position` is a cache and shouldn't be
+/// trusted independently of `edgeAnchor` for connector placements.
+struct EdgeAnchor: Codable, Hashable {
+    var edge: Edge
+    var offsetAlongEdge: Double
+}
+
+extension EdgeAnchor {
+    /// World-position of the connector's anchor (centre of the slot row,
+    /// sitting on the plate edge — i.e., where the protrusion's inner face
+    /// meets the plate). Combined with `edge.outwardRotation`, this is what
+    /// the rest of the placement / footprint / CAD pipeline reads as the
+    /// connector's pose.
+    func worldPosition(in outline: Rect) -> Point {
+        switch edge {
+        case .south:
+            return Point(x: outline.minX + offsetAlongEdge, y: outline.minY)
+        case .north:
+            return Point(x: outline.minX + offsetAlongEdge, y: outline.maxY)
+        case .west:
+            return Point(x: outline.minX, y: outline.minY + offsetAlongEdge)
+        case .east:
+            return Point(x: outline.maxX, y: outline.minY + offsetAlongEdge)
+        }
+    }
+
+    /// Length of the edge this anchor lives on. Used by the drag UX and DRC
+    /// to constrain `offsetAlongEdge` so the connector stays clear of both
+    /// corners.
+    func edgeLength(in outline: Rect) -> Double {
+        switch edge {
+        case .north, .south: return outline.size.width
+        case .east, .west:   return outline.size.height
+        }
+    }
+
+    /// Snap an arbitrary world point onto the nearest edge of `outline`,
+    /// returning the matching `EdgeAnchor`. `minClearance` is the minimum
+    /// distance (mm) the anchor's offset must keep from each corner —
+    /// callers pass half the connector's row length plus one pin-pitch so
+    /// the protrusion stays clear of the corner fillets. `gridSnap`, when
+    /// > 0, rounds the offset to that pitch.
+    static func snapping(
+        worldPoint p: Point,
+        to outline: Rect,
+        minClearance: Double = 0,
+        gridSnap: Double = 0
+    ) -> EdgeAnchor {
+        // Pick the closest of the 4 edges, breaking ties south > east >
+        // north > west (arbitrary but deterministic).
+        let dS = abs(p.y - outline.minY)
+        let dN = abs(p.y - outline.maxY)
+        let dW = abs(p.x - outline.minX)
+        let dE = abs(p.x - outline.maxX)
+        let candidates: [(Edge, Double, Double)] = [
+            (.south, dS, p.x - outline.minX),
+            (.east,  dE, p.y - outline.minY),
+            (.north, dN, p.x - outline.minX),
+            (.west,  dW, p.y - outline.minY),
+        ]
+        let chosen = candidates.min(by: { $0.1 < $1.1 })!
+        var offset = chosen.2
+        let len = (chosen.0 == .north || chosen.0 == .south)
+            ? outline.size.width : outline.size.height
+        if gridSnap > 0 {
+            offset = (offset / gridSnap).rounded() * gridSnap
+        }
+        let clamp = max(0, minClearance)
+        offset = max(clamp, min(len - clamp, offset))
+        return EdgeAnchor(edge: chosen.0, offsetAlongEdge: offset)
+    }
+}
+
 struct Placement: Codable, Hashable {
     var componentId: UUID
     var position: Point
@@ -15,17 +93,30 @@ struct Placement: Codable, Hashable {
     /// dimple, drop bores, and edge bore — anchors at the silicone-facing
     /// surface), and writers can safely leave this at 0.
     var depth: Int
+    /// Edge attachment for `.connector` placements. When non-nil the
+    /// placement is constrained to a plate perimeter edge and its `position`
+    /// / `rotation` are derived from the anchor at drag and render time.
+    /// Always nil for non-connector kinds.
+    var edgeAnchor: EdgeAnchor?
 
     private enum CodingKeys: String, CodingKey {
-        case componentId, position, rotation, layer, depth
+        case componentId, position, rotation, layer, depth, edgeAnchor
     }
 
-    init(componentId: UUID, position: Point, rotation: Rotation, layer: Plate, depth: Int = 0) {
+    init(
+        componentId: UUID,
+        position: Point,
+        rotation: Rotation,
+        layer: Plate,
+        depth: Int = 0,
+        edgeAnchor: EdgeAnchor? = nil
+    ) {
         self.componentId = componentId
         self.position = position
         self.rotation = rotation
         self.layer = layer
         self.depth = max(0, depth)
+        self.edgeAnchor = edgeAnchor
     }
 
     init(from decoder: Decoder) throws {
@@ -37,6 +128,7 @@ struct Placement: Codable, Hashable {
         // and predate per-placement depth — default depth to 0 there.
         layer = try c.decode(Plate.self, forKey: .layer)
         depth = max(0, try c.decodeIfPresent(Int.self, forKey: .depth) ?? 0)
+        edgeAnchor = try c.decodeIfPresent(EdgeAnchor.self, forKey: .edgeAnchor)
     }
 }
 
