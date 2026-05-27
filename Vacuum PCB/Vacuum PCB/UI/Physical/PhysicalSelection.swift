@@ -107,11 +107,15 @@ enum LayerVisibility: Hashable {
     /// Whether a placement of `kind` sitting on `layer` should be drawn at
     /// all. Screws are mechanical-only and always show; silicone-sheet
     /// mode additionally surfaces transistors and LEDs (their gate /
-    /// dimple punctures the sheet); otherwise visibility follows the
-    /// per-layer filter.
+    /// dimple punctures the sheet) and connectors (`.bottomExtend`
+    /// extends the silicone into the protrusion; `.topExtend` draws as a
+    /// dashed reference outline since the silicone doesn't extend there);
+    /// otherwise visibility follows the per-layer filter.
     func shows(componentKind kind: ComponentKind, on layer: Layer) -> Bool {
         if kind == .screw { return true }
-        if case .siliconeSheet = self { return kind == .transistor || kind == .led }
+        if case .siliconeSheet = self {
+            return kind == .transistor || kind == .led || kind == .connector
+        }
         return contains(layer)
     }
 }

@@ -62,8 +62,12 @@ struct PlacementBodyView: View {
     /// Silicone-sheet mode: draw only the feature that punches through the
     /// silicone. Transistors → gate dimple circumference. LEDs → LED
     /// dimple circumference (same idea, different diameter). Screws → the
-    /// 2.2 mm clearance bore (the actual hole through the sheet). All
-    /// other kinds are filtered out upstream and never get this far.
+    /// 2.2 mm clearance bore (the actual hole through the sheet).
+    /// Connectors → the protrusion outline (solid for `.bottomExtend`,
+    /// dashed for `.topExtend`), plus the pin / end-cap holes for
+    /// `.bottomExtend` since that role carries the silicone into the
+    /// protrusion area. All other kinds are filtered out upstream and
+    /// never get this far.
     private func drawSiliconeSheetGlyph(in ctx: inout GraphicsContext) {
         let strokeColor = Color.primary.opacity(0.85)
         switch component.kind {
@@ -79,6 +83,52 @@ struct PlacementBodyView: View {
             let r = ScrewGeometry.throughDiameter / 2 * transform.ptsPerMm
             let rect = CGRect(x: -r, y: -r, width: 2 * r, height: 2 * r)
             ctx.stroke(Path(ellipseIn: rect), with: .color(strokeColor), lineWidth: 1.4)
+        case .connector:
+            let role = component.connectorRole ?? .bottomExtend
+            let fp = component.footprint(manufacturing)
+            let rect = CGRect(
+                x: fp.exclusionRect.origin.x * transform.ptsPerMm,
+                y: fp.exclusionRect.origin.y * transform.ptsPerMm,
+                width: fp.exclusionRect.size.width * transform.ptsPerMm,
+                height: fp.exclusionRect.size.height * transform.ptsPerMm
+            )
+            switch role {
+            case .bottomExtend:
+                // Silicone extends into the protrusion area on this half —
+                // solid outline + every hole the assembled stencil actually
+                // punches.
+                ctx.stroke(Path(roundedRect: rect, cornerSize: CGSize(width: 1, height: 1)),
+                           with: .color(strokeColor), lineWidth: 1.4)
+                let tubeR = manufacturing.channelDiameter / 2 * transform.ptsPerMm
+                for pin in fp.pins {
+                    let px = pin.offset.x * transform.ptsPerMm
+                    let py = pin.offset.y * transform.ptsPerMm
+                    let r = CGRect(x: px - tubeR, y: py - tubeR,
+                                   width: 2 * tubeR, height: 2 * tubeR)
+                    ctx.stroke(Path(ellipseIn: r), with: .color(strokeColor), lineWidth: 1.0)
+                }
+                let endCapY = ComponentKind.connectorEndCapLocalY(
+                    pinCount: component.connectorPinCount ?? 1
+                ) * transform.ptsPerMm
+                let endX = (fp.exclusionRect.origin.x + fp.exclusionRect.size.width / 2)
+                    * transform.ptsPerMm
+                let throughR = ScrewGeometry.throughDiameter / 2 * transform.ptsPerMm
+                for ySign in [-1.0, 1.0] {
+                    let cy = ySign * endCapY
+                    let r = CGRect(x: endX - throughR, y: cy - throughR,
+                                   width: 2 * throughR, height: 2 * throughR)
+                    ctx.stroke(Path(ellipseIn: r), with: .color(strokeColor), lineWidth: 1.0)
+                }
+            case .topExtend:
+                // Silicone does NOT extend into this protrusion (mating
+                // side carries the gasket). Dashed outline as a "this is
+                // where the mating connector overlaps" reference cue.
+                ctx.stroke(
+                    Path(roundedRect: rect, cornerSize: CGSize(width: 1, height: 1)),
+                    with: .color(strokeColor.opacity(0.55)),
+                    style: StrokeStyle(lineWidth: 1.0, dash: [4, 3])
+                )
+            }
         default:
             break
         }
