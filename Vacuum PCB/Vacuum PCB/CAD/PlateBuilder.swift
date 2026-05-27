@@ -241,34 +241,54 @@ enum PlateBuilder {
                 // Protrusion slab in world coordinates. The footprint's
                 // exclusionRect sits in local space at r0 (origin at the
                 // inner edge midpoint, extending along local +X). Rotated
-                // and translated into world; built as a flat AABB at the
-                // protrusion's centroid (rotation is one of r0/r90/r180/
-                // r270 for connectors, so the AABB stays axis-aligned).
+                // and translated into world; built as a rounded-rect prism
+                // (3 mm corner fillet on the OUTER edges) extended inward
+                // by `cornerRadius` so the rounded inner corners get
+                // buried inside the board body when unioned, leaving the
+                // junction with the board sharp.
+                let connectorCornerRadius: Double = 3.0
                 let halfExt = fp.exclusionRect.size.width / 2
                 let halfRow = fp.exclusionRect.size.height / 2
-                let localCentroid = Point(x: halfExt, y: 0)
-                let worldCentroid = placement.worldPosition(of: FootprintPin(
-                    key: "_centroid", offset: localCentroid, relativeLayer: .same
+                // Centre the slab in local space at the new midpoint
+                // between (inward extension `-cornerRadius`) and
+                // (outwardExtent). After rotation the corresponding world
+                // point lands at the rotated-and-translated centroid.
+                let localCentre = Point(x: (2 * halfExt - connectorCornerRadius) / 2, y: 0)
+                let worldCentre = placement.worldPosition(of: FootprintPin(
+                    key: "_centroid", offset: localCentre, relativeLayer: .same
                 ))
-                // After rotation, width and height align with world axes
-                // because connector rotations are always axis-aligned.
+                // Slab dimensions in local space then mapped onto world
+                // axes (rotations are r0/r90/r180/r270, always axis-aligned).
+                let localSlabX = 2 * halfExt + connectorCornerRadius
+                let localSlabY = 2 * halfRow
                 let isHorizontal = placement.rotation == .r0 || placement.rotation == .r180
-                let slabWidth = isHorizontal ? 2 * halfExt : 2 * halfRow
-                let slabHeight = isHorizontal ? 2 * halfRow : 2 * halfExt
+                let slabWidth = isHorizontal ? localSlabX : localSlabY
+                let slabHeight = isHorizontal ? localSlabY : localSlabX
+                let protrusionOutline = Rect(
+                    origin: Point(x: worldCentre.x - slabWidth / 2,
+                                  y: worldCentre.y - slabHeight / 2),
+                    size: Size(width: slabWidth, height: slabHeight)
+                )
 
-                let bodyPlateThickness: Double
-                let bodyPlateCenterZ: Double
+                let plateSide: Plate
+                let plateInnerZ: Double
+                let plateThicknessHere: Double
                 switch role {
                 case .bottomExtend:
-                    bodyPlateThickness = bottomThickness
-                    bodyPlateCenterZ = bottomInnerZ - bottomThickness / 2
+                    plateSide = .bottom
+                    plateInnerZ = bottomInnerZ
+                    plateThicknessHere = bottomThickness
                 case .topExtend:
-                    bodyPlateThickness = topThickness
-                    bodyPlateCenterZ = topInnerZ + topThickness / 2
+                    plateSide = .top
+                    plateInnerZ = topInnerZ
+                    plateThicknessHere = topThickness
                 }
-                let bodySlab = Mesh.cube(
-                    center: Vector(worldCentroid.x, worldCentroid.y, bodyPlateCenterZ),
-                    size: Vector(slabWidth, slabHeight, bodyPlateThickness)
+                let bodySlab = plateBase(
+                    outline: protrusionOutline,
+                    thickness: plateThicknessHere,
+                    innerZ: plateInnerZ,
+                    side: plateSide,
+                    edgeChamfer: connectorCornerRadius
                 )
                 switch role {
                 case .bottomExtend:
@@ -277,11 +297,14 @@ enum PlateBuilder {
                     // matching slab at z=0 spanning the *stencil* thickness
                     // (NOT siliconeThickness — the stencil is a printed
                     // cutting template that's typically thicker than the
-                    // gasket it shapes) so the extension matches the base
-                    // stencil's vertical extent.
-                    let stencilSlab = Mesh.cube(
-                        center: Vector(worldCentroid.x, worldCentroid.y, 0),
-                        size: Vector(slabWidth, slabHeight, m.stencilThickness)
+                    // gasket it shapes). Same rounded outline so the
+                    // stencil's protrusion matches the bottom plate's.
+                    let stencilSlab = plateBase(
+                        outline: protrusionOutline,
+                        thickness: m.stencilThickness,
+                        innerZ: -m.stencilThickness / 2,
+                        side: .top,
+                        edgeChamfer: connectorCornerRadius
                     )
                     stencilExtensions.append(stencilSlab)
                 case .topExtend:
