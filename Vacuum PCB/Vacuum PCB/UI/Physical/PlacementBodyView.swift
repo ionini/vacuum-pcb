@@ -258,7 +258,6 @@ struct PlacementBodyView: View {
         let role = component.connectorRole ?? .bottomExtend
         let bodyPlate: Plate = role == .bottomExtend ? .bottom : .top
         let bodyColor = plateColor(bodyPlate)
-        let pitch = ComponentKind.connectorPinPitch(manufacturing: manufacturing) * transform.ptsPerMm
 
         // Protrusion outline.
         let rect = CGRect(
@@ -281,15 +280,37 @@ struct PlacementBodyView: View {
             ctx.fill(Path(ellipseIn: rect), with: .color(bodyColor))
         }
 
-        // End-cap screws — two clearance-bore circles at the row ends.
-        let halfRow = fp.exclusionRect.size.height / 2 * transform.ptsPerMm
+        // End-cap screws — head outline (`.topExtend`) or hex outline
+        // (`.bottomExtend`) sized to the actual cavity, plus the clearance
+        // through-bore in the centre so users can tell head vs nut at a
+        // glance.
+        let endCapY = ComponentKind.connectorEndCapLocalY(pinCount: component.connectorPinCount ?? 1) * transform.ptsPerMm
         let endX = (fp.exclusionRect.origin.x + fp.exclusionRect.size.width / 2) * transform.ptsPerMm
         let throughR = ScrewGeometry.throughDiameter / 2 * transform.ptsPerMm
+        let headR = ScrewGeometry.headDiameter / 2 * transform.ptsPerMm
+        let hexCircumR = (ScrewGeometry.hexAcrossFlats / sqrt(3.0)) * transform.ptsPerMm
         for ySign in [-1.0, 1.0] {
-            let cy = ySign * (halfRow - pitch / 2)
-            let r = CGRect(x: endX - throughR, y: cy - throughR,
-                           width: 2 * throughR, height: 2 * throughR)
-            ctx.stroke(Path(ellipseIn: r), with: .color(Color.primary.opacity(0.7)), lineWidth: 0.8)
+            let cy = ySign * endCapY
+            switch role {
+            case .topExtend:
+                let headRect = CGRect(x: endX - headR, y: cy - headR,
+                                      width: 2 * headR, height: 2 * headR)
+                ctx.stroke(Path(ellipseIn: headRect), with: .color(bodyColor), lineWidth: 1.0)
+            case .bottomExtend:
+                var hex = Path()
+                for i in 0..<6 {
+                    let a = .pi / 6 + Double(i) * .pi / 3
+                    let x = endX + hexCircumR * cos(a)
+                    let y = cy + hexCircumR * sin(a)
+                    if i == 0 { hex.move(to: CGPoint(x: x, y: y)) }
+                    else      { hex.addLine(to: CGPoint(x: x, y: y)) }
+                }
+                hex.closeSubpath()
+                ctx.stroke(hex, with: .color(bodyColor), lineWidth: 1.0)
+            }
+            let throughRect = CGRect(x: endX - throughR, y: cy - throughR,
+                                     width: 2 * throughR, height: 2 * throughR)
+            ctx.stroke(Path(ellipseIn: throughRect), with: .color(Color.primary.opacity(0.7)), lineWidth: 0.8)
         }
     }
 

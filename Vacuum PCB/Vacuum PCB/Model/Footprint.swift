@@ -211,36 +211,34 @@ extension ComponentKind {
     /// `Placement.layer` for a connector is set to match the role so the
     /// existing `relativeLayer: .same` rule lands every pin on the right
     /// plate without further special-casing.
-    /// Centre-to-centre pin pitch for a connector at the given manufacturing
-    /// constants. Derived rather than user-tunable (per the V1 design
-    /// lock); covers three independent constraints:
-    ///   (a) adjacent pin tubes — `channelDiameter + minWallThickness`
-    ///   (b) end-cap screw HEAD (not just its through-bore) seated next to
-    ///       the nearest pin tube — `headRadius + tubeRadius + minWall`
-    ///   (c) end-cap head clearance from the row's outer edge: the slot
-    ///       layout puts the end-cap at half-pitch from the edge, so
-    ///       pitch ≥ 2 · (headRadius + minWall) for the head face to fit
-    ///       on top of the protrusion without spilling past the edge
-    /// Rounded *up* to a multiple of `gridPitch` so pin centres still
-    /// land on the document's grid.
-    static func connectorPinPitch(manufacturing m: ManufacturingConstants) -> Double {
-        let headRadius = ScrewGeometry.headDiameter / 2
-        let tubeRadius = m.channelDiameter / 2
-        let wall = m.minWallThickness
-        let tubeToTube = m.channelDiameter + wall
-        let headToPin = headRadius + tubeRadius + wall
-        let headToRowEdge = 2 * (headRadius + wall)
-        let needed = max(tubeToTube, headToPin, headToRowEdge)
-        let grid = max(m.gridPitch, 0.0001) // guard against zero-pitch from a bad config
-        let steps = (needed / grid).rounded(.up)
-        return max(grid, steps * grid)
+    /// Centre-to-centre spacing between adjacent connector pin tubes.
+    /// Hardcoded — driven by the connector's mechanical layout, not by
+    /// the document's grid pitch. Promote to `ManufacturingConstants` if
+    /// designs ever need to vary per-doc.
+    static let connectorTubePitch: Double = 5.0
+
+    /// Centre-to-centre distance between an end-cap screw and the nearest
+    /// pin tube. Larger than `connectorTubePitch` so the screw head face
+    /// (5.1 mm) has comfortable clearance against the adjacent tube. Same
+    /// "hardcoded for now" caveat as `connectorTubePitch`.
+    static let connectorEndCapOffset: Double = 8.0
+
+    /// |y| of the end-cap screw centre relative to the row's anchor
+    /// (local origin). Both end-caps sit at ±this value along the
+    /// connector's tangent axis. Used by `PlateBuilder` (when placing
+    /// cutters) and `PlacementBodyView` (when drawing the symbol) so the
+    /// layout stays consistent across the model and CSG pipeline.
+    static func connectorEndCapLocalY(pinCount: Int) -> Double {
+        let n = max(1, pinCount)
+        let halfPinSpan = Double(n - 1) / 2 * connectorTubePitch
+        return halfPinSpan + connectorEndCapOffset
     }
 
     /// Outward extent (perpendicular to the row) of the connector
     /// protrusion. Sized so the screw head face fits inside the
     /// protrusion's perpendicular footprint with `minWallThickness` of
     /// plate material on each side. Snapped up to `gridPitch` for the
-    /// same grid-alignment reason as the pin pitch.
+    /// same grid-alignment reason as the pin layout.
     static func connectorOutwardExtent(manufacturing m: ManufacturingConstants) -> Double {
         let headFit = ScrewGeometry.headDiameter + 2 * m.minWallThickness
         let grid = max(m.gridPitch, 0.0001)
@@ -254,22 +252,24 @@ extension ComponentKind {
         manufacturing m: ManufacturingConstants
     ) -> Footprint {
         let n = max(1, pinCount)
-        let pitch = connectorPinPitch(manufacturing: m)
-        // Slot row total length: N pin slots + 2 end-cap screw slots,
-        // centred on the anchor along the tangent axis (local +Y at r0).
-        let slots = n + 2
-        let rowLength = Double(slots) * pitch
-        let halfRow = rowLength / 2
+        let halfPinSpan = Double(n - 1) / 2 * connectorTubePitch
+        let endCapY = connectorEndCapLocalY(pinCount: n)
+        // Row extends `headRadius + minWallThickness` past each end-cap so
+        // the screw head face has plate material around it. That sets the
+        // exclusion / bounding rect's tangent extent.
+        let headRadius = ScrewGeometry.headDiameter / 2
+        let halfRow = endCapY + headRadius + m.minWallThickness
+        let rowLength = 2 * halfRow
         // Protrusion sticks out along local +X (away from the plate
         // interior). The extent is sized so the screw head face fits
         // inside the protrusion footprint with at least `minWallThickness`
         // of plate material on each side — see `connectorOutwardExtent`.
         let outwardExtent = connectorOutwardExtent(manufacturing: m)
         var pins: [FootprintPin] = []
-        // Pin 1 sits next to one end screw, pin N next to the other. Slot
-        // centres along local +Y at r0: slot k (0-based) is at y =
-        // -halfRow + (k + 0.5) * pitch. End caps occupy slot 0 and slot
-        // (slots-1); pins occupy slots 1…N.
+        // Pin 1 sits next to one end screw, pin N next to the other. The
+        // pins are centred on the row anchor with `connectorTubePitch`
+        // spacing; the end-caps sit `connectorEndCapOffset` past the
+        // outermost pins on either side.
         //
         // Role flips the slot direction: `.topExtend` lays pin 1 at the
         // smallest local y (mating side viewed top-down); `.bottomExtend`
@@ -281,12 +281,12 @@ extension ComponentKind {
         // see them line up at the same end of the slot row in physical.
         for i in 0..<n {
             let pinIndex = i + 1
-            let slotIndex: Int
+            let step: Int
             switch role {
-            case .topExtend:    slotIndex = pinIndex
-            case .bottomExtend: slotIndex = n + 1 - pinIndex
+            case .topExtend:    step = i               // pin 1 at smallest y
+            case .bottomExtend: step = (n - 1) - i     // pin 1 at largest y
             }
-            let y = -halfRow + (Double(slotIndex) + 0.5) * pitch
+            let y = -halfPinSpan + Double(step) * connectorTubePitch
             pins.append(FootprintPin(
                 key: "\(pinIndex)",
                 offset: Point(x: outwardExtent / 2, y: y),

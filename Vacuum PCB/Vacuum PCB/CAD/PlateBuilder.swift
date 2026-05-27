@@ -318,40 +318,42 @@ enum PlateBuilder {
                     }
                 }
 
-                // End-cap screw clearance bores. Two through-holes at the
-                // ends of the slot row — V1 doesn't carve countersink /
-                // nut pockets here because each connector half only
-                // contributes half of the bolted joint; the user adds
-                // washers / hex caps at assembly, and a future revision
-                // can promote the cavities to a per-role choice.
-                let throughR = ScrewGeometry.throughDiameter / 2
-                let pitch = ComponentKind.connectorPinPitch(manufacturing: m)
+                // End-cap screws. Each connector half only contributes
+                // ONE side of the bolted joint: `.topExtend` carves the
+                // countersink head cavity on the top face of the top-
+                // plate extension; `.bottomExtend` carves the hex-nut
+                // pocket on the bottom face of the bottom-plate extension.
+                // The mating partner (a separate `.vpcb` design) carves
+                // the other half. Through-bore spans the full assembly
+                // either way so the M2 shaft slips through. `protrusion`
+                // is 0 — heads and nuts sit flush with the outer face.
+                let endCapY = ComponentKind.connectorEndCapLocalY(pinCount: component.connectorPinCount ?? 1)
                 for ySign in [-1.0, 1.0] {
-                    // Slot 0 (south end-cap) at local y = -halfRow + pitch/2;
-                    // slot (slots-1) (north end-cap) at local y = halfRow - pitch/2.
-                    let localY = ySign * (halfRow - pitch / 2)
-                    let endLocal = Point(x: halfExt, y: localY)
+                    let endLocal = Point(x: halfExt, y: ySign * endCapY)
                     let endWorld = placement.worldPosition(of: FootprintPin(
                         key: "_endcap", offset: endLocal, relativeLayer: .same
                     ))
-                    let zLo: Double
-                    let zHi: Double
+                    let screw = ScrewGeometry.meshes(
+                        at: endWorld, rotation: placement.rotation,
+                        topInnerZ: topInnerZ, topThickness: topThickness,
+                        bottomInnerZ: bottomInnerZ, bottomThickness: bottomThickness,
+                        protrusion: 0,
+                        domeBaseDiameter: m.screwDomeBaseDiameter,
+                        headDepth: m.screwHeadDepth,
+                        nutDepth: m.screwNutDepth,
+                        headSide: .top
+                    )
                     switch role {
                     case .bottomExtend:
-                        zLo = bottomInnerZ - bottomThickness - eps
-                        zHi = topInnerZ + eps
+                        // Bottom half — keeps only the nut-pocket side
+                        // (hex prism + through-bore). The head cavity
+                        // lives on the mating top half.
+                        bottomCutters.append(contentsOf: screw.bottomCutters)
                     case .topExtend:
-                        zLo = topInnerZ - eps
-                        zHi = topInnerZ + topThickness + eps
-                    }
-                    let length = zHi - zLo
-                    let cz = (zLo + zHi) / 2
-                    let bore = Mesh.cylinder(radius: throughR, height: length, slices: 24)
-                        .rotated(by: Euclid.Rotation.pitch(.halfPi))
-                        .translated(by: Vector(endWorld.x, endWorld.y, cz))
-                    switch role {
-                    case .bottomExtend: bottomCutters.append(bore)
-                    case .topExtend:    topCutters.append(bore)
+                        // Top half — keeps only the countersink side
+                        // (head cavity + through-bore). The nut pocket
+                        // lives on the mating bottom half.
+                        topCutters.append(contentsOf: screw.topCutters)
                     }
                 }
             }
@@ -464,13 +466,13 @@ enum PlateBuilder {
                 stencilCutters.append((pinWorld, m.channelDiameter))
             }
             // End-cap screw clearance holes — same layout as the bottom
-            // plate's end-cap bores so the stencil punches match.
+            // plate's end-cap bores so the stencil punches match. Punches
+            // only the through-bore (not the nut pocket — that's in the
+            // bottom plate proper, not in the silicone gasket).
             let halfExt = fp.exclusionRect.size.width / 2
-            let halfRow = fp.exclusionRect.size.height / 2
-            let pitch = ComponentKind.connectorPinPitch(manufacturing: m)
+            let endCapY = ComponentKind.connectorEndCapLocalY(pinCount: component.connectorPinCount ?? 1)
             for ySign in [-1.0, 1.0] {
-                let localY = ySign * (halfRow - pitch / 2)
-                let endLocal = Point(x: halfExt, y: localY)
+                let endLocal = Point(x: halfExt, y: ySign * endCapY)
                 let endWorld = placement.worldPosition(of: FootprintPin(
                     key: "_endcap", offset: endLocal, relativeLayer: .same
                 ))
