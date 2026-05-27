@@ -274,14 +274,16 @@ enum PlateBuilder {
                 case .bottomExtend:
                     bottomUnclippedAdditions.append(bodySlab)
                     // Silicone extends with the bottom plate. Build a
-                    // matching slab at z=0 spanning the silicone gap and
-                    // hand it to the stencil pass so the printed gasket
-                    // template includes the protrusion area.
-                    let siliconeSlab = Mesh.cube(
+                    // matching slab at z=0 spanning the *stencil* thickness
+                    // (NOT siliconeThickness — the stencil is a printed
+                    // cutting template that's typically thicker than the
+                    // gasket it shapes) so the extension matches the base
+                    // stencil's vertical extent.
+                    let stencilSlab = Mesh.cube(
                         center: Vector(worldCentroid.x, worldCentroid.y, 0),
-                        size: Vector(slabWidth, slabHeight, m.siliconeThickness)
+                        size: Vector(slabWidth, slabHeight, m.stencilThickness)
                     )
-                    stencilExtensions.append(siliconeSlab)
+                    stencilExtensions.append(stencilSlab)
                 case .topExtend:
                     topUnclippedAdditions.append(bodySlab)
                 }
