@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// Lumped-parameter pneumatic network distilled from a CircuitDocument for
 /// interactive simulation.
@@ -91,6 +92,22 @@ struct PneumaticNetwork {
     let transistors: [TransistorEdge]
     let resistors: [ResistorEdge]
 
+    /// Deterministic per-pin UUID for a connector pin. The SimulationState
+    /// reuses Input/Probe ids as the key in its toggle-state dictionary —
+    /// the same connector pin must hash to the same UUID across rebuilds
+    /// or the user's input toggles get discarded on every edit. SHA-256
+    /// of "componentId:pinKey", truncated to 16 bytes with the UUID v4
+    /// version + variant bits forced so the result is a valid UUID.
+    static func connectorPinSimulationId(componentId: UUID, pinKey: String) -> UUID {
+        let str = componentId.uuidString + ":" + pinKey
+        let digest = SHA256.hash(data: Data(str.utf8))
+        var b = Array(digest.prefix(16))
+        b[6] = (b[6] & 0x0F) | 0x40
+        b[8] = (b[8] & 0x3F) | 0x80
+        return UUID(uuid: (b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+                           b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]))
+    }
+
     /// Returns the net id that owns a given PinRef, if any. Pins that don't
     /// appear on any net (dangling) return nil.
     static func pinToNetMap(_ doc: CircuitDocument) -> [PinRef: UUID] {
@@ -173,13 +190,27 @@ struct PneumaticNetwork {
                 // boundary pins (parent nets only); screws are mechanical.
                 break
             case .connector:
-                // V1: connector pins are external terminals — the simulator
-                // doesn't impose a boundary here. If the user wants the
-                // mating side to drive vacuum/atmosphere, they wire a
-                // vacuumSource / atmVent to the connector's net in the
-                // schematic. Without an explicit boundary, the connector net
-                // floats and inherits whatever other components connect to it.
-                break
+                // Each connector pin is an external terminal — surfaced to
+                // the simulator UI per-pin so the user can drive (or read)
+                // each one independently. `.bottomExtend` ("Carries
+                // silicone") → user-controlled inputs; `.topExtend`
+                // ("Mates with silicone") → output probes.
+                let n = max(1, component.connectorPinCount ?? 1)
+                let role = component.connectorRole ?? .bottomExtend
+                for i in 1...n {
+                    let key = String(i)
+                    guard let net = pinToNet[PinRef(componentId: component.id, pinKey: key)]
+                    else { continue }
+                    let pinId = connectorPinSimulationId(componentId: component.id, pinKey: key)
+                    let pinLabel = "\(component.label).\(key)"
+                    switch role {
+                    case .bottomExtend:
+                        inputs.append(Input(id: pinId, label: pinLabel, netId: net))
+                    case .topExtend:
+                        probes.append(Probe(id: pinId, label: pinLabel,
+                                            kind: .port, netId: net))
+                    }
+                }
             }
         }
 

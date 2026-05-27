@@ -286,9 +286,13 @@ enum PlateBuilder {
                     topUnclippedAdditions.append(bodySlab)
                 }
 
-                // Tube cutters at each pin. The tube spans the protrusion's
-                // full vertical extent so the route channel in the plate
-                // body reaches the mating face.
+                // Tube cutters at each pin. The bore connects the route
+                // channel midline inside the plate to the mating face —
+                // it does NOT extend to the plate's outer face (that would
+                // open a hole on the external side of the assembly and
+                // leak straight to atmosphere). For `.bottomExtend` the
+                // tube also continues through the extended silicone so
+                // the channel reaches the mating top face.
                 let tubeRadius = m.channelDiameter / 2
                 let eps = 0.05
                 for pin in fp.pins {
@@ -297,11 +301,11 @@ enum PlateBuilder {
                     let zHi: Double
                     switch role {
                     case .bottomExtend:
-                        zLo = bottomInnerZ - bottomThickness - eps
-                        zHi = topInnerZ + eps  // up through silicone, exposed at silicone's top face
+                        zLo = bottomMidZ - eps           // channel midline inside the bottom plate
+                        zHi = topInnerZ + eps            // top face of extended silicone (mating face)
                     case .topExtend:
-                        zLo = topInnerZ - eps  // bottom face of top plate (silicone gap level)
-                        zHi = topInnerZ + topThickness + eps
+                        zLo = topInnerZ - eps            // bottom face of top plate (mating face)
+                        zHi = topMidZ + eps              // channel midline inside the top plate
                     }
                     let length = zHi - zLo
                     let cz = (zLo + zHi) / 2
@@ -321,7 +325,7 @@ enum PlateBuilder {
                 // washers / hex caps at assembly, and a future revision
                 // can promote the cavities to a per-role choice.
                 let throughR = ScrewGeometry.throughDiameter / 2
-                let pitch = m.gridPitch
+                let pitch = ComponentKind.connectorPinPitch(manufacturing: m)
                 for ySign in [-1.0, 1.0] {
                     // Slot 0 (south end-cap) at local y = -halfRow + pitch/2;
                     // slot (slots-1) (north end-cap) at local y = halfRow - pitch/2.
@@ -463,7 +467,7 @@ enum PlateBuilder {
             // plate's end-cap bores so the stencil punches match.
             let halfExt = fp.exclusionRect.size.width / 2
             let halfRow = fp.exclusionRect.size.height / 2
-            let pitch = m.gridPitch
+            let pitch = ComponentKind.connectorPinPitch(manufacturing: m)
             for ySign in [-1.0, 1.0] {
                 let localY = ySign * (halfRow - pitch / 2)
                 let endLocal = Point(x: halfExt, y: localY)

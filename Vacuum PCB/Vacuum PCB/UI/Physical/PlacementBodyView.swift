@@ -258,7 +258,7 @@ struct PlacementBodyView: View {
         let role = component.connectorRole ?? .bottomExtend
         let bodyPlate: Plate = role == .bottomExtend ? .bottom : .top
         let bodyColor = plateColor(bodyPlate)
-        let pitch = manufacturing.gridPitch * transform.ptsPerMm
+        let pitch = ComponentKind.connectorPinPitch(manufacturing: manufacturing) * transform.ptsPerMm
 
         // Protrusion outline.
         let rect = CGRect(

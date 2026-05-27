@@ -211,36 +211,84 @@ extension ComponentKind {
     /// `Placement.layer` for a connector is set to match the role so the
     /// existing `relativeLayer: .same` rule lands every pin on the right
     /// plate without further special-casing.
+    /// Centre-to-centre pin pitch for a connector at the given manufacturing
+    /// constants. Derived rather than user-tunable (per the V1 design
+    /// lock); covers three independent constraints:
+    ///   (a) adjacent pin tubes — `channelDiameter + minWallThickness`
+    ///   (b) end-cap screw HEAD (not just its through-bore) seated next to
+    ///       the nearest pin tube — `headRadius + tubeRadius + minWall`
+    ///   (c) end-cap head clearance from the row's outer edge: the slot
+    ///       layout puts the end-cap at half-pitch from the edge, so
+    ///       pitch ≥ 2 · (headRadius + minWall) for the head face to fit
+    ///       on top of the protrusion without spilling past the edge
+    /// Rounded *up* to a multiple of `gridPitch` so pin centres still
+    /// land on the document's grid.
+    static func connectorPinPitch(manufacturing m: ManufacturingConstants) -> Double {
+        let headRadius = ScrewGeometry.headDiameter / 2
+        let tubeRadius = m.channelDiameter / 2
+        let wall = m.minWallThickness
+        let tubeToTube = m.channelDiameter + wall
+        let headToPin = headRadius + tubeRadius + wall
+        let headToRowEdge = 2 * (headRadius + wall)
+        let needed = max(tubeToTube, headToPin, headToRowEdge)
+        let grid = max(m.gridPitch, 0.0001) // guard against zero-pitch from a bad config
+        let steps = (needed / grid).rounded(.up)
+        return max(grid, steps * grid)
+    }
+
+    /// Outward extent (perpendicular to the row) of the connector
+    /// protrusion. Sized so the screw head face fits inside the
+    /// protrusion's perpendicular footprint with `minWallThickness` of
+    /// plate material on each side. Snapped up to `gridPitch` for the
+    /// same grid-alignment reason as the pin pitch.
+    static func connectorOutwardExtent(manufacturing m: ManufacturingConstants) -> Double {
+        let headFit = ScrewGeometry.headDiameter + 2 * m.minWallThickness
+        let grid = max(m.gridPitch, 0.0001)
+        let steps = (headFit / grid).rounded(.up)
+        return max(grid, steps * grid)
+    }
+
     static func connectorFootprint(
         pinCount: Int,
         role: ConnectorRole,
         manufacturing m: ManufacturingConstants
     ) -> Footprint {
         let n = max(1, pinCount)
-        let pitch = m.gridPitch
+        let pitch = connectorPinPitch(manufacturing: m)
         // Slot row total length: N pin slots + 2 end-cap screw slots,
         // centred on the anchor along the tangent axis (local +Y at r0).
         let slots = n + 2
         let rowLength = Double(slots) * pitch
         let halfRow = rowLength / 2
         // Protrusion sticks out along local +X (away from the plate
-        // interior). Depth is derived: enough to clear the screw head's
-        // dome footprint past the slot row, plus a small margin. Using
-        // gridPitch (not screw radius) for clearance is conservative and
-        // matches how regular components' exclusionRect is sized.
-        let headRadius = ScrewGeometry.headDiameter / 2
-        let outwardExtent = max(headRadius, pitch) + 0.5
+        // interior). The extent is sized so the screw head face fits
+        // inside the protrusion footprint with at least `minWallThickness`
+        // of plate material on each side — see `connectorOutwardExtent`.
+        let outwardExtent = connectorOutwardExtent(manufacturing: m)
         var pins: [FootprintPin] = []
-        // Pin 1 sits next to the south-end screw (the first slot after the
-        // end cap), pin N next to the north-end screw. Slot centres along
-        // local +Y at r0: slot k (0-based) is at y = -halfRow + (k + 0.5) *
-        // pitch. End caps occupy slot 0 and slot (slots-1); pins occupy
-        // slots 1…N.
+        // Pin 1 sits next to one end screw, pin N next to the other. Slot
+        // centres along local +Y at r0: slot k (0-based) is at y =
+        // -halfRow + (k + 0.5) * pitch. End caps occupy slot 0 and slot
+        // (slots-1); pins occupy slots 1…N.
+        //
+        // Role flips the slot direction: `.topExtend` lays pin 1 at the
+        // smallest local y (mating side viewed top-down); `.bottomExtend`
+        // lays pin 1 at the largest local y so the order matches the
+        // schematic symbol after the user's natural mental view-flip
+        // (looking at the bottom-plate protrusion from the silicone side).
+        // Net effect for two mating halves on separate `.vpcb` files: a
+        // designer who places pin "1" → matching net on both halves will
+        // see them line up at the same end of the slot row in physical.
         for i in 0..<n {
-            let slotIndex = i + 1
+            let pinIndex = i + 1
+            let slotIndex: Int
+            switch role {
+            case .topExtend:    slotIndex = pinIndex
+            case .bottomExtend: slotIndex = n + 1 - pinIndex
+            }
             let y = -halfRow + (Double(slotIndex) + 0.5) * pitch
             pins.append(FootprintPin(
-                key: "\(i + 1)",
+                key: "\(pinIndex)",
                 offset: Point(x: outwardExtent / 2, y: y),
                 relativeLayer: .same
             ))
@@ -252,7 +300,6 @@ extension ComponentKind {
             origin: Point(x: 0, y: -halfRow),
             size: Size(width: outwardExtent, height: rowLength)
         )
-        _ = role  // role doesn't affect the 2-D footprint; PlateBuilder reads it for 3-D geometry
         return Footprint(
             kind: .connector,
             pins: pins,
