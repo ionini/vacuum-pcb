@@ -28,7 +28,10 @@ struct SimulateSchematicCanvas: View {
 
     /// One Canvas pass for every net, drawing edges in the pressure-derived
     /// colour of that net. Layout rules mirror `NetEdgeBuilder`, so the look
-    /// of the schematic matches the editor exactly.
+    /// of the schematic matches the editor exactly. Mating bus-lines paint
+    /// on top in indigo so the user still sees that two connectors are
+    /// snapped together — the surrounding nets animate the pressure flow,
+    /// the bus-line marks the join.
     private var netLinesLayer: some View {
         Canvas { ctx, _ in
             for net in document.logic.nets {
@@ -40,6 +43,19 @@ struct SimulateSchematicCanvas: View {
                     path.addLine(to: edge.b.point)
                     ctx.stroke(path, with: .color(stroke), lineWidth: 2.4)
                 }
+            }
+            for mating in document.logic.matings {
+                guard let a = MatingEndpointGeometry.point(for: mating.a, in: document),
+                      let b = MatingEndpointGeometry.point(for: mating.b, in: document)
+                else { continue }
+                var path = Path()
+                path.move(to: a)
+                path.addLine(to: b)
+                ctx.stroke(
+                    path,
+                    with: .color(.indigo.opacity(0.75)),
+                    style: StrokeStyle(lineWidth: 4.5, lineCap: .round)
+                )
             }
         }
         .allowsHitTesting(false)

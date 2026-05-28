@@ -696,7 +696,15 @@ enum PhysicalActions {
         let outline = circuit.physical.boardOutline
         let m = circuit.manufacturing
         let fp = component.footprint(m)
-        let clearance = fp.exclusionRect.size.height / 2 + m.gridPitch
+        // Just `halfRow` — the exclusion rect already bakes in
+        // `minWallThickness` at each end of the row (see
+        // `connectorFootprint`), so this clearance is exactly the
+        // distance from the anchor centre to the outer face of the row.
+        // Padding any further would prevent a connector from sitting
+        // centred on an edge whose length matches the protrusion length,
+        // e.g. a 4-pin connector (37.1 mm at default constants) on a
+        // 37 mm board would otherwise snap ~1 mm off-centre.
+        let clearance = fp.exclusionRect.size.height / 2
         let anchor = EdgeAnchor.snapping(
             worldPoint: world,
             to: outline,

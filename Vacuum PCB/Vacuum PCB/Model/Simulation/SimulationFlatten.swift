@@ -47,6 +47,12 @@ extension CircuitDocument {
 
         var netsById: [UUID: Net] = [:]
         var canonicalForOldId: [UUID: UUID] = [:]
+        // Maps (parent subpart instance id, connector component id inside
+        // the subpart's flattened library doc) → the freshly-minted UUID
+        // for that connector in this flat output. Used at the end of the
+        // flatten to resolve `Mating` endpoints whose `.subpartSocket`
+        // case references the original library connector id.
+        var socketIds: [SimulationSocketKey: UUID] = [:]
 
         func canonical(_ id: UUID) -> UUID {
             var c = id
@@ -142,6 +148,11 @@ extension CircuitDocument {
 
             // Inline non-boundary components, prefixing labels so the
             // sidebar lists "U1.Q1" instead of two ambiguous "Q1" rows.
+            // Connector fields (`connectorPinCount`, `connectorRole`)
+            // must be propagated too — without them an inlined 4-pin
+            // connector reads as 1 pin to `PneumaticNetwork.build`
+            // (it does `max(1, nil ?? 1)`), which collapses every
+            // daughterboard's connector to a single phantom toggle.
             for c in child.logic.components {
                 if boundaryComponentIds.contains(c.id) { continue }
                 guard let newId = idMap[c.id] else { continue }
@@ -150,8 +161,16 @@ extension CircuitDocument {
                     kind: c.kind,
                     label: "\(parentComp.label).\(c.label)",
                     resistorSize: c.resistorSize,
-                    portDirection: c.portDirection
+                    portDirection: c.portDirection,
+                    connectorPinCount: c.connectorPinCount,
+                    connectorRole: c.connectorRole
                 ))
+                if c.kind == .connector {
+                    socketIds[SimulationSocketKey(
+                        subpartId: subpartPlacement.componentId,
+                        connectorId: c.id
+                    )] = newId
+                }
             }
 
             // Rewrite child nets through the id map, then for each child
@@ -216,12 +235,79 @@ extension CircuitDocument {
         let subpartInstanceIds: Set<UUID> = Set(
             self.logic.components.filter { $0.kind == .subpart }.map(\.id)
         )
+        for id in netsById.keys {
+            netsById[id]?.pins.removeAll { subpartInstanceIds.contains($0.componentId) }
+        }
+
+        // Every connector pin must appear in some net or
+        // `PneumaticNetwork.build` won't expose it as an input / probe —
+        // its `pinToNet` lookup silently skips dangling pins. Library-
+        // internal connectors typically have one wired pin (the one the
+        // user routed inside the library) and the rest dangling; those
+        // dangling pins are still real physical terminals once the part
+        // is in an assembly. Add a fresh single-pin net for any
+        // un-netted connector pin so the simulator sees every pin.
+        let pinToNet = PneumaticNetwork.pinToNetMap(CircuitDocument(
+            manufacturing: self.manufacturing,
+            logic: LogicGraph(components: components,
+                              nets: Array(netsById.values)),
+            schematic: self.schematic,
+            physical: PhysicalLayout(placements: placements,
+                                     routes: routes,
+                                     boardOutline: self.physical.boardOutline,
+                                     topLayers: self.physical.topLayers,
+                                     bottomLayers: self.physical.bottomLayers)
+        ))
+        for c in components where c.kind == .connector {
+            let n = max(1, c.connectorPinCount ?? 1)
+            for i in 1...n {
+                let ref = PinRef(componentId: c.id, pinKey: "\(i)")
+                if pinToNet[ref] != nil { continue }
+                let netId = UUID()
+                addNet(Net(id: netId, label: "\(c.label).\(i)", pins: [ref]))
+            }
+        }
+
+        // Apply matings. Each Mating contributes N pin-pair net merges
+        // (pin i of A ≡ pin i of B for all i ∈ 1...N). Endpoints whose
+        // socket can't be resolved (subpart placement gone, deeper-than-
+        // one-level recursion) are skipped silently — DRC surfaces those
+        // as user-visible issues against the unflattened doc. Mated
+        // connectors are collected so we can drop their `Component`
+        // entries below: their pins are now internal interconnects, not
+        // user-facing terminals, so `PneumaticNetwork.build` must not
+        // expose them as Input/Probe rows in the simulator sidebar.
+        var matedConnectorIds = Set<UUID>()
+        for mating in self.logic.matings {
+            let aId = Self.resolveSimEndpoint(mating.a, socketIds: socketIds)
+            let bId = Self.resolveSimEndpoint(mating.b, socketIds: socketIds)
+            guard let aId, let bId, aId != bId else { continue }
+            guard let aComp = components.first(where: { $0.id == aId }),
+                  let bComp = components.first(where: { $0.id == bId }),
+                  aComp.kind == .connector, bComp.kind == .connector
+            else { continue }
+            let n = min(aComp.connectorPinCount ?? 0, bComp.connectorPinCount ?? 0)
+            guard n > 0 else { continue }
+            for i in 1...n {
+                let a = PinRef(componentId: aId, pinKey: "\(i)")
+                let b = PinRef(componentId: bId, pinKey: "\(i)")
+                // Find current net for each pin (after the dangling-pin
+                // pass every pin is guaranteed to belong to some net).
+                guard let netA = netsById.first(where: { $0.value.pins.contains(a) })?.key,
+                      let netB = netsById.first(where: { $0.value.pins.contains(b) })?.key
+                else { continue }
+                mergeNets(netA, netB)
+            }
+            matedConnectorIds.insert(aId)
+            matedConnectorIds.insert(bId)
+        }
+        if !matedConnectorIds.isEmpty {
+            components.removeAll { matedConnectorIds.contains($0.id) }
+            placements.removeAll { matedConnectorIds.contains($0.componentId) }
+        }
+
         let finalNets: [Net] = netsById.values.map { net in
-            Net(
-                id: net.id,
-                label: net.label,
-                pins: net.pins.filter { !subpartInstanceIds.contains($0.componentId) }
-            )
+            Net(id: net.id, label: net.label, pins: net.pins)
         }
         let finalRoutes: [Route] = routes.map { route in
             Route(netId: canonical(route.netId), segments: route.segments)
@@ -238,6 +324,29 @@ extension CircuitDocument {
             physical: physical
         )
     }
+}
+
+extension CircuitDocument {
+    fileprivate static func resolveSimEndpoint(
+        _ endpoint: ConnectorEndpoint,
+        socketIds: [SimulationSocketKey: UUID]
+    ) -> UUID? {
+        switch endpoint {
+        case .topLevel(let id):
+            return id
+        case .subpartSocket(let sid, let cid):
+            return socketIds[SimulationSocketKey(subpartId: sid, connectorId: cid)]
+        }
+    }
+}
+
+/// Two-tuple key used to track which connector inside which subpart
+/// placement got which freshly-minted UUID during simulator flatten.
+/// Mirrors the CAD flatten's `SocketKey` but lives here so the two
+/// pipelines don't share private types.
+fileprivate struct SimulationSocketKey: Hashable {
+    let subpartId: UUID
+    let connectorId: UUID
 }
 
 /// Local copy of `CircuitDocument.composeRotation(_:then:)` — the original
