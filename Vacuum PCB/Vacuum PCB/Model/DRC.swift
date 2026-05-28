@@ -715,18 +715,13 @@ enum DRC {
         let edges = collectRouteEdges(in: doc)
         guard !edges.isEmpty else { return [] }
 
-        let outline = doc.physical.boardOutline
-        struct OutlineEdge { let a: Point; let b: Point }
-        let outlineEdges: [OutlineEdge] = [
-            .init(a: Point(x: outline.minX, y: outline.minY),
-                  b: Point(x: outline.maxX, y: outline.minY)),
-            .init(a: Point(x: outline.maxX, y: outline.minY),
-                  b: Point(x: outline.maxX, y: outline.maxY)),
-            .init(a: Point(x: outline.maxX, y: outline.maxY),
-                  b: Point(x: outline.minX, y: outline.maxY)),
-            .init(a: Point(x: outline.minX, y: outline.maxY),
-                  b: Point(x: outline.minX, y: outline.minY)),
-        ]
+        // True outer-polygon edges: the rectangular `boardOutline` with each
+        // connector protrusion punched out on its anchor edge. Without this
+        // step, routes that legitimately head into a connector pin (which
+        // physically sits inside the protrusion, *outside* the rectangle)
+        // would clip the bare-rect edge and trip a false thin-wall warning
+        // at every connector.
+        let outlineEdges = outerBoundaryEdges(in: doc)
 
         // Bores by plate. Vias add one entry per twin (one per plate they
         // actually appear on); pin drop bores anchor at depth 0 on the pin's
@@ -876,5 +871,132 @@ enum DRC {
         }
 
         return issues
+    }
+
+    /// One segment of the printed plate's actual outer edge.
+    fileprivate struct OutlineEdge { let a: Point; let b: Point }
+
+    /// Returns the outer polygon edges of the printed plate, with each
+    /// connector protrusion punched out from the rectangular `boardOutline`.
+    /// At V1 there's at most one connector per edge (DRC enforces / the
+    /// plan locks it), but the helper sorts by `offsetAlongEdge` so
+    /// multiple protrusions on the same edge would compose cleanly.
+    /// Edges with no connectors stay as a single straight segment.
+    fileprivate static func outerBoundaryEdges(in doc: CircuitDocument) -> [OutlineEdge] {
+        let outline = doc.physical.boardOutline
+        let m = doc.manufacturing
+
+        // Per-connector protrusion footprint, expressed in offsets along
+        // its anchor edge and outward-extent depth. `halfRow` matches
+        // `ComponentKind.connectorFootprint` so the polygon punches out
+        // exactly the connector's CAD bounding rect.
+        struct P {
+            let edge: Edge
+            let centre: Double   // offsetAlongEdge of the anchor
+            let halfRow: Double
+            let outward: Double
+        }
+        var byEdge: [Edge: [P]] = [:]
+        for placement in doc.physical.placements {
+            guard let comp = doc.logic.components.first(where: { $0.id == placement.componentId }),
+                  comp.kind == .connector,
+                  let anchor = placement.edgeAnchor
+            else { continue }
+            let n = max(1, comp.connectorPinCount ?? 1)
+            let endCapY = ComponentKind.connectorEndCapLocalY(pinCount: n)
+            let headRadius = ScrewGeometry.headDiameter / 2
+            let halfRow = endCapY + headRadius + m.minWallThickness
+            let outward = ComponentKind.connectorOutwardExtent(manufacturing: m)
+            byEdge[anchor.edge, default: []].append(P(
+                edge: anchor.edge,
+                centre: anchor.offsetAlongEdge,
+                halfRow: halfRow,
+                outward: outward
+            ))
+        }
+        for k in byEdge.keys { byEdge[k]?.sort { $0.centre < $1.centre } }
+
+        var out: [OutlineEdge] = []
+
+        /// Walk one edge of the rectangle from `start` to `end`, inserting
+        /// each protrusion's three outer faces in place of the spans they
+        /// cover. `axis` selects the coord that varies along the edge
+        /// (.x for north/south, .y for east/west); `outwardNormal` is the
+        /// unit vector that points away from the plate.
+        func walkEdge(start: Point, end: Point, axisIsX: Bool,
+                      fixed: Double, outwardNormalX: Double, outwardNormalY: Double,
+                      protrusions: [P]) {
+            // Sorted offsets along the edge of each protrusion's [near, far] span.
+            let total = axisIsX ? (end.x - start.x) : (end.y - start.y)
+            let sign: Double = total >= 0 ? 1 : -1
+            var cursor: Double = 0   // distance traveled from start
+            func pointAt(_ d: Double) -> Point {
+                axisIsX
+                    ? Point(x: start.x + sign * d, y: fixed)
+                    : Point(x: fixed, y: start.y + sign * d)
+            }
+            for p in protrusions {
+                let near = p.centre - p.halfRow
+                let far  = p.centre + p.halfRow
+                if near > cursor {
+                    out.append(.init(a: pointAt(cursor), b: pointAt(near)))
+                }
+                // Inner-to-outer (perpendicular to the edge, away from the plate).
+                let outerNear = Point(
+                    x: pointAt(near).x + outwardNormalX * p.outward,
+                    y: pointAt(near).y + outwardNormalY * p.outward
+                )
+                let outerFar = Point(
+                    x: pointAt(far).x + outwardNormalX * p.outward,
+                    y: pointAt(far).y + outwardNormalY * p.outward
+                )
+                out.append(.init(a: pointAt(near), b: outerNear))
+                out.append(.init(a: outerNear, b: outerFar))
+                out.append(.init(a: outerFar, b: pointAt(far)))
+                cursor = max(cursor, far)
+            }
+            let endDist = abs(total)
+            if cursor < endDist {
+                out.append(.init(a: pointAt(cursor), b: pointAt(endDist)))
+            }
+        }
+
+        // South edge: walk from west corner (minX, minY) eastward; outward = -Y.
+        walkEdge(
+            start: Point(x: outline.minX, y: outline.minY),
+            end:   Point(x: outline.maxX, y: outline.minY),
+            axisIsX: true, fixed: outline.minY,
+            outwardNormalX: 0, outwardNormalY: -1,
+            protrusions: byEdge[.south] ?? []
+        )
+        // East edge: walk from south corner (maxX, minY) northward; outward = +X.
+        walkEdge(
+            start: Point(x: outline.maxX, y: outline.minY),
+            end:   Point(x: outline.maxX, y: outline.maxY),
+            axisIsX: false, fixed: outline.maxX,
+            outwardNormalX: 1, outwardNormalY: 0,
+            protrusions: byEdge[.east] ?? []
+        )
+        // North edge: walk from east corner (maxX, maxY) westward; outward = +Y.
+        // EdgeAnchor.offsetAlongEdge is measured from the west end at +X
+        // (see `EdgeAnchor.worldPosition`), so we walk +X here too and the
+        // protrusion offsets line up with the world coords directly.
+        walkEdge(
+            start: Point(x: outline.minX, y: outline.maxY),
+            end:   Point(x: outline.maxX, y: outline.maxY),
+            axisIsX: true, fixed: outline.maxY,
+            outwardNormalX: 0, outwardNormalY: 1,
+            protrusions: byEdge[.north] ?? []
+        )
+        // West edge: offsetAlongEdge is measured from the south end at +Y
+        // (per `EdgeAnchor.worldPosition`), so walk south-to-north here.
+        walkEdge(
+            start: Point(x: outline.minX, y: outline.minY),
+            end:   Point(x: outline.minX, y: outline.maxY),
+            axisIsX: false, fixed: outline.minX,
+            outwardNormalX: -1, outwardNormalY: 0,
+            protrusions: byEdge[.west] ?? []
+        )
+        return out
     }
 }
