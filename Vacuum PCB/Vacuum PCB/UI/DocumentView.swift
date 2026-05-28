@@ -109,6 +109,13 @@ struct DocumentView: View {
             // other tabs we defer until they switch back. `rebuild()`
             // bumps `buildToken`, so any in-flight build is superseded.
             if selectedTab == .preview { rebuild() }
+            // Crossing into assembly mode hides the Physical and 3D
+            // Preview tabs (and the Simulate physical canvas). If the
+            // user was on one of those tabs when they confirmed the
+            // assembly-mode prompt, redirect to a tab that still exists.
+            if document.circuit.isAssembly, !visibleTabs.contains(selectedTab) {
+                selectedTab = .schematic
+            }
         }
         .onChange(of: document.circuit.librarySnapshots) { _, _ in
             // `CircuitDocument.==` deliberately ignores `librarySnapshots`
@@ -284,17 +291,28 @@ struct DocumentView: View {
         )
     }
 
+    /// Tabs that should appear in the sidebar for the current document.
+    /// Assembly-mode docs have no single plate stack, so Physical and 3D
+    /// Preview drop out; the Simulate tab stays, just with its physical
+    /// canvas hidden inside.
+    private var visibleTabs: [ViewTab] {
+        if document.circuit.isAssembly {
+            return [.schematic, .simulate]
+        }
+        return [.schematic, .physical, .preview, .simulate]
+    }
+
     private var sidebar: some View {
         List(selection: sidebarSelection) {
             Section("Views") {
-                Label("Schematic", systemImage: "point.3.connected.trianglepath.dotted")
-                    .tag(ViewTab.schematic)
-                Label("Physical", systemImage: "square.stack.3d.up")
-                    .tag(ViewTab.physical)
-                Label("3D Preview", systemImage: "cube.transparent")
-                    .tag(ViewTab.preview)
-                Label("Simulate", systemImage: "waveform.path")
-                    .tag(ViewTab.simulate)
+                ForEach(visibleTabs, id: \.self) { tab in
+                    sidebarTabRow(tab).tag(tab)
+                }
+                if document.circuit.isAssembly {
+                    Label("Assembly mode", systemImage: "puzzlepiece.fill")
+                        .foregroundStyle(.indigo)
+                        .font(.caption.bold())
+                }
             }
             Section("Document") {
                 stat("Components", document.circuit.logic.components.count)
@@ -345,6 +363,19 @@ struct DocumentView: View {
                 try? await Task.sleep(for: .seconds(2))
                 if issueFocus?.id == token.id { issueFocus = nil }
             }
+        }
+    }
+
+    @ViewBuilder private func sidebarTabRow(_ tab: ViewTab) -> some View {
+        switch tab {
+        case .schematic:
+            Label("Schematic", systemImage: "point.3.connected.trianglepath.dotted")
+        case .physical:
+            Label("Physical", systemImage: "square.stack.3d.up")
+        case .preview:
+            Label("3D Preview", systemImage: "cube.transparent")
+        case .simulate:
+            Label("Simulate", systemImage: "waveform.path")
         }
     }
 
@@ -415,6 +446,7 @@ struct DocumentView: View {
             previewDirty: previewDirty,
             bambuStudioInstalled: bambuStudioInstalled,
             flowSimulatorInstalled: flowSimulatorInstalled,
+            isAssembly: document.circuit.isAssembly,
             onSaveSTL: { triggerExport(.saveSTL) },
             onOpenBambu: { triggerExport(.openInBambuStudio) },
             onOpenFlow: { triggerExport(.openInFlowSimulator) }
@@ -671,6 +703,12 @@ struct ExportMenuButton: View {
     let previewDirty: Bool
     let bambuStudioInstalled: Bool
     let flowSimulatorInstalled: Bool
+    /// Assembly-mode docs don't produce a single plate stack — every
+    /// export path (STL save, Bambu, Flow Simulator) currently emits one
+    /// flattened doc's CAD output and would silently lose the multi-board
+    /// shape. Gate the whole menu off while in assembly mode and surface
+    /// a tooltip so the user knows why.
+    let isAssembly: Bool
     let onSaveSTL: () -> Void
     let onOpenBambu: () -> Void
     let onOpenFlow: () -> Void
@@ -686,6 +724,9 @@ struct ExportMenuButton: View {
             Label(previewDirty ? "Build & Export…" : "Export…",
                   systemImage: "square.and.arrow.up")
         }
-        .disabled(isBuilding)
+        .disabled(isBuilding || isAssembly)
+        .help(isAssembly
+              ? "Export is unavailable in assembly mode (no single plate stack to build)."
+              : "")
     }
 }

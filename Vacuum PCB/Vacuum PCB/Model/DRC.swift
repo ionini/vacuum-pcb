@@ -108,6 +108,14 @@ enum DRC {
                 segmentIndex: Int,
                 position: Point
             )
+            /// A `Mating` references two connectors that don't compose
+            /// (roles aren't opposite, pin counts differ, or an endpoint
+            /// can't be resolved against the current document). Reason
+            /// string is user-facing.
+            case matingIncompatible(reason: String)
+            /// A connector instance appears in more than one `Mating`.
+            /// V1 allows each connector to be mated at most once.
+            case matingDoubleBooked
         }
 
         var summary: String {
@@ -138,6 +146,10 @@ enum DRC {
                     ? "wall < 0.01 mm"
                     : "\(String(format: "%.2f", gap)) mm wall"
                 return "\(netLabel) on \(layer.uiLabel): thin wall to \(kindTxt) (\(gapTxt))"
+            case .matingIncompatible(let reason):
+                return "\(netLabel): \(reason)"
+            case .matingDoubleBooked:
+                return "\(netLabel): connector mated more than once"
             }
         }
     }
@@ -176,6 +188,11 @@ enum DRC {
             return sel
         case let .thinWall(_, _, _, segIdx, _):
             return .routeSegment(netId: issue.netId, segmentIndex: segIdx)
+        case .matingIncompatible, .matingDoubleBooked:
+            // Mating issues live in the schematic — there's no physical
+            // canvas affordance to highlight (the physical tab is gated
+            // off in assembly mode anyway).
+            return nil
         case .crossNetMerge(let otherNetId, let otherLabel, _, _):
             // For each side of the merge, highlight whatever the user can
             // act on in the unflattened canvas:
@@ -235,7 +252,7 @@ enum DRC {
             return (placement.worldPosition(of: pin), placement.resolvedLayer(of: pin, on: comp))
         case let .thinWall(_, layer, _, _, pos):
             return (pos, layer)
-        case .unplacedPin, .noRouteDrawn:
+        case .unplacedPin, .noRouteDrawn, .matingIncompatible, .matingDoubleBooked:
             return nil
         }
     }
@@ -248,6 +265,79 @@ enum DRC {
         issues.append(contentsOf: clearanceIssues(in: document))
         issues.append(contentsOf: crossNetMergeIssues(in: document))
         issues.append(contentsOf: thinWallIssues(in: document))
+        issues.append(contentsOf: matingIssues(in: document))
+        return issues
+    }
+
+    /// Resolves a `ConnectorEndpoint` against the parent document, returning
+    /// the underlying connector `Component` plus the user-facing label to
+    /// quote in issue text. Top-level endpoints resolve directly; subpart
+    /// sockets resolve through the placement's library snapshot.
+    private static func resolveEndpoint(
+        _ endpoint: ConnectorEndpoint,
+        in document: CircuitDocument
+    ) -> (component: Component, label: String)? {
+        switch endpoint {
+        case .topLevel(let id):
+            guard let comp = document.logic.components.first(where: { $0.id == id }),
+                  comp.kind == .connector
+            else { return nil }
+            return (comp, comp.label)
+        case .subpartSocket(let subpartId, let connectorId):
+            guard let subpart = document.logic.components.first(where: { $0.id == subpartId }),
+                  subpart.kind == .subpart,
+                  let part = subpart.resolvedPart(snapshots: document.librarySnapshots),
+                  let comp = part.document.logic.components.first(where: { $0.id == connectorId }),
+                  comp.kind == .connector
+            else { return nil }
+            return (comp, "\(subpart.label).\(comp.label)")
+        }
+    }
+
+    private static func matingIssues(in document: CircuitDocument) -> [Issue] {
+        var issues: [Issue] = []
+        // Track each connector's appearance count so we can flag a
+        // double-mating exactly once per offending endpoint. The endpoint
+        // value type is Hashable thanks to the enum + UUID associated
+        // values, so it doubles as the dict key.
+        var endpointSeen: [ConnectorEndpoint: Int] = [:]
+        for mating in document.logic.matings {
+            endpointSeen[mating.a, default: 0] += 1
+            endpointSeen[mating.b, default: 0] += 1
+        }
+        for mating in document.logic.matings {
+            let a = resolveEndpoint(mating.a, in: document)
+            let b = resolveEndpoint(mating.b, in: document)
+            let label = "Mating \(a?.label ?? "?")↔\(b?.label ?? "?")"
+            guard let a, let b else {
+                issues.append(Issue(
+                    netId: mating.id, netLabel: label,
+                    kind: .matingIncompatible(reason: "one or both connectors no longer exist")
+                ))
+                continue
+            }
+            if a.component.connectorRole == b.component.connectorRole {
+                issues.append(Issue(
+                    netId: mating.id, netLabel: label,
+                    kind: .matingIncompatible(reason: "both halves have the same role; one must be bottom-extend and the other top-extend")
+                ))
+            }
+            let aPins = a.component.connectorPinCount ?? 0
+            let bPins = b.component.connectorPinCount ?? 0
+            if aPins != bPins || aPins == 0 {
+                issues.append(Issue(
+                    netId: mating.id, netLabel: label,
+                    kind: .matingIncompatible(reason: "pin counts don't match (\(aPins) vs \(bPins))")
+                ))
+            }
+        }
+        for (endpoint, count) in endpointSeen where count > 1 {
+            let label = resolveEndpoint(endpoint, in: document)?.label ?? "?"
+            issues.append(Issue(
+                netId: UUID(), netLabel: "Connector \(label)",
+                kind: .matingDoubleBooked
+            ))
+        }
         return issues
     }
 

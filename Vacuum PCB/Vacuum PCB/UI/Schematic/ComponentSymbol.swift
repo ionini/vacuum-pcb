@@ -1,11 +1,30 @@
 import SwiftUI
 
+/// Layout of one mating socket on a subpart's schematic symbol: where on
+/// the symbol it sits (centre offset from the symbol's centre) and how
+/// large the visible tab is. Used to draw the socket and to anchor mating
+/// bus-lines.
+struct SymbolSocketLayout {
+    let connectorId: UUID
+    let label: String
+    let pinCount: Int
+    let role: ConnectorRole
+    let side: SymbolSide
+    /// Centre of the socket tab in symbol-local coordinates (origin at the
+    /// symbol's centre).
+    let centre: CGPoint
+}
+
 /// Schematic-side geometry of a component symbol — bounding box and pin offsets
 /// relative to the symbol's center. Schematic positions are SwiftUI points, not
 /// millimeters; this is purely view layout.
 struct ComponentSymbolMetrics {
     var size: CGSize
     var pinOffsets: [String: CGPoint]
+    /// Subpart sockets exposed for assembly-mode mating. Empty for every
+    /// non-subpart component. Populated only when the resolved part has
+    /// `.connector` primitives.
+    var sockets: [SymbolSocketLayout] = []
 
     static func metrics(for kind: ComponentKind) -> ComponentSymbolMetrics {
         switch kind {
@@ -94,10 +113,13 @@ struct ComponentSymbolMetrics {
         guard component.kind == .subpart,
               let part = component.resolvedPart(snapshots: snapshots)
         else { return metrics(for: component.kind) }
-        return subpartMetrics(pins: part.pins)
+        return subpartMetrics(pins: part.pins, sockets: part.sockets)
     }
 
-    private static func subpartMetrics(pins: [BoundaryPin]) -> ComponentSymbolMetrics {
+    private static func subpartMetrics(
+        pins: [BoundaryPin],
+        sockets: [BoundarySocket] = []
+    ) -> ComponentSymbolMetrics {
         let spacing: CGFloat = 28
         let margin: CGFloat = 20
         let minSide: CGFloat = 70
@@ -140,7 +162,42 @@ struct ComponentSymbolMetrics {
         place(side: top, onSide: .top)
         place(side: bottom, onSide: .bottom)
 
-        return ComponentSymbolMetrics(size: CGSize(width: width, height: height), pinOffsets: offsets)
+        // Place each socket on the centre of its declared side. The
+        // BoundarySocket carries a 0..1 fraction along the edge — we map
+        // that onto the symbol's side length so sockets near a corner of
+        // the library board land near the same corner of the symbol.
+        var socketLayouts: [SymbolSocketLayout] = []
+        for socket in sockets {
+            let centre: CGPoint
+            switch socket.side {
+            case .top:
+                let x = -halfW + CGFloat(socket.offsetFraction) * width
+                centre = CGPoint(x: x, y: -halfH)
+            case .bottom:
+                let x = -halfW + CGFloat(socket.offsetFraction) * width
+                centre = CGPoint(x: x, y: halfH)
+            case .left:
+                let y = -halfH + CGFloat(socket.offsetFraction) * height
+                centre = CGPoint(x: -halfW, y: y)
+            case .right:
+                let y = -halfH + CGFloat(socket.offsetFraction) * height
+                centre = CGPoint(x: halfW, y: y)
+            }
+            socketLayouts.append(SymbolSocketLayout(
+                connectorId: socket.connectorId,
+                label: socket.label,
+                pinCount: socket.pinCount,
+                role: socket.role,
+                side: socket.side,
+                centre: centre
+            ))
+        }
+
+        return ComponentSymbolMetrics(
+            size: CGSize(width: width, height: height),
+            pinOffsets: offsets,
+            sockets: socketLayouts
+        )
     }
 
     func pinOffset(_ key: String) -> CGPoint {
@@ -178,8 +235,43 @@ struct ComponentSymbolView: View {
                 .overlay(symbolShape.stroke(strokeColor, lineWidth: isSelected ? 2.5 : 1.5))
                 .frame(width: m.size.width, height: m.size.height)
             label
+            // Subpart mating sockets render as labeled tabs on the
+            // appropriate edge. Inert in V1 — selection / drag / mating
+            // happen through the inspector (creating + un-mating).
+            ForEach(Array(m.sockets.enumerated()), id: \.offset) { _, socket in
+                socketTab(socket)
+                    .offset(x: socket.centre.x, y: socket.centre.y)
+            }
         }
         .frame(width: m.size.width, height: m.size.height)
+    }
+
+    /// Renders one mating socket as a small labeled tab on the subpart
+    /// symbol's relevant edge. The tab body is oriented perpendicular to
+    /// the side it sits on (wider along the side, thinner pointing
+    /// outward) so it reads as "this is the connector mounted on this
+    /// edge". Role glyph (▼ bottom-extend / ▲ top-extend) sits next to
+    /// the pin-count label.
+    private func socketTab(_ socket: SymbolSocketLayout) -> some View {
+        let width: CGFloat
+        let height: CGFloat
+        switch socket.side {
+        case .top, .bottom: width = 56; height = 18
+        case .left, .right: width = 18; height = 56
+        }
+        let roleGlyph = socket.role == .bottomExtend ? "▼" : "▲"
+        return RoundedRectangle(cornerRadius: 3)
+            .fill(Color.indigo.opacity(0.30))
+            .overlay(RoundedRectangle(cornerRadius: 3)
+                .stroke(Color.indigo.opacity(0.65), lineWidth: 1))
+            .frame(width: width, height: height)
+            .overlay(
+                Text("\(socket.label) \(roleGlyph)\(socket.pinCount)")
+                    .font(.system(size: 8, weight: .medium))
+                    .foregroundStyle(Color.indigo)
+                    .lineLimit(1)
+                    .fixedSize()
+            )
     }
 
     private var symbolShape: AnyShape {

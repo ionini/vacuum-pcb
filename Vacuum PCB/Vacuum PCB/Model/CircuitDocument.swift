@@ -12,7 +12,11 @@ struct CircuitDocument: Codable, Hashable {
     /// `connectorRole` to `Component`, `edgeAnchor` to `Placement`, and the
     /// `Edge` enum. All new fields are optional / decodeIfPresent, so v3
     /// docs round-trip unchanged with no explicit migration step.
-    static let currentSchemaVersion = 4
+    /// v5: introduces assembly mode — adds `matings: [Mating]` on
+    /// `LogicGraph` and `ConnectorEndpoint`. The new field omits when empty
+    /// (a non-assembly doc round-trips byte-identical), so v4 → v5 is a
+    /// no-op for existing documents.
+    static let currentSchemaVersion = 5
 
     var schemaVersion: Int
     var manufacturing: ManufacturingConstants
@@ -121,6 +125,14 @@ extension CircuitDocument {
             self.logic.components.first(where: { $0.id == p.componentId })?.kind != .subpart
         }
         var routes = primitives.physical.routes
+        // Depth-1 connector address map: (parent's subpart component id,
+        // connector component id inside the subpart's library snapshot) →
+        // the freshly-minted UUID assigned when expanding that connector
+        // into the flat doc. Used at the end of flatten to resolve
+        // `Mating` endpoints. Deeper-than-one-level connectors aren't
+        // tracked because the Mating endpoint scheme can't address them
+        // — by design in V1 of assembly mode.
+        var socketIds: [SocketKey: UUID] = [:]
 
         for placement in self.physical.placements {
             guard let comp = self.logic.components.first(where: { $0.id == placement.componentId }),
@@ -128,14 +140,12 @@ extension CircuitDocument {
                   let filename = comp.partRef,
                   !visiting.contains(filename),
                   let part = comp.resolvedPart(snapshots: self.librarySnapshots),
-                  // V1: parts that contain `.connector` primitives can't be
-                  // used as subparts — the connector is a top-level-only
-                  // edge feature. The palette refuses to add such parts;
-                  // this guard is defense-in-depth for cases where a
-                  // connector-bearing part snuck in via cloud sync / file
-                  // edit. Treat the same as the missing-part case: skip
-                  // expansion, leave dangling.
-                  !part.document.containsConnector
+                  // Subparts that are themselves assemblies (have matings of
+                  // their own) can't be expanded yet — V1 of assembly mode
+                  // is one level deep. Skip the placement; the canvas
+                  // surfaces it as a placeholder like the missing-part /
+                  // cycle cases.
+                  part.document.logic.matings.isEmpty
             else { continue }
 
             // Pre-flatten the child so any subparts inside it are already
@@ -198,15 +208,26 @@ extension CircuitDocument {
                     position: toWorld(internalPlacement.position),
                     rotation: Self.composeRotation(internalPlacement.rotation, then: placement.rotation),
                     layer: internalPlacement.layer,
-                    depth: internalPlacement.depth
+                    depth: internalPlacement.depth,
+                    edgeAnchor: internalPlacement.edgeAnchor
                 ))
                 components.append(Component(
                     id: newId,
                     kind: internalComp.kind,
                     label: "\(comp.label).\(internalComp.label)",
                     resistorSize: internalComp.resistorSize,
-                    portDirection: internalComp.portDirection
+                    portDirection: internalComp.portDirection,
+                    connectorPinCount: internalComp.connectorPinCount,
+                    connectorRole: internalComp.connectorRole
                 ))
+                if internalComp.kind == .connector {
+                    // Record the parent → flattened mapping for any Mating
+                    // endpoints that reference this socket. The library's
+                    // own connector UUID is preserved through flatten (only
+                    // subparts get re-IDd), so `internalComp.id` is the
+                    // value the Mating endpoint carries.
+                    socketIds[SocketKey(subpartId: comp.id, connectorId: internalComp.id)] = newId
+                }
             }
 
             // Internal routes. NetId is normally regenerated to avoid
@@ -241,7 +262,88 @@ extension CircuitDocument {
         primitives.logic.components = components
         primitives.physical.placements = placements
         primitives.physical.routes = routes
+
+        // Apply matings: for each pin pair (i in 1...N) of the two mated
+        // connectors, merge their nets so the simulator and DRC see a
+        // joined network. Unresolvable endpoints (subpart placement gone,
+        // connector id stale, mismatched pin counts) are silently skipped
+        // here — DRC surfaces those as user-visible issues against the
+        // unflattened doc.
+        primitives.logic.matings = []
+        for mating in self.logic.matings {
+            guard let aId = Self.resolveEndpoint(mating.a, socketIds: socketIds),
+                  let bId = Self.resolveEndpoint(mating.b, socketIds: socketIds),
+                  aId != bId,
+                  let aComp = primitives.logic.components.first(where: { $0.id == aId }),
+                  let bComp = primitives.logic.components.first(where: { $0.id == bId }),
+                  aComp.kind == .connector,
+                  bComp.kind == .connector
+            else { continue }
+            let n = min(aComp.connectorPinCount ?? 0, bComp.connectorPinCount ?? 0)
+            guard n > 0 else { continue }
+            for i in 1...n {
+                let a = PinRef(componentId: aId, pinKey: "\(i)")
+                let b = PinRef(componentId: bId, pinKey: "\(i)")
+                Self.mergePinsAtFlatten(&primitives, a, b)
+            }
+        }
+
         return (primitives, labels)
+    }
+
+    /// Two-tuple key used during flatten to remember which subpart-internal
+    /// connector got which freshly-minted UUID. Mating endpoints carrying
+    /// the same subpart + connector ids resolve through this map.
+    private struct SocketKey: Hashable {
+        let subpartId: UUID
+        let connectorId: UUID
+    }
+
+    private static func resolveEndpoint(
+        _ endpoint: ConnectorEndpoint,
+        socketIds: [SocketKey: UUID]
+    ) -> UUID? {
+        switch endpoint {
+        case .topLevel(let id):
+            return id
+        case .subpartSocket(let sid, let cid):
+            return socketIds[SocketKey(subpartId: sid, connectorId: cid)]
+        }
+    }
+
+    /// Route-preserving net merge for flatten-time mating expansion.
+    ///
+    /// `connectPins` (the schematic-editor entry point) deletes the
+    /// "loser" net's routes when merging — appropriate for the wire-two-pins
+    /// flow where the user is collapsing two empty-route nets into one.
+    /// At flatten we want the opposite: any routes that already came along
+    /// for the ride from a subpart should retain their geometry and just
+    /// adopt the surviving net's id.
+    private static func mergePinsAtFlatten(_ doc: inout CircuitDocument, _ first: PinRef, _ second: PinRef) {
+        guard first != second else { return }
+        var nets = doc.logic.nets
+        let firstIdx = nets.firstIndex { $0.pins.contains(first) }
+        let secondIdx = nets.firstIndex { $0.pins.contains(second) }
+        switch (firstIdx, secondIdx) {
+        case (nil, nil):
+            nets.append(Net(label: "mated", pins: [first, second]))
+        case (let i?, nil):
+            nets[i].pins.append(second)
+        case (nil, let j?):
+            nets[j].pins.append(first)
+        case (let i?, let j?) where i == j:
+            break
+        case (let a?, let b?):
+            let i = min(a, b), j = max(a, b)
+            let survivingId = nets[i].id
+            let killedId = nets[j].id
+            nets[i].pins.append(contentsOf: nets[j].pins.filter { !nets[i].pins.contains($0) })
+            nets.remove(at: j)
+            for r in doc.physical.routes.indices where doc.physical.routes[r].netId == killedId {
+                doc.physical.routes[r].netId = survivingId
+            }
+        }
+        doc.logic.nets = nets
     }
 
     private static func composeRotation(_ first: Rotation, then second: Rotation) -> Rotation {
@@ -276,11 +378,26 @@ extension CircuitDocument {
 
 extension CircuitDocument {
     /// True when this document has any `.connector` primitive in its logic
-    /// graph. Connector-bearing designs can't be reused as subparts in V1 —
-    /// the palette refuses to import them and `flattened()` skips any
-    /// existing subpart instance whose snapshot reports true here.
+    /// graph. Used by DRC and the schematic palette: dropping a
+    /// connector-bearing part into a non-assembly document needs a
+    /// confirmation prompt, since adding it flips the document into
+    /// assembly mode.
     var containsConnector: Bool {
         logic.components.contains(where: { $0.kind == .connector })
+    }
+
+    /// True when this document is in **assembly mode** — derived from the
+    /// presence of any subpart whose library snapshot contains a connector
+    /// primitive. Mating those connectors via `LogicGraph.matings` is the
+    /// raison-d'être of an assembly. In assembly mode the Physical and
+    /// 3D Preview tabs are gated off and the Simulate physical-canvas is
+    /// hidden — the document is a schematic + simulation product.
+    var isAssembly: Bool {
+        for c in logic.components where c.kind == .subpart {
+            guard let part = c.resolvedPart(snapshots: librarySnapshots) else { continue }
+            if part.document.containsConnector { return true }
+        }
+        return false
     }
 }
 

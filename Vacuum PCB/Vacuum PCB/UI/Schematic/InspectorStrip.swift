@@ -2,21 +2,53 @@ import SwiftUI
 
 /// Bottom strip showing context-aware controls for whatever is currently selected.
 /// Resistor → S/M/L picker. Port → input/output toggle. Component → rename field.
-/// Net → label rename. Nothing selected → instructions.
+/// Net → label rename. Connector / subpart with sockets → mating controls.
+/// Nothing selected → instructions.
 struct InspectorStrip: View {
     @Binding var document: VPCBDocument
     @Binding var selection: SchematicSelection
 
     var body: some View {
-        HStack(spacing: 12) {
-            content
-            Spacer()
-            hint
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 12) {
+                content
+                Spacer()
+                hint
+            }
+            matingRows
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(.regularMaterial)
         .frame(minHeight: 44)
+    }
+
+    /// Per-endpoint mating controls. One row per top-level connector or
+    /// subpart socket on the currently selected component. Hidden when the
+    /// selection has no matable endpoints.
+    @ViewBuilder private var matingRows: some View {
+        if let only = selection.singleComponent, let c = component(only) {
+            if c.kind == .connector {
+                MatingRow(
+                    endpoint: .topLevel(componentId: c.id),
+                    headline: c.label,
+                    document: $document
+                )
+            } else if c.kind == .subpart {
+                let sockets = subpartSockets(c)
+                ForEach(sockets, id: \.connectorId) { socket in
+                    MatingRow(
+                        endpoint: .subpartSocket(subpartId: c.id, connectorId: socket.connectorId),
+                        headline: "\(c.label).\(socket.label)",
+                        document: $document
+                    )
+                }
+            }
+        }
+    }
+
+    private func subpartSockets(_ c: Component) -> [BoundarySocket] {
+        c.resolvedPart(snapshots: document.circuit.librarySnapshots)?.sockets ?? []
     }
 
     @ViewBuilder private var content: some View {
@@ -252,6 +284,169 @@ struct InspectorStrip: View {
 
     private func net(_ id: UUID) -> Net? {
         document.circuit.logic.nets.first(where: { $0.id == id })
+    }
+}
+
+/// One inspector row that surfaces an endpoint's current mate and a
+/// picker for compatible peers. Renders as: `"<label>  Mate to ▼"` (when
+/// unmated) or `"<label>  Mated to <peer>  [Unmate]"` (when mated).
+struct MatingRow: View {
+    let endpoint: ConnectorEndpoint
+    let headline: String
+    @Binding var document: VPCBDocument
+
+    var body: some View {
+        let current = MatingActions.mating(for: endpoint, in: document.circuit)
+        HStack(spacing: 8) {
+            Image(systemName: "link")
+                .foregroundStyle(.indigo)
+                .font(.caption)
+            Text(headline)
+                .font(.caption.bold())
+                .foregroundStyle(.indigo)
+            if let mate = current,
+               let peer = MatingActions.otherEndpoint(of: mate, from: endpoint),
+               let peerLabel = MatingActions.label(for: peer, in: document.circuit) {
+                Text("Mated to")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(peerLabel)
+                    .font(.caption.bold())
+                Button("Unmate") {
+                    MatingActions.unmate(endpoint, in: &document.circuit)
+                }
+                .controlSize(.small)
+            } else {
+                let peers = MatingActions.compatiblePeers(for: endpoint, in: document.circuit)
+                if peers.isEmpty {
+                    Text("No compatible peer (need opposite role + matching pin count)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Menu {
+                        ForEach(peers, id: \.0) { peer in
+                            Button(peer.1) {
+                                MatingActions.mate(endpoint, peer.0, in: &document.circuit)
+                            }
+                        }
+                    } label: {
+                        Label("Mate to…", systemImage: "chevron.down.circle")
+                            .font(.caption)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                }
+            }
+        }
+    }
+}
+
+/// Document-level helpers for creating, removing, and listing matings.
+/// Free functions kept off `CircuitDocument` so the model file stays focused
+/// on persistence — these are UI-driven actions and lookups.
+enum MatingActions {
+    static func mating(for endpoint: ConnectorEndpoint, in circuit: CircuitDocument) -> Mating? {
+        circuit.logic.matings.first(where: { $0.a == endpoint || $0.b == endpoint })
+    }
+
+    static func otherEndpoint(of mating: Mating, from endpoint: ConnectorEndpoint) -> ConnectorEndpoint? {
+        if mating.a == endpoint { return mating.b }
+        if mating.b == endpoint { return mating.a }
+        return nil
+    }
+
+    /// User-visible label for an endpoint. Top-level connectors carry
+    /// their own label; subpart sockets prefix with the subpart's label
+    /// (e.g., "U1.J2") so the picker disambiguates across instances.
+    static func label(for endpoint: ConnectorEndpoint, in circuit: CircuitDocument) -> String? {
+        switch endpoint {
+        case .topLevel(let id):
+            return circuit.logic.components.first(where: { $0.id == id })?.label
+        case .subpartSocket(let subpartId, let connectorId):
+            guard let subpart = circuit.logic.components.first(where: { $0.id == subpartId }),
+                  let part = subpart.resolvedPart(snapshots: circuit.librarySnapshots),
+                  let comp = part.document.logic.components.first(where: { $0.id == connectorId })
+            else { return nil }
+            return "\(subpart.label).\(comp.label)"
+        }
+    }
+
+    private static func resolveConnector(_ endpoint: ConnectorEndpoint, in circuit: CircuitDocument) -> Component? {
+        switch endpoint {
+        case .topLevel(let id):
+            return circuit.logic.components.first(where: { $0.id == id })
+        case .subpartSocket(let subpartId, let connectorId):
+            guard let subpart = circuit.logic.components.first(where: { $0.id == subpartId }),
+                  let part = subpart.resolvedPart(snapshots: circuit.librarySnapshots)
+            else { return nil }
+            return part.document.logic.components.first(where: { $0.id == connectorId })
+        }
+    }
+
+    /// Endpoints compatible with the given one: opposite role, matching
+    /// pin count, not the same endpoint, and either un-mated or already
+    /// mated to *this* endpoint (so the picker shows the current mate as
+    /// "selected").
+    static func compatiblePeers(
+        for endpoint: ConnectorEndpoint,
+        in circuit: CircuitDocument
+    ) -> [(ConnectorEndpoint, String)] {
+        guard let mine = resolveConnector(endpoint, in: circuit),
+              let myRole = mine.connectorRole,
+              let myCount = mine.connectorPinCount
+        else { return [] }
+        let myMatingId = mating(for: endpoint, in: circuit)?.id
+        var candidates: [(ConnectorEndpoint, String)] = []
+        // Top-level connector candidates.
+        for c in circuit.logic.components where c.kind == .connector {
+            let other: ConnectorEndpoint = .topLevel(componentId: c.id)
+            if other == endpoint { continue }
+            guard c.connectorRole == myRole.opposite,
+                  c.connectorPinCount == myCount
+            else { continue }
+            if let existing = mating(for: other, in: circuit), existing.id != myMatingId { continue }
+            candidates.append((other, c.label))
+        }
+        // Subpart socket candidates.
+        for c in circuit.logic.components where c.kind == .subpart {
+            guard let part = c.resolvedPart(snapshots: circuit.librarySnapshots) else { continue }
+            for socket in part.sockets {
+                let other: ConnectorEndpoint = .subpartSocket(subpartId: c.id, connectorId: socket.connectorId)
+                if other == endpoint { continue }
+                guard socket.role == myRole.opposite,
+                      socket.pinCount == myCount
+                else { continue }
+                if let existing = mating(for: other, in: circuit), existing.id != myMatingId { continue }
+                candidates.append((other, "\(c.label).\(socket.label)"))
+            }
+        }
+        candidates.sort { $0.1 < $1.1 }
+        return candidates
+    }
+
+    /// Create or replace a mating between `a` and `b`. Existing matings
+    /// that involve either endpoint are removed first so the one-mating-
+    /// per-connector invariant is preserved.
+    static func mate(_ a: ConnectorEndpoint, _ b: ConnectorEndpoint, in circuit: inout CircuitDocument) {
+        guard a != b else { return }
+        circuit.logic.matings.removeAll {
+            $0.a == a || $0.b == a || $0.a == b || $0.b == b
+        }
+        circuit.logic.matings.append(Mating(a: a, b: b))
+    }
+
+    static func unmate(_ endpoint: ConnectorEndpoint, in circuit: inout CircuitDocument) {
+        circuit.logic.matings.removeAll { $0.a == endpoint || $0.b == endpoint }
+    }
+}
+
+extension ConnectorRole {
+    /// The role this half mates against: `bottomExtend` ↔ `topExtend`.
+    var opposite: ConnectorRole {
+        switch self {
+        case .bottomExtend: return .topExtend
+        case .topExtend: return .bottomExtend
+        }
     }
 }
 

@@ -10,6 +10,34 @@ enum SymbolSide: String, Hashable {
     case left, right, top, bottom
 }
 
+/// One externally-visible mating socket of a library part. A subpart that
+/// contains a `.connector` primitive exposes that connector at the parent
+/// level as a `BoundarySocket` — a group of N pins on one side of the
+/// auto-generated subpart symbol. Mating two sockets in the parent
+/// assembly's schematic is what wires the two boards together.
+struct BoundarySocket: Hashable {
+    /// UUID of the connector component inside the library document.
+    /// Stable across renames; used as the `connectorId` in a `Mating`
+    /// endpoint's `.subpartSocket` case.
+    let connectorId: UUID
+    /// User-visible connector label inside the library (e.g., "J1").
+    let label: String
+    let pinCount: Int
+    let role: ConnectorRole
+    /// Which side of the auto-generated subpart symbol the socket sits on,
+    /// derived from the library connector's edge anchor.
+    let side: SymbolSide
+    /// Centre of the socket along its side, normalized to 0..1. Mapped
+    /// from the library's `EdgeAnchor.offsetAlongEdge` divided by the edge
+    /// length; nil if the library connector has no edge anchor (defensive
+    /// fallback — drop the socket to mid-side).
+    let offsetFraction: Double
+    /// Physical-side anchor (millimetres) of the connector's row centre in
+    /// the library's coordinate system. Reserved for the future
+    /// multi-board physical view; today's schematic UI doesn't read it.
+    let physicalAnchor: Point
+}
+
 /// One externally-visible pin of a library part: the matching component's
 /// stable UUID, its label, where it lives on the auto-generated symbol, and
 /// its physical-side anchor inside the library's coordinate system.
@@ -82,6 +110,10 @@ final class PartsLibrary: ObservableObject {
         let filename: String
         let document: CircuitDocument
         let pins: [BoundaryPin]
+        /// Connector sockets the library exposes for assembly-mode mating.
+        /// Empty for parts with no `.connector` primitives — non-assembly
+        /// flows ignore this field.
+        let sockets: [BoundarySocket]
         var id: String { filename }
 
         /// User-facing display name: filename without the `.vpcb` extension.
@@ -174,7 +206,12 @@ final class PartsLibrary: ObservableObject {
         // Build the final `Part` list now that every doc has converged.
         var collected: [Part] = []
         for (filename, doc) in inFlight {
-            collected.append(Part(filename: filename, document: doc, pins: Self.boundaryPins(in: doc)))
+            collected.append(Part(
+                filename: filename,
+                document: doc,
+                pins: Self.boundaryPins(in: doc),
+                sockets: Self.boundarySockets(in: doc)
+            ))
         }
         // Stable order so the palette doesn't reshuffle on every reload.
         collected.sort { $0.filename.localizedCompare($1.filename) == .orderedAscending }
@@ -300,6 +337,51 @@ final class PartsLibrary: ObservableObject {
         part(named: filename)?.pins
     }
 
+    /// Sockets a subpart exposes for assembly-mode mating. One per
+    /// `.connector` component in the library document. Sides come from
+    /// the connector's edge anchor (`.north` → top, `.south` → bottom,
+    /// etc.); the offset along the side is normalised against the library
+    /// outline's matching edge length. Connectors with no edge anchor
+    /// (defensive — shouldn't happen for a saved doc) fall back to the
+    /// middle of the symbol's bottom edge.
+    static func boundarySockets(in doc: CircuitDocument) -> [BoundarySocket] {
+        let outline = doc.physical.boardOutline
+        var sockets: [BoundarySocket] = []
+        for c in doc.logic.components where c.kind == .connector {
+            let placement = doc.physical.placements.first(where: { $0.componentId == c.id })
+            let side: SymbolSide
+            let fraction: Double
+            let anchorWorld: Point
+            if let anchor = placement?.edgeAnchor {
+                switch anchor.edge {
+                case .north: side = .top
+                case .south: side = .bottom
+                case .east:  side = .right
+                case .west:  side = .left
+                }
+                let edgeLen = anchor.edgeLength(in: outline)
+                fraction = edgeLen > 0
+                    ? max(0, min(1, anchor.offsetAlongEdge / edgeLen))
+                    : 0.5
+                anchorWorld = anchor.worldPosition(in: outline)
+            } else {
+                side = .bottom
+                fraction = 0.5
+                anchorWorld = .zero
+            }
+            sockets.append(BoundarySocket(
+                connectorId: c.id,
+                label: c.label,
+                pinCount: max(1, c.connectorPinCount ?? 1),
+                role: c.connectorRole ?? .bottomExtend,
+                side: side,
+                offsetFraction: fraction,
+                physicalAnchor: anchorWorld
+            ))
+        }
+        return sockets
+    }
+
     /// Snapshot-first resolution for a sub-part instance. Returns the frozen
     /// library document from the parent's `librarySnapshots` when the
     /// component has a pinned hash that matches an entry; falls back to the
@@ -316,7 +398,8 @@ final class PartsLibrary: ObservableObject {
             return Part(
                 filename: filename,
                 document: doc,
-                pins: cachedBoundaryPins(forHash: hash, in: doc)
+                pins: cachedBoundaryPins(forHash: hash, in: doc),
+                sockets: cachedBoundarySockets(forHash: hash, in: doc)
             )
         }
         return shared.part(named: filename)
@@ -350,6 +433,26 @@ final class PartsLibrary: ObservableObject {
         pinsCache[hash] = pins
         pinsCacheLock.unlock()
         return pins
+    }
+
+    // Sockets share the same caching shape as pins — boundarySockets is
+    // also a pure function of the snapshot, and the same `resolve` call
+    // sites that pay the pins-cost would pay the sockets-cost without a
+    // memo.
+    private static var socketsCache: [String: [BoundarySocket]] = [:]
+
+    static func cachedBoundarySockets(forHash hash: String, in doc: CircuitDocument) -> [BoundarySocket] {
+        pinsCacheLock.lock()
+        if let cached = socketsCache[hash] {
+            pinsCacheLock.unlock()
+            return cached
+        }
+        pinsCacheLock.unlock()
+        let sockets = boundarySockets(in: doc)
+        pinsCacheLock.lock()
+        socketsCache[hash] = sockets
+        pinsCacheLock.unlock()
+        return sockets
     }
 }
 

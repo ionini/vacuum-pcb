@@ -42,6 +42,10 @@ struct SchematicInspector: View {
     @Binding var selection: SchematicSelection
 
     @State private var alertMessage: String?
+    /// Library part the user just attempted to add when the document
+    /// would flip into assembly mode as a result. Held here while the
+    /// confirmation sheet is up; cleared by either button.
+    @State private var pendingAssemblyEntry: PartsLibrary.Part?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -60,6 +64,28 @@ struct SchematicInspector: View {
             Button("OK") { alertMessage = nil }
         } message: {
             Text(alertMessage ?? "")
+        }
+        .alert("Enter assembly mode?", isPresented: Binding(
+            get: { pendingAssemblyEntry != nil },
+            set: { if !$0 { pendingAssemblyEntry = nil } }
+        )) {
+            Button("Cancel", role: .cancel) { pendingAssemblyEntry = nil }
+            Button("Add and enter assembly mode") {
+                if let part = pendingAssemblyEntry {
+                    pendingAssemblyEntry = nil
+                    commitLibraryPart(part)
+                }
+            }
+        } message: {
+            Text("""
+                "\(pendingAssemblyEntry?.displayName ?? "This part")" contains a connector. \
+                Adding it switches this document into Assembly mode, which disables the \
+                Physical and 3D Preview tabs and the Simulate physical canvas. STL / Bambu / \
+                Flow Simulator export is also unavailable in assembly mode. The schematic \
+                editor and Simulate schematic canvas remain available. \
+                Remove the part later to leave assembly mode.
+                """
+            )
         }
     }
 
@@ -86,6 +112,16 @@ struct SchematicInspector: View {
     /// parent's stack, so we refuse instead of silently bumping (per the
     /// v1 design decision).
     private func addLibraryPart(_ part: PartsLibrary.Part) {
+        // V1 of assembly mode is one level deep — a subpart that is itself
+        // an assembly (has matings of its own) can't be expanded yet.
+        // Refuse outright with a clear message; the connector-bearing case
+        // below remains supported.
+        if !part.document.logic.matings.isEmpty {
+            alertMessage = "\"\(part.displayName)\" is itself an assembly. " +
+                "V1 of Assembly mode supports one level of nesting only — " +
+                "this part can't be used as a subpart."
+            return
+        }
         let parentTop    = document.circuit.physical.topLayers
         let parentBottom = document.circuit.physical.bottomLayers
         let partTop      = part.document.physical.topLayers
@@ -116,11 +152,25 @@ struct SchematicInspector: View {
                 return
             }
         }
+        // Adding a connector-bearing part flips a non-assembly document
+        // into assembly mode (Physical / 3D Preview / Simulate-physical
+        // disabled, export disabled). Ask the user to confirm before
+        // making that switch. Documents already in assembly mode skip the
+        // prompt — they're already committed.
+        if part.document.containsConnector, !document.circuit.isAssembly {
+            pendingAssemblyEntry = part
+            return
+        }
+        commitLibraryPart(part)
+    }
+
+    /// Final placement step shared between the direct-add path and the
+    /// "after the assembly-mode confirm" path. Pins the part to its
+    /// snapshot, inserts the component + schematic position + centred
+    /// physical placement, and selects the new instance.
+    private func commitLibraryPart(_ part: PartsLibrary.Part) {
         let label = document.circuit.logic.nextLabel(for: .subpart)
         let id = UUID()
-        // Pin the placed instance to the live library's current content
-        // hash and stash a snapshot in the document so later edits to the
-        // library don't cascade into this design.
         let hash = part.document.contentHash()
         if document.circuit.librarySnapshots[hash] == nil {
             document.circuit.librarySnapshots[hash] = part.document
@@ -134,8 +184,6 @@ struct SchematicInspector: View {
         )
         document.circuit.logic.components.append(component)
         document.circuit.schematic.setPosition(spawnPosition(), for: id)
-        // Default placement near the centre of the parent board so the
-        // expanded internals are visible without scrolling.
         let outline = document.circuit.physical.boardOutline
         let centre = Point(
             x: outline.origin.x + outline.size.width / 2,

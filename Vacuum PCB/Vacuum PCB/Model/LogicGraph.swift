@@ -123,9 +123,111 @@ struct Net: Codable, Identifiable, Hashable {
     }
 }
 
-struct LogicGraph: Codable, Hashable {
+/// Identifies one half of a `Mating`. Top-level connectors live directly in
+/// the parent document's logic graph and are addressed by their component
+/// id. Subpart sockets live inside a referenced library snapshot — the
+/// parent only sees them through a specific subpart placement, so we
+/// address them via the subpart instance's component id (the placement
+/// holder) plus the connector's component id inside that subpart's library
+/// snapshot.
+enum ConnectorEndpoint: Hashable {
+    case topLevel(componentId: UUID)
+    case subpartSocket(subpartId: UUID, connectorId: UUID)
+}
+
+extension ConnectorEndpoint: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case kind, componentId, subpartId, connectorId
+    }
+    private enum Kind: String, Codable {
+        case topLevel, subpartSocket
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let kind = try c.decode(Kind.self, forKey: .kind)
+        switch kind {
+        case .topLevel:
+            self = .topLevel(componentId: try c.decode(UUID.self, forKey: .componentId))
+        case .subpartSocket:
+            self = .subpartSocket(
+                subpartId: try c.decode(UUID.self, forKey: .subpartId),
+                connectorId: try c.decode(UUID.self, forKey: .connectorId)
+            )
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .topLevel(let id):
+            try c.encode(Kind.topLevel, forKey: .kind)
+            try c.encode(id, forKey: .componentId)
+        case .subpartSocket(let sid, let cid):
+            try c.encode(Kind.subpartSocket, forKey: .kind)
+            try c.encode(sid, forKey: .subpartId)
+            try c.encode(cid, forKey: .connectorId)
+        }
+    }
+}
+
+/// A pairing of two connector instances that mate face-to-face. Two boards
+/// designed with compatible halves (opposite roles, matching pin count)
+/// are joined by a `Mating` in the parent assembly document; the flatten
+/// step expands each mating into N pin-pair net merges so the simulator
+/// and DRC see the joined network.
+struct Mating: Codable, Identifiable, Hashable {
+    var id: UUID
+    var a: ConnectorEndpoint
+    var b: ConnectorEndpoint
+
+    init(id: UUID = UUID(), a: ConnectorEndpoint, b: ConnectorEndpoint) {
+        self.id = id
+        self.a = a
+        self.b = b
+    }
+}
+
+struct LogicGraph: Hashable {
     var components: [Component]
     var nets: [Net]
+    /// Connector mating relations. Empty for non-assembly documents.
+    /// A document is in assembly mode iff its logic graph (or any of its
+    /// subpart snapshots) contains a connector that participates in a
+    /// mating, derived via `CircuitDocument.isAssembly`.
+    var matings: [Mating]
+
+    init(components: [Component] = [], nets: [Net] = [], matings: [Mating] = []) {
+        self.components = components
+        self.nets = nets
+        self.matings = matings
+    }
+}
+
+extension LogicGraph: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case components, nets, matings
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.components = try c.decode([Component].self, forKey: .components)
+        self.nets = try c.decode([Net].self, forKey: .nets)
+        // v4 and earlier files don't carry matings; default to empty so
+        // pre-assembly docs round-trip unchanged.
+        self.matings = try c.decodeIfPresent([Mating].self, forKey: .matings) ?? []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(components, forKey: .components)
+        try c.encode(nets, forKey: .nets)
+        // Only emit the matings key when non-empty so pre-assembly docs
+        // stay byte-identical after a no-op load/save cycle.
+        if !matings.isEmpty {
+            try c.encode(matings, forKey: .matings)
+        }
+    }
 }
 
 extension LogicGraph {
