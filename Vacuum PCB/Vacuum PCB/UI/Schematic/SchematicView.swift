@@ -46,6 +46,10 @@ struct SchematicInspector: View {
     /// would flip into assembly mode as a result. Held here while the
     /// confirmation sheet is up; cleared by either button.
     @State private var pendingAssemblyEntry: PartsLibrary.Part?
+    /// Library part the user just attempted to add when it needs more
+    /// channel layers than the current document has. Held here while the
+    /// "bump layers to fit?" confirmation is up; cleared by either button.
+    @State private var pendingLayerBump: PartsLibrary.Part?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -87,6 +91,47 @@ struct SchematicInspector: View {
                 """
             )
         }
+        .alert("Add more layers?", isPresented: Binding(
+            get: { pendingLayerBump != nil },
+            set: { if !$0 { pendingLayerBump = nil } }
+        )) {
+            Button("Cancel", role: .cancel) { pendingLayerBump = nil }
+            Button("Bump layers and add") {
+                if let part = pendingLayerBump {
+                    pendingLayerBump = nil
+                    bumpLayersToFit(part)
+                    addLibraryPart(part)
+                }
+            }
+        } message: {
+            Text(layerBumpMessage(for: pendingLayerBump))
+        }
+    }
+
+    /// Grows the document's channel-layer counts so the part's internal
+    /// routes land at valid depths. Only ever increases the counts (a part
+    /// reaching this path needs more than the parent has), so it never
+    /// evicts existing routes/vias.
+    private func bumpLayersToFit(_ part: PartsLibrary.Part) {
+        document.circuit.physical.topLayers = max(
+            document.circuit.physical.topLayers, part.document.physical.topLayers
+        )
+        document.circuit.physical.bottomLayers = max(
+            document.circuit.physical.bottomLayers, part.document.physical.bottomLayers
+        )
+    }
+
+    /// Spells out the before/after channel-layer counts for the bump prompt.
+    private func layerBumpMessage(for part: PartsLibrary.Part?) -> String {
+        guard let part else { return "" }
+        let parentTop    = document.circuit.physical.topLayers
+        let parentBottom = document.circuit.physical.bottomLayers
+        let newTop       = max(parentTop, part.document.physical.topLayers)
+        let newBottom    = max(parentBottom, part.document.physical.bottomLayers)
+        return "\"\(part.displayName)\" needs \(newTop) top / \(newBottom) bottom " +
+            "channel layers. This document has \(parentTop)/\(parentBottom). " +
+            "Bump the channel-layer counts to \(newTop)/\(newBottom) and add the part? " +
+            "Adding layers is non-destructive — your existing routing is untouched."
     }
 
     private func addComponent(kind: ComponentKind, portDirection: PortDirection?) {
@@ -127,10 +172,13 @@ struct SchematicInspector: View {
         let partTop      = part.document.physical.topLayers
         let partBottom   = part.document.physical.bottomLayers
         if partTop > parentTop || partBottom > parentBottom {
-            alertMessage = "\"\(part.displayName)\" needs " +
-                "topLayers ≥ \(partTop) and bottomLayers ≥ \(partBottom). " +
-                "Current document has \(parentTop)/\(parentBottom). " +
-                "Bump the channel-layer counts in settings before adding this part."
+            // The part needs more channel layers than this document has.
+            // Growing the layer count is non-destructive (only shrinking
+            // evicts routes/vias), so rather than refusing outright we offer
+            // to bump the document's counts up to fit — no round-trip through
+            // the Physical tab required. Confirm first so the user knows the
+            // board stack is about to change.
+            pendingLayerBump = part
             return
         }
         // Grid-pitch check. Child routes/placements snap to multiples of
