@@ -35,7 +35,7 @@ struct SimulateSchematicCanvas: View {
     private var netLinesLayer: some View {
         Canvas { ctx, _ in
             for net in document.logic.nets {
-                let pressure = state.pressure(net: net.id)
+                let pressure = state.pressure(rawNet: net.id)
                 let stroke = PressureColor.strokeColor(for: pressure)
                 for edge in NetEdgeBuilder.edges(for: net, in: document) {
                     var path = Path()
@@ -143,7 +143,7 @@ struct SimulateSchematicCanvas: View {
     private func netPressure(pin: PinRef) -> Double {
         guard let netId = document.logic.nets.first(where: { $0.pins.contains(pin) })?.id
         else { return 1.0 }
-        return state.pressure(net: netId)
+        return state.pressure(rawNet: netId)
     }
 
     /// Per-component readout under the label. Output ports / LEDs / probes

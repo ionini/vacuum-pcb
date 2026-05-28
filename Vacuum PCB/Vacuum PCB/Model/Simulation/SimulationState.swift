@@ -19,6 +19,13 @@ final class SimulationState {
     /// the flatten cost every frame. Updated alongside `network`.
     private(set) var flattenedDoc: CircuitDocument
 
+    /// Maps each *unflattened* top-level net id to the canonical flattened
+    /// net id that carries its pressure. Mating/subpart merges fuse nets, so
+    /// a net id from the original document may no longer key `pressureByNet`;
+    /// the Simulate schematic renders the unflattened topology and resolves
+    /// pressure through this map. Identity for nets that weren't merged.
+    private(set) var netIdRemap: [UUID: UUID] = [:]
+
     var params: SimulationParameters = .defaults
 
     /// User-controlled input port pressures keyed by input component id.
@@ -42,8 +49,9 @@ final class SimulationState {
 
     init(document: CircuitDocument) {
         let flattened = document.flattenedForSimulation()
-        self.flattenedDoc = flattened
-        self.network = PneumaticNetwork.build(from: flattened)
+        self.flattenedDoc = flattened.document
+        self.netIdRemap = flattened.netIdRemap
+        self.network = PneumaticNetwork.build(from: flattened.document)
         self.pressureByNet = initialPressures(for: network)
     }
 
@@ -53,8 +61,9 @@ final class SimulationState {
     /// doesn't flash everything back to atmosphere.
     func rebuild(from document: CircuitDocument) {
         let flattened = document.flattenedForSimulation()
-        let next = PneumaticNetwork.build(from: flattened)
-        self.flattenedDoc = flattened
+        let next = PneumaticNetwork.build(from: flattened.document)
+        self.flattenedDoc = flattened.document
+        self.netIdRemap = flattened.netIdRemap
         // Preserve pressures for nets that still exist; default new nets to atm.
         var nextPressures: [UUID: Double] = [:]
         let existingNetIds = Set(next.nets.map(\.id))
@@ -121,6 +130,14 @@ final class SimulationState {
     /// isn't (yet) in the solved state.
     func pressure(net netId: UUID) -> Double {
         pressureByNet[netId] ?? 1.0
+    }
+
+    /// Pressure of a net identified by its *unflattened* id, resolving the
+    /// flatten's net merges first. Use from views that render the original
+    /// document topology (the Simulate schematic); `pressure(net:)` alone
+    /// would miss any net that mating/subpart merges fused into another.
+    func pressure(rawNet netId: UUID) -> Double {
+        pressure(net: netIdRemap[netId] ?? netId)
     }
 
     /// Convenience: pressure observed at a component's first fluid pin via

@@ -26,14 +26,20 @@ extension CircuitDocument {
     /// and span every primitive contributed by every subpart instance.
     /// Subparts disappear; only primitives remain. Reference cycles are
     /// broken at first re-entry, same as `flattened()`.
-    func flattenedForSimulation() -> CircuitDocument {
+    ///
+    /// `netIdRemap` maps every net id present in *this* (unflattened) level's
+    /// `logic.nets` to the id of the surviving canonical net it was fused
+    /// into — identity for nets that weren't merged. Callers that render the
+    /// unflattened topology (the Simulate schematic) need this to look up a
+    /// merged net's pressure, which is keyed by the canonical id only.
+    func flattenedForSimulation() -> (document: CircuitDocument, netIdRemap: [UUID: UUID]) {
         flattenedForSimulation(visiting: [])
     }
 
     /// Recursive worker. `visiting` is the chain of library filenames
     /// currently being expanded; re-entering one of those is treated as a
     /// reference cycle and the offending placement is silently skipped.
-    func flattenedForSimulation(visiting: Set<String>) -> CircuitDocument {
+    func flattenedForSimulation(visiting: Set<String>) -> (document: CircuitDocument, netIdRemap: [UUID: UUID]) {
         // Seed buckets with everything in the parent doc that *isn't* a
         // subpart instance.
         var components: [Component] = self.logic.components.filter { $0.kind != .subpart }
@@ -102,7 +108,7 @@ extension CircuitDocument {
                   let part = parentComp.resolvedPart(snapshots: self.librarySnapshots)
             else { continue }
 
-            let child = part.document.flattenedForSimulation(visiting: visiting.union([filename]))
+            let child = part.document.flattenedForSimulation(visiting: visiting.union([filename])).document
 
             // Build an id remap for every non-boundary child component
             // and identify the boundary components (they get dropped from
@@ -317,12 +323,21 @@ extension CircuitDocument {
         var physical = self.physical
         physical.placements = placements
         physical.routes = finalRoutes
-        return CircuitDocument(
+
+        // Resolve every net id this level ever held to its final canonical id
+        // so callers rendering the unflattened topology can find the pressure
+        // of a net that mating/subpart merges fused away.
+        var netIdRemap: [UUID: UUID] = [:]
+        for id in Array(canonicalForOldId.keys) {
+            netIdRemap[id] = canonical(id)
+        }
+
+        return (CircuitDocument(
             manufacturing: self.manufacturing,
             logic: logic,
             schematic: self.schematic,
             physical: physical
-        )
+        ), netIdRemap)
     }
 }
 
