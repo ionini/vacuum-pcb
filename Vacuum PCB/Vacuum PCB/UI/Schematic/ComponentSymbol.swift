@@ -120,78 +120,71 @@ struct ComponentSymbolMetrics {
         pins: [BoundaryPin],
         sockets: [BoundarySocket] = []
     ) -> ComponentSymbolMetrics {
-        let spacing: CGFloat = 28
+        // Along-edge footprint each item claims. A pin keeps the schematic's
+        // 28-pt pitch; a socket tab is 56 pt along its edge (see `socketTab`),
+        // so it needs a wider slot with a little breathing room. Both pins
+        // and sockets share an edge, so we pack them into one band per side —
+        // otherwise a connector tab lands on top of a boundary-pin dot.
+        let pinSlot: CGFloat = 28
+        let socketSlot: CGFloat = 64
         let margin: CGFloat = 20
         let minSide: CGFloat = 70
 
-        let left   = pins.filter { $0.side == .left   }
-        let right  = pins.filter { $0.side == .right  }
-        let top    = pins.filter { $0.side == .top    }
-        let bottom = pins.filter { $0.side == .bottom }
+        func pinsOn(_ side: SymbolSide) -> [BoundaryPin] { pins.filter { $0.side == side } }
+        func socketsOn(_ side: SymbolSide) -> [BoundarySocket] {
+            sockets.filter { $0.side == side }.sorted { $0.offsetFraction < $1.offsetFraction }
+        }
+        // Edge length needed to seat every pin and socket on that side.
+        func edgeLength(_ side: SymbolSide) -> CGFloat {
+            CGFloat(pinsOn(side).count) * pinSlot + CGFloat(socketsOn(side).count) * socketSlot
+        }
 
-        // Height must accommodate the tallest vertical side; width similarly
-        // for top/bottom. Add slack for label centerline.
-        let vertCount = CGFloat(max(left.count, right.count))
-        let horzCount = CGFloat(max(top.count, bottom.count))
-        let height = max(minSide, vertCount * spacing + margin)
-        let width  = max(minSide, horzCount * spacing + margin)
-
+        // Height accommodates the busier vertical side; width the busier
+        // horizontal one. Slack via `margin` keeps the end items off the
+        // corners.
+        let height = max(minSide, max(edgeLength(.left), edgeLength(.right)) + margin)
+        let width  = max(minSide, max(edgeLength(.top), edgeLength(.bottom)) + margin)
         let halfW = width / 2
         let halfH = height / 2
 
         var offsets: [String: CGPoint] = [:]
-        // Helper: position the i-th pin out of n along a side. We centre the
-        // pin band on the side and step `spacing` apart.
-        func place(side group: [BoundaryPin], onSide side: SymbolSide) {
-            let n = group.count
-            guard n > 0 else { return }
-            let band = CGFloat(n - 1) * spacing
-            for (i, pin) in group.enumerated() {
-                let along = -band / 2 + CGFloat(i) * spacing
-                let key = pin.portId.uuidString
+        var socketLayouts: [SymbolSocketLayout] = []
+
+        // Pack one edge: sockets first (in board order), then pins, each
+        // centred in its own slot with the whole band centred on the side.
+        func layout(_ side: SymbolSide) {
+            let total = edgeLength(side)
+            var cursor = -total / 2
+            func along(slot: CGFloat) -> CGFloat {
+                defer { cursor += slot }
+                return cursor + slot / 2
+            }
+            func point(_ a: CGFloat) -> CGPoint {
                 switch side {
-                case .left:   offsets[key] = CGPoint(x: -halfW, y: along)
-                case .right:  offsets[key] = CGPoint(x: halfW, y: along)
-                case .top:    offsets[key] = CGPoint(x: along, y: -halfH)
-                case .bottom: offsets[key] = CGPoint(x: along, y: halfH)
+                case .left:   return CGPoint(x: -halfW, y: a)
+                case .right:  return CGPoint(x: halfW, y: a)
+                case .top:    return CGPoint(x: a, y: -halfH)
+                case .bottom: return CGPoint(x: a, y: halfH)
                 }
             }
-        }
-        place(side: left, onSide: .left)
-        place(side: right, onSide: .right)
-        place(side: top, onSide: .top)
-        place(side: bottom, onSide: .bottom)
-
-        // Place each socket on the centre of its declared side. The
-        // BoundarySocket carries a 0..1 fraction along the edge — we map
-        // that onto the symbol's side length so sockets near a corner of
-        // the library board land near the same corner of the symbol.
-        var socketLayouts: [SymbolSocketLayout] = []
-        for socket in sockets {
-            let centre: CGPoint
-            switch socket.side {
-            case .top:
-                let x = -halfW + CGFloat(socket.offsetFraction) * width
-                centre = CGPoint(x: x, y: -halfH)
-            case .bottom:
-                let x = -halfW + CGFloat(socket.offsetFraction) * width
-                centre = CGPoint(x: x, y: halfH)
-            case .left:
-                let y = -halfH + CGFloat(socket.offsetFraction) * height
-                centre = CGPoint(x: -halfW, y: y)
-            case .right:
-                let y = -halfH + CGFloat(socket.offsetFraction) * height
-                centre = CGPoint(x: halfW, y: y)
+            for socket in socketsOn(side) {
+                socketLayouts.append(SymbolSocketLayout(
+                    connectorId: socket.connectorId,
+                    label: socket.label,
+                    pinCount: socket.pinCount,
+                    role: socket.role,
+                    side: socket.side,
+                    centre: point(along(slot: socketSlot))
+                ))
             }
-            socketLayouts.append(SymbolSocketLayout(
-                connectorId: socket.connectorId,
-                label: socket.label,
-                pinCount: socket.pinCount,
-                role: socket.role,
-                side: socket.side,
-                centre: centre
-            ))
+            for pin in pinsOn(side) {
+                offsets[pin.portId.uuidString] = point(along(slot: pinSlot))
+            }
         }
+        layout(.left)
+        layout(.right)
+        layout(.top)
+        layout(.bottom)
 
         return ComponentSymbolMetrics(
             size: CGSize(width: width, height: height),
