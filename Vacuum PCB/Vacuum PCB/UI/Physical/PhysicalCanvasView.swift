@@ -2162,13 +2162,16 @@ struct ParkingDropDelegate: DropDelegate {
                 component: component!, world: world
             )
         } else {
-            // Default layer: bottom for dimple-bearing kinds (transistor,
-            // LED) so the viewing/source/drain features land on the top
-            // plate; top for everything else.
-            let dimpleKinds: Set<ComponentKind> = [.transistor, .led]
-            let defaultPlate: Plate = (component.map { dimpleKinds.contains($0.kind) } ?? false) ? .bottom : .top
+            // Default layer follows the ratsnest: the imported part lands on
+            // the layer it connects to (an outlet/inlet appears on its
+            // net-mate's plate + depth, ready to route), falling back to the
+            // geometric default when nothing on its nets is placed yet.
+            let start: (plate: Plate, depth: Int) = component
+                .map { PhysicalActions.startingLayer(for: $0, in: document.circuit) }
+                ?? (plate: .top, depth: 0)
             document.circuit.physical.placements.append(
-                Placement(componentId: id, position: world, rotation: .r0, layer: defaultPlate)
+                Placement(componentId: id, position: world, rotation: .r0,
+                          layer: start.plate, depth: start.depth)
             )
         }
     }

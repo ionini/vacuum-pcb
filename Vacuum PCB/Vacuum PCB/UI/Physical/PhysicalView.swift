@@ -458,12 +458,12 @@ struct PhysicalInspector: View {
         )
         if schematicPositions.isEmpty {
             for component in unplaced {
-                let defaultLayer: Plate = (component.kind == .transistor) ? .bottom : .top
+                let start = PhysicalActions.startingLayer(for: component, in: document.circuit)
                 document.circuit.physical.placements.append(
                     Placement(
                         componentId: component.id,
                         position: Point(x: snap(fallback.x), y: snap(fallback.y)),
-                        rotation: .r0, layer: defaultLayer
+                        rotation: .r0, layer: start.plate, depth: start.depth
                     )
                 )
             }
@@ -491,13 +491,14 @@ struct PhysicalInspector: View {
                 x: snap((sch.x - minX) * scale + offsetX),
                 y: snap((sch.y - minY) * scale + offsetY)
             )
-            let defaultLayer: Plate = (component.kind == .transistor) ? .bottom : .top
+            let start = PhysicalActions.startingLayer(for: component, in: document.circuit)
             document.circuit.physical.placements.append(
                 Placement(
                     componentId: component.id,
                     position: pos,
                     rotation: .r0,
-                    layer: defaultLayer
+                    layer: start.plate,
+                    depth: start.depth
                 )
             )
         }
@@ -635,6 +636,70 @@ struct PhysicalContextSection: View {
 /// inspector's contextual action buttons can drive the same code on iPad
 /// (where those shortcuts aren't available without an external keyboard).
 enum PhysicalActions {
+    /// Picks the starting plate + depth for a component being imported from
+    /// the parking lot. If the component shares a net with pins that are
+    /// already placed, it lands on the layer it connects to — an
+    /// outlet/inlet appears on its net-mate's plate + depth, ready to route
+    /// — and the user can still move it afterward.
+    ///
+    /// Falls back to the geometric default when nothing on its nets is
+    /// placed yet: bottom for dimple-bearing kinds (transistor, LED) so
+    /// their viewing/source features land on the top plate, top otherwise.
+    /// Dimple kinds keep that geometric plate regardless of the ratsnest —
+    /// flipping them would move the dimple to the wrong side.
+    static func startingLayer(
+        for component: Component,
+        in circuit: CircuitDocument
+    ) -> (plate: Plate, depth: Int) {
+        let dimpleKinds: Set<ComponentKind> = [.transistor, .led]
+        if dimpleKinds.contains(component.kind) { return (.bottom, 0) }
+
+        let fp = component.footprint(circuit.manufacturing, snapshots: circuit.librarySnapshots)
+
+        // Tally the plate + depth each of this component's pins would need so
+        // it resolves onto the layer of an already-placed net-mate. One vote
+        // per (own pin, placed net-mate) pairing; majority wins, so a
+        // single-pin outlet/inlet simply inherits its sole neighbour's layer.
+        var plateVotes: [Plate: Int] = [:]
+        var depthVotes: [Int: Int] = [:]
+        for pin in fp.pins {
+            // A pin pinned to an absolute layer (sub-part boundary) can't be
+            // steered by placement.layer/depth, so it gets no say.
+            guard pin.absoluteLayer == nil else { continue }
+            let ownRef = PinRef(componentId: component.id, pinKey: pin.key)
+            for net in circuit.logic.nets where net.pins.contains(ownRef) {
+                for mate in net.pins where mate.componentId != component.id {
+                    guard let placement = circuit.physical.placements
+                            .first(where: { $0.componentId == mate.componentId }),
+                          let mateComponent = circuit.logic.components
+                            .first(where: { $0.id == mate.componentId }),
+                          let matePin = mateComponent
+                            .footprint(circuit.manufacturing, snapshots: circuit.librarySnapshots)
+                            .pin(mate.pinKey)
+                    else { continue }
+                    let mateLayer = placement.resolvedLayer(of: matePin, on: mateComponent)
+                    // The placement plate that lands *this* pin on the mate's plate.
+                    let plate = pin.relativeLayer == .opposite ? mateLayer.plate.opposite : mateLayer.plate
+                    plateVotes[plate, default: 0] += 1
+                    depthVotes[mateLayer.depth, default: 0] += 1
+                }
+            }
+        }
+
+        func winner<T>(_ votes: [T: Int], default fallback: T) -> T {
+            votes.max(by: { $0.value < $1.value })?.key ?? fallback
+        }
+        let plate = winner(plateVotes, default: .top)
+
+        // Depth only matters for kinds whose pin layer inherits placement.depth
+        // (resolvedLayer forces depth 0 for the rest), so don't stamp a stray
+        // depth onto, say, a sub-part placement.
+        let inheritsDepth: Set<ComponentKind> = [.resistor, .port, .vacuumSource, .atmVent]
+        let depth = inheritsDepth.contains(component.kind) ? winner(depthVotes, default: 0) : 0
+
+        return (plate, depth)
+    }
+
     /// Rotate every selected placement by 90° around its own anchor. The
     /// multi-select case deliberately rotates each member independently
     /// (not around the selection centroid) because users typically reach
