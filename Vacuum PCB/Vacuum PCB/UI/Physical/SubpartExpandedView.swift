@@ -26,6 +26,7 @@ struct SubpartExpandedView: View {
     /// as a red cycle placeholder instead of recursing.
     var visiting: Set<String> = []
     @Environment(\.librarySnapshots) private var librarySnapshots
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         if let filename = component.partRef, visiting.contains(filename) {
@@ -345,7 +346,11 @@ struct SubpartExpandedView: View {
     private func boundaryMarkers(part: PartsLibrary.Part) -> some View {
         let labelFont = Font.system(size: 9, weight: .medium)
         let dotR: CGFloat = 3.5
-        let backdrop = Color(white: 0.95).opacity(0.85)
+        // Canvas can't render `.regularMaterial` (see note above), so the
+        // chip behind the label is a solid fill. It has to track the colour
+        // scheme the way the `.primary` text on top of it does — otherwise a
+        // fixed light chip leaves white-on-white labels in dark mode.
+        let backdrop = (colorScheme == .dark ? Color(white: 0.18) : Color(white: 0.95)).opacity(0.85)
         return Canvas { ctx, _ in
             for pin in part.pins {
                 let layer = Layer(plate: pin.plate, depth: 0)
