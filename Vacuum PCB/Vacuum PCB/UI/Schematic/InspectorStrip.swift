@@ -136,6 +136,15 @@ struct InspectorStrip: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .fixedSize()
+                Picker("Signal", selection: connectorSignalBinding(c)) {
+                    Text("In").tag(ConnectorSignal.input)
+                    Text("Out").tag(ConnectorSignal.output)
+                    Text("Bus").tag(ConnectorSignal.bidirectional)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                .help("Electrical mode. Bus = bidirectional: each pin is a probe plus an optional soft drive you can assert during standalone simulation.")
             }
             if c.kind == .subpart {
                 subpartLibrarySync(c)
@@ -248,6 +257,19 @@ struct InspectorStrip: View {
                 if let pIdx = document.circuit.physical.placements.firstIndex(where: { $0.componentId == c.id }) {
                     document.circuit.physical.placements[pIdx].layer = newRole == .bottomExtend ? .bottom : .top
                 }
+            }
+        )
+    }
+
+    private func connectorSignalBinding(_ c: Component) -> Binding<ConnectorSignal> {
+        Binding(
+            // Resolve through the role-derived fallback so a pre-bus connector
+            // shows the segment matching its old behaviour rather than an
+            // empty selection.
+            get: { c.resolvedConnectorSignal },
+            set: { newSignal in
+                guard let i = document.circuit.logic.components.firstIndex(where: { $0.id == c.id }) else { return }
+                document.circuit.logic.components[i].connectorSignal = newSignal
             }
         )
     }

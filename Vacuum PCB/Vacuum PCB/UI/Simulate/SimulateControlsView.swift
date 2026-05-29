@@ -6,6 +6,28 @@ import SwiftUI
 ///
 /// Lives in the DocumentView sidebar (alongside DRC) following the same
 /// pattern the 3D Preview tab uses to park its manufacturing sliders there.
+/// Three-way drive state for a bidirectional (bus) connector pin, mapped to
+/// the `Double` the solver stores in `SimulationState.inputPressures`:
+/// `NaN` = floating (drive nothing), `1.0` = atmosphere, `0.0` = vacuum. The
+/// solver reads any non-NaN value `< 0.5` as a Vac drive, so `0.0` is just a
+/// convenient canonical "Vac".
+private enum BusDrive: Hashable {
+    case float, vac, atm
+
+    var storedValue: Double {
+        switch self {
+        case .float: return .nan
+        case .vac:   return 0.0
+        case .atm:   return 1.0
+        }
+    }
+
+    static func from(_ value: Double?) -> BusDrive {
+        guard let value, !value.isNaN else { return .float }
+        return value < 0.5 ? .vac : .atm
+    }
+}
+
 struct SimulateControlsView: View {
     @Bindable var state: SimulationState
 
@@ -141,7 +163,16 @@ struct SimulateControlsView: View {
         }
     }
 
+    @ViewBuilder
     private func inputRow(input: PneumaticNetwork.Input) -> some View {
+        if input.soft {
+            softInputRow(input)
+        } else {
+            hardInputRow(input)
+        }
+    }
+
+    private func hardInputRow(_ input: PneumaticNetwork.Input) -> some View {
         let current = state.inputPressures[input.id] ?? 1.0
         // Treat the toggle as boolean (Vac / Atm). Internally we still store
         // a Double so the underlying solver doesn't need a special case for
@@ -164,6 +195,36 @@ struct SimulateControlsView: View {
             Spacer()
             Circle()
                 .fill(PressureColor.color(for: current))
+                .frame(width: 12, height: 12)
+        }
+    }
+
+    /// A bidirectional (bus) connector pin. Three-way drive: Float (high-Z,
+    /// the default — drives nothing, just reads), Vac, or Atm, applied
+    /// through the solver's soft conductance so an on-board driver can still
+    /// win. The indicator shows the *net's* current pressure, not the drive
+    /// setting, since the whole point is that the pin reads whatever the bus
+    /// settles to.
+    private func softInputRow(_ input: PneumaticNetwork.Input) -> some View {
+        let netPressure = state.pressure(net: input.netId)
+        return HStack(spacing: 8) {
+            Text(input.label)
+                .font(.system(size: 12, weight: .medium).monospaced())
+                .frame(width: 56, alignment: .leading)
+            Picker("", selection: Binding(
+                get: { BusDrive.from(state.inputPressures[input.id]) },
+                set: { state.inputPressures[input.id] = $0.storedValue }
+            )) {
+                Text("Float").tag(BusDrive.float)
+                Text("Vac").tag(BusDrive.vac)
+                Text("Atm").tag(BusDrive.atm)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 150)
+            Spacer()
+            Circle()
+                .fill(PressureColor.color(for: netPressure))
                 .frame(width: 12, height: 12)
         }
     }

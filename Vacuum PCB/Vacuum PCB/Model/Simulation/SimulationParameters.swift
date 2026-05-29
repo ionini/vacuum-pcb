@@ -57,6 +57,14 @@ struct SimulationParameters: Equatable {
     /// closer to `pumpMaxVacuum` even under heavy leakage from atm.
     var pumpFlowCapacity: Double
 
+    /// Conductance of a bidirectional connector pin's *soft* drive (a bus
+    /// terminal the user has asserted to Vac/Atm during standalone sim). Sized
+    /// to match `transistorOnConductance` so a poked bus pin behaves like one
+    /// on-board pass transistor tied to a rail — strong enough to move an
+    /// otherwise-idle bus, weak enough that a real on-board driver pulling the
+    /// other way still contends rather than being clamped out.
+    var busDriveConductance: Double
+
     /// Shape of the pump's Q-vs-P curve. Exponent on the normalised remaining
     /// differential; effective flow follows `Q/Q_max = P_norm^(droop + 1)`.
     ///   0  = linear — flow drops in proportion to the remaining differential.
@@ -97,6 +105,7 @@ struct SimulationParameters: Equatable {
         // the pump approaches max vacuum.
         pumpMaxVacuum: 0.54,
         pumpFlowCapacity: 4.6,
+        busDriveConductance: 5.0,
         pumpDroopExponent: -0.14
     )
 

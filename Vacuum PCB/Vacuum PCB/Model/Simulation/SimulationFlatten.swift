@@ -169,7 +169,8 @@ extension CircuitDocument {
                     resistorSize: c.resistorSize,
                     portDirection: c.portDirection,
                     connectorPinCount: c.connectorPinCount,
-                    connectorRole: c.connectorRole
+                    connectorRole: c.connectorRole,
+                    connectorSignal: c.connectorSignal
                 ))
                 if c.kind == .connector {
                     socketIds[SimulationSocketKey(

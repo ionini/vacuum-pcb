@@ -78,6 +78,22 @@ struct PneumaticNetwork {
         let id: UUID            // component id
         let label: String
         let netId: UUID
+        /// When true this is a **soft** drive: it pushes its net toward the
+        /// user-selected rail through a *finite* conductance
+        /// (`SimulationParameters.busDriveConductance`) and only when the user
+        /// asserts a value — a floating selection (`NaN` / absent) contributes
+        /// nothing. Bidirectional connector (bus) pins use this so an on-board
+        /// tri-state driver can still win the net. A hard input (`false`)
+        /// keeps the old behaviour: it clamps its net to atmosphere or joins
+        /// the shared vacuum manifold.
+        let soft: Bool
+
+        init(id: UUID, label: String, netId: UUID, soft: Bool = false) {
+            self.id = id
+            self.label = label
+            self.netId = netId
+            self.soft = soft
+        }
     }
 
     /// All nets that participate in the simulation, with a stable order so
@@ -192,23 +208,33 @@ struct PneumaticNetwork {
             case .connector:
                 // Each connector pin is an external terminal — surfaced to
                 // the simulator UI per-pin so the user can drive (or read)
-                // each one independently. `.bottomExtend` ("Carries
-                // silicone") → user-controlled inputs; `.topExtend`
-                // ("Mates with silicone") → output probes.
+                // each one independently. The electrical behaviour comes from
+                // `resolvedConnectorSignal`, *not* the physical role:
+                //   .input         → user-driven hard input.
+                //   .output        → read-only probe.
+                //   .bidirectional → bus terminal: a probe (always readable)
+                //                    *and* a soft input (optional finite-
+                //                    conductance drive that defaults to
+                //                    floating, so on-board drivers can win).
                 let n = max(1, component.connectorPinCount ?? 1)
-                let role = component.connectorRole ?? .bottomExtend
+                let signal = component.resolvedConnectorSignal
                 for i in 1...n {
                     let key = String(i)
                     guard let net = pinToNet[PinRef(componentId: component.id, pinKey: key)]
                     else { continue }
                     let pinId = connectorPinSimulationId(componentId: component.id, pinKey: key)
                     let pinLabel = "\(component.label).\(key)"
-                    switch role {
-                    case .bottomExtend:
+                    switch signal {
+                    case .input:
                         inputs.append(Input(id: pinId, label: pinLabel, netId: net))
-                    case .topExtend:
+                    case .output:
                         probes.append(Probe(id: pinId, label: pinLabel,
                                             kind: .port, netId: net))
+                    case .bidirectional:
+                        probes.append(Probe(id: pinId, label: pinLabel,
+                                            kind: .port, netId: net))
+                        inputs.append(Input(id: pinId, label: pinLabel,
+                                            netId: net, soft: true))
                     }
                 }
             }

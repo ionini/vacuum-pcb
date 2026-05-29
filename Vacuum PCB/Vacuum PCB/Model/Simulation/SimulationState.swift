@@ -156,9 +156,11 @@ final class SimulationState {
         for pump in network.pumps {
             out[pump.netId] = params.pumpMaxVacuum
         }
-        for input in network.inputs {
-            // Inputs toggled to Vac join the pump manifold, so seed them at
-            // deadhead like the pumps above instead of starting from atm.
+        for input in network.inputs where !input.soft {
+            // Hard inputs toggled to Vac join the pump manifold, so seed them
+            // at deadhead like the pumps above instead of starting from atm.
+            // Soft (bus) inputs aren't rails — they start at atmosphere with
+            // every other net and settle via the integrator.
             let v = inputPressures[input.id] ?? 1.0
             out[input.netId] = v < 0.5 ? params.pumpMaxVacuum : 1.0
         }

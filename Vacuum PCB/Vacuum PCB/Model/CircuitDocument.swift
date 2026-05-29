@@ -16,7 +16,12 @@ struct CircuitDocument: Codable, Hashable {
     /// `LogicGraph` and `ConnectorEndpoint`. The new field omits when empty
     /// (a non-assembly doc round-trips byte-identical), so v4 → v5 is a
     /// no-op for existing documents.
-    static let currentSchemaVersion = 5
+    /// v6: adds `connectorSignal` on `Component` — an electrical signal axis
+    /// (`.input` / `.output` / `.bidirectional`) decoupled from the physical
+    /// `connectorRole`, so a connector can act as a bidirectional bus. The
+    /// field is optional and `decodeIfPresent`; a nil value derives the old
+    /// role-based behaviour, so v5 → v6 is a no-op for existing documents.
+    static let currentSchemaVersion = 6
 
     var schemaVersion: Int
     var manufacturing: ManufacturingConstants

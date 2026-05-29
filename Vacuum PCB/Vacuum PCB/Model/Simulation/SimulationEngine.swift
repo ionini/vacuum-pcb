@@ -32,7 +32,9 @@ enum SimulationEngine {
         for boundary in network.hardBoundaries {
             anchored[boundary.netId] = boundary.value
         }
-        for input in network.inputs {
+        // Only *hard* inputs clamp their net. Soft (bus) inputs are stamped
+        // as finite-conductance edges further below so they never pin a net.
+        for input in network.inputs where !input.soft {
             if (inputs[input.id] ?? 1.0) >= 0.5 {
                 anchored[input.netId] = 1.0
             }
@@ -45,7 +47,7 @@ enum SimulationEngine {
         // single pump edge on a canonical member.
         var manifoldNets = Set<UUID>()
         for pump in network.pumps { manifoldNets.insert(pump.netId) }
-        for input in network.inputs where (inputs[input.id] ?? 1.0) < 0.5 {
+        for input in network.inputs where !input.soft && (inputs[input.id] ?? 1.0) < 0.5 {
             manifoldNets.insert(input.netId)
         }
 
@@ -134,6 +136,24 @@ enum SimulationEngine {
                 transistorOpenness[t.id] = openness(forGatePressure: gatePressure, params: params)
                 stamp(&y, &rhs, n: n, freeIndex: freeIndex, anchored: anchored,
                       net1: t.aNet, net2: t.bNet, g: g)
+            }
+
+            // 4b. Soft (bus) input drives. A bidirectional connector pin the
+            // user has asserted pulls its net toward a rail through a finite
+            // conductance — strong enough to move an idle bus, weak enough
+            // that an on-board driver can contend. A floating selection
+            // (absent or NaN) drives nothing. The drive target is a virtual
+            // anchor (atmosphere = 1.0, or the pump's deadhead for Vac), so
+            // we fold it straight into the diagonal + RHS like a free↔anchored
+            // edge. If the net is already pinned (some hard boundary owns it)
+            // it isn't in `freeIndex` and the soft drive is correctly ignored.
+            for input in network.inputs where input.soft {
+                guard let raw = inputs[input.id], !raw.isNaN else { continue }
+                guard let idx = freeIndex[input.netId] else { continue }
+                let target = raw < 0.5 ? params.pumpMaxVacuum : 1.0
+                let g = params.busDriveConductance
+                y[idx * n + idx] += g
+                rhs[idx] += g * target
             }
 
             // 5. Solve. Dense Gaussian elimination — N is small (number of

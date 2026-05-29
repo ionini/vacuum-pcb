@@ -48,6 +48,28 @@ enum ConnectorRole: String, Codable, CaseIterable {
     case topExtend
 }
 
+/// Electrical behaviour of a connector's pins in simulation, *independent of*
+/// the physical mating role (`ConnectorRole`, which only decides which plate
+/// extends). Lets a connector be used as a bus terminal regardless of which
+/// half carries the silicone.
+///
+/// - `.input`: each pin is a user-driven source (the old `.bottomExtend`
+///   default) — it clamps its net to the chosen rail.
+/// - `.output`: each pin is a read-only probe (the old `.topExtend` default).
+/// - `.bidirectional`: each pin is a **bus** terminal — always a probe, plus
+///   an *optional, finite-conductance* drive the user can assert during
+///   standalone simulation. Because the drive is soft (see
+///   `SimulationParameters.busDriveConductance`) and defaults to floating, an
+///   on-board tri-state driver can still win the net, so the pin behaves like
+///   a real shared wire rather than a hard source. Once the connector is
+///   mated the pin is dropped entirely and its net merges with the peer's, so
+///   the signal mode only matters for the un-mated / standalone case.
+enum ConnectorSignal: String, Codable, CaseIterable {
+    case input
+    case output
+    case bidirectional
+}
+
 enum ResistorSize: String, Codable, CaseIterable {
     case small = "S"
     case medium = "M"
@@ -82,6 +104,11 @@ struct Component: Codable, Identifiable, Hashable {
     /// Role for `.connector` instances. See `ConnectorRole`. Nil for
     /// non-connector kinds.
     var connectorRole: ConnectorRole?
+    /// Electrical signal mode for `.connector` instances. See
+    /// `ConnectorSignal`. Nil means "derive from role" so connectors saved
+    /// before the bus axis existed keep their old behaviour — read via
+    /// `resolvedConnectorSignal`, never directly.
+    var connectorSignal: ConnectorSignal?
 
     init(
         id: UUID = UUID(),
@@ -92,7 +119,8 @@ struct Component: Codable, Identifiable, Hashable {
         partRef: String? = nil,
         partRefHash: String? = nil,
         connectorPinCount: Int? = nil,
-        connectorRole: ConnectorRole? = nil
+        connectorRole: ConnectorRole? = nil,
+        connectorSignal: ConnectorSignal? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -103,6 +131,22 @@ struct Component: Codable, Identifiable, Hashable {
         self.partRefHash = partRefHash
         self.connectorPinCount = connectorPinCount
         self.connectorRole = connectorRole
+        self.connectorSignal = connectorSignal
+    }
+}
+
+extension Component {
+    /// Resolved electrical signal mode for a connector pin. Falls back to the
+    /// role-derived default for connectors saved before the signal axis
+    /// existed: `.bottomExtend` drove its pins (`.input`), `.topExtend`
+    /// probed them (`.output`). Meaningless for non-connector kinds; callers
+    /// only consult it on `.connector` components.
+    var resolvedConnectorSignal: ConnectorSignal {
+        if let connectorSignal { return connectorSignal }
+        switch connectorRole ?? .bottomExtend {
+        case .bottomExtend: return .input
+        case .topExtend:    return .output
+        }
     }
 }
 
