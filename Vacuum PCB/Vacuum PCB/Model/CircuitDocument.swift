@@ -21,7 +21,10 @@ struct CircuitDocument: Codable, Hashable {
     /// `connectorRole`, so a connector can act as a bidirectional bus. The
     /// field is optional and `decodeIfPresent`; a nil value derives the old
     /// role-based behaviour, so v5 → v6 is a no-op for existing documents.
-    static let currentSchemaVersion = 6
+    /// v7: adds `connectorPinNames` on `Component` — optional per-pin display
+    /// names for a connector, indexed positionally. Optional / decodeIfPresent
+    /// and nil for unnamed connectors, so v6 → v7 is a no-op for existing docs.
+    static let currentSchemaVersion = 7
 
     var schemaVersion: Int
     var manufacturing: ManufacturingConstants

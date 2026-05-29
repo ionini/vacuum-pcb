@@ -23,6 +23,12 @@ struct BoundarySocket: Hashable {
     /// User-visible connector label inside the library (e.g., "J1").
     let label: String
     let pinCount: Int
+    /// Resolved display name of each pin, in pin order (index `i` = pin
+    /// `i + 1`), already falling back to the bare number for unnamed pins.
+    /// Baked from the library connector's `connectorPinNames` so the parent
+    /// can surface the names (socket tooltip, future per-pin mating UI)
+    /// without re-resolving the library document.
+    let pinNames: [String]
     let role: ConnectorRole
     /// Which side of the auto-generated subpart symbol the socket sits on,
     /// derived from the library connector's edge anchor.
@@ -369,10 +375,12 @@ final class PartsLibrary: ObservableObject {
                 fraction = 0.5
                 anchorWorld = .zero
             }
+            let pinCount = max(1, c.connectorPinCount ?? 1)
             sockets.append(BoundarySocket(
                 connectorId: c.id,
                 label: c.label,
-                pinCount: max(1, c.connectorPinCount ?? 1),
+                pinCount: pinCount,
+                pinNames: (1...pinCount).map { c.connectorPinName(String($0)) },
                 role: c.connectorRole ?? .bottomExtend,
                 side: side,
                 offsetFraction: fraction,

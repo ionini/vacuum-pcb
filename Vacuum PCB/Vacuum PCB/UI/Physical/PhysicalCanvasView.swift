@@ -946,9 +946,13 @@ struct PhysicalCanvasView: View {
     /// boundary component's friendly label for tooltip display. Primitive
     /// pin keys ("gate", "a", "1", "p") pass through unchanged.
     private func pinDisplayLabel(component: Component, key: String) -> String {
-        guard let pin = component.subpartBoundaryPin(key: key, snapshots: document.circuit.librarySnapshots)
-        else { return key }
-        return pin.label
+        if let pin = component.subpartBoundaryPin(key: key, snapshots: document.circuit.librarySnapshots) {
+            return pin.label
+        }
+        if component.kind == .connector {
+            return component.connectorPinName(key)
+        }
+        return key
     }
 
     private func isFirstRoutingPin(componentId: UUID, key: String) -> Bool {

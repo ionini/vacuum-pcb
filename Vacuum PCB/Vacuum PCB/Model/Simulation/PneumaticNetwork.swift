@@ -223,7 +223,7 @@ struct PneumaticNetwork {
                     guard let net = pinToNet[PinRef(componentId: component.id, pinKey: key)]
                     else { continue }
                     let pinId = connectorPinSimulationId(componentId: component.id, pinKey: key)
-                    let pinLabel = "\(component.label).\(key)"
+                    let pinLabel = "\(component.label).\(component.connectorPinName(key))"
                     switch signal {
                     case .input:
                         inputs.append(Input(id: pinId, label: pinLabel, netId: net))

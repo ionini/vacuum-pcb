@@ -8,6 +8,10 @@ struct SymbolSocketLayout {
     let connectorId: UUID
     let label: String
     let pinCount: Int
+    /// Resolved pin names in pin order (mirrors `BoundarySocket.pinNames`),
+    /// shown as the socket tab's tooltip so an imported connector's pin
+    /// names stay visible in the parent design.
+    let pinNames: [String]
     let role: ConnectorRole
     let side: SymbolSide
     /// Centre of the socket tab in symbol-local coordinates (origin at the
@@ -172,6 +176,7 @@ struct ComponentSymbolMetrics {
                     connectorId: socket.connectorId,
                     label: socket.label,
                     pinCount: socket.pinCount,
+                    pinNames: socket.pinNames,
                     role: socket.role,
                     side: socket.side,
                     centre: point(along(slot: socketSlot))
@@ -265,6 +270,16 @@ struct ComponentSymbolView: View {
                     .lineLimit(1)
                     .fixedSize()
             )
+            .help(socketTooltip(socket))
+    }
+
+    /// Lists the imported connector's pins (number → name) so the names are
+    /// reachable from the parent design without opening the source part.
+    private func socketTooltip(_ socket: SymbolSocketLayout) -> String {
+        let pins = socket.pinNames.enumerated()
+            .map { "\($0.offset + 1): \($0.element)" }
+            .joined(separator: "\n")
+        return "\(socket.label) — \(socket.pinCount) pins\n\(pins)"
     }
 
     private var symbolShape: AnyShape {

@@ -109,6 +109,14 @@ struct Component: Codable, Identifiable, Hashable {
     /// before the bus axis existed keep their old behaviour — read via
     /// `resolvedConnectorSignal`, never directly.
     var connectorSignal: ConnectorSignal?
+    /// User-given names for a `.connector`'s pins, indexed positionally:
+    /// element `i` names pin key `"\(i + 1)"`. A blank entry (or an index past
+    /// the end / a nil array) falls back to the bare pin number — read via
+    /// `connectorPinName(_:)`, never directly. The names are cosmetic: pins
+    /// still mate and route by their numeric key, so renaming a pin never
+    /// changes connectivity. Nil for non-connector kinds and for connectors
+    /// the user hasn't named (keeps such docs byte-stable on save).
+    var connectorPinNames: [String]?
 
     init(
         id: UUID = UUID(),
@@ -120,7 +128,8 @@ struct Component: Codable, Identifiable, Hashable {
         partRefHash: String? = nil,
         connectorPinCount: Int? = nil,
         connectorRole: ConnectorRole? = nil,
-        connectorSignal: ConnectorSignal? = nil
+        connectorSignal: ConnectorSignal? = nil,
+        connectorPinNames: [String]? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -132,6 +141,7 @@ struct Component: Codable, Identifiable, Hashable {
         self.connectorPinCount = connectorPinCount
         self.connectorRole = connectorRole
         self.connectorSignal = connectorSignal
+        self.connectorPinNames = connectorPinNames
     }
 }
 
@@ -147,6 +157,21 @@ extension Component {
         case .bottomExtend: return .input
         case .topExtend:    return .output
         }
+    }
+
+    /// Display name for one connector pin, identified by its numeric key
+    /// ("1"…"N"). Returns the user-given name when set and non-blank,
+    /// otherwise the bare key. This is the single source of truth every
+    /// surface (schematic, physical, simulator, imported-socket tooltip)
+    /// routes through, so a pin reads the same everywhere. Non-connector
+    /// kinds or unparseable keys return the key unchanged.
+    func connectorPinName(_ key: String) -> String {
+        guard kind == .connector,
+              let names = connectorPinNames,
+              let index = Int(key), index >= 1, index <= names.count
+        else { return key }
+        let name = names[index - 1]
+        return name.isEmpty ? key : name
     }
 }
 

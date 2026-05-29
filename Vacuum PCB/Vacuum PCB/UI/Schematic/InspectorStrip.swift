@@ -7,6 +7,8 @@ import SwiftUI
 struct InspectorStrip: View {
     @Binding var document: VPCBDocument
     @Binding var selection: SchematicSelection
+    /// Presentation flag for the connector pin-names editor popover.
+    @State private var showingPinNames = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -145,6 +147,11 @@ struct InspectorStrip: View {
                 .labelsHidden()
                 .fixedSize()
                 .help("Electrical mode. Bus = bidirectional: each pin is a probe plus an optional soft drive you can assert during standalone simulation.")
+                Button("Pin names…") { showingPinNames = true }
+                    .controlSize(.small)
+                    .popover(isPresented: $showingPinNames, arrowEdge: .bottom) {
+                        pinNamesEditor(c)
+                    }
             }
             if c.kind == .subpart {
                 subpartLibrarySync(c)
@@ -229,6 +236,13 @@ struct InspectorStrip: View {
                 // new count — otherwise stepping down leaves orphan PinRefs
                 // pointing at pins that no longer exist in the footprint.
                 if clamped < oldCount {
+                    // Trim names for the now-gone pins so they don't resurrect
+                    // if the user steps the count back up later.
+                    if var names = document.circuit.logic.components[i].connectorPinNames {
+                        if names.count > clamped { names.removeLast(names.count - clamped) }
+                        document.circuit.logic.components[i].connectorPinNames =
+                            names.allSatisfy(\.isEmpty) ? nil : names
+                    }
                     for netIdx in document.circuit.logic.nets.indices {
                         document.circuit.logic.nets[netIdx].pins.removeAll { pin in
                             guard pin.componentId == c.id,
@@ -270,6 +284,62 @@ struct InspectorStrip: View {
             set: { newSignal in
                 guard let i = document.circuit.logic.components.firstIndex(where: { $0.id == c.id }) else { return }
                 document.circuit.logic.components[i].connectorSignal = newSignal
+            }
+        )
+    }
+
+    /// Editable list of pin names for a connector. One row per pin; a blank
+    /// field falls back to the pin number everywhere the name is shown.
+    private func pinNamesEditor(_ c: Component) -> some View {
+        let count = max(1, c.connectorPinCount ?? 1)
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("\(c.label) pin names").font(.headline)
+            Text("Blank uses the pin number. Names appear on the schematic, the physical view, the simulator, and when this part is imported into another design.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            ScrollView {
+                VStack(spacing: 4) {
+                    ForEach(Array(0..<count), id: \.self) { i in
+                        HStack(spacing: 8) {
+                            Text("\(i + 1)")
+                                .font(.system(size: 11, weight: .medium).monospaced())
+                                .foregroundStyle(.secondary)
+                                .frame(width: 22, alignment: .trailing)
+                            TextField("pin \(i + 1)", text: connectorPinNameBinding(c, index: i))
+                                .textFieldStyle(.roundedBorder)
+                        }
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .frame(maxHeight: 300)
+        }
+        .padding(12)
+        .frame(width: 240)
+    }
+
+    /// Two-way binding for one pin's name. Reads from the live document so the
+    /// fields stay correct if the pin count changes while the popover is open;
+    /// writes pad the array up to the current pin count and collapse an
+    /// all-blank array back to nil so an unnamed connector stays byte-stable.
+    private func connectorPinNameBinding(_ c: Component, index: Int) -> Binding<String> {
+        Binding(
+            get: {
+                let names = c.connectorPinNames ?? []
+                return index < names.count ? names[index] : ""
+            },
+            set: { newName in
+                guard let i = document.circuit.logic.components.firstIndex(where: { $0.id == c.id }) else { return }
+                let count = max(1, document.circuit.logic.components[i].connectorPinCount ?? 1)
+                var names = document.circuit.logic.components[i].connectorPinNames ?? []
+                if names.count < count {
+                    names.append(contentsOf: Array(repeating: "", count: count - names.count))
+                }
+                guard index < names.count else { return }
+                names[index] = newName
+                document.circuit.logic.components[i].connectorPinNames =
+                    names.allSatisfy(\.isEmpty) ? nil : names
             }
         )
     }

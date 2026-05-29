@@ -227,6 +227,9 @@ struct ComponentNodeView: View {
         if let pin = component.subpartBoundaryPin(key: key, snapshots: document.circuit.librarySnapshots) {
             return pin.label
         }
+        if component.kind == .connector {
+            return component.connectorPinName(key)
+        }
         return key
     }
 
