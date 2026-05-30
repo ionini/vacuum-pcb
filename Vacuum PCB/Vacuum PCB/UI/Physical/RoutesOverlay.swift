@@ -7,6 +7,10 @@ struct RoutesOverlay: View {
     let document: CircuitDocument
     let transform: CanvasTransform
     let visible: LayerVisibility
+    /// Bottom-to-top layer paint order from the visibility pills. Segments
+    /// are drawn grouped by this order so the layer dragged to the end of
+    /// the row stacks on top of the others.
+    let layerOrder: [Layer]
     let selection: PhysicalSelection
     let manufacturing: ManufacturingConstants
     /// In-progress vertex drag on the selected segment. When set, this segment
@@ -87,34 +91,52 @@ extension RoutesOverlay {
                 }
             }
 
-            for route in document.physical.routes {
-                for (segIdx, segment) in route.segments.enumerated() {
-                    guard visible.contains(segment.layer) else { continue }
-                    let isSelected = selectionMatches(netId: route.netId, segmentIndex: segIdx)
-                    let positions = waypoints(
-                        for: route.netId, segmentIndex: segIdx,
-                        fallback: segment.waypoints.map(\.position)
-                    )
-                    let pts = positions.map { transform.toScreen($0) }
-                    guard pts.count >= 2 else { continue }
-                    var path = Path()
-                    path.move(to: pts[0])
-                    for p in pts.dropFirst() { path.addLine(to: p) }
+            // Main pass, drawn in layer paint order so a layer the user
+            // dragged to the end of the pills stacks on top of the rest.
+            for entry in orderedSegments() {
+                let isSelected = selectionMatches(netId: entry.netId, segmentIndex: entry.segIdx)
+                let positions = waypoints(
+                    for: entry.netId, segmentIndex: entry.segIdx,
+                    fallback: entry.segment.waypoints.map(\.position)
+                )
+                let pts = positions.map { transform.toScreen($0) }
+                guard pts.count >= 2 else { continue }
+                var path = Path()
+                path.move(to: pts[0])
+                for p in pts.dropFirst() { path.addLine(to: p) }
 
-                    let color: Color = isSelected ? .accentColor : layerColor(segment.layer)
-                    ctx.stroke(
-                        path,
-                        with: .color(color.opacity(isSelected ? 0.9 : 0.55)),
-                        style: StrokeStyle(
-                            lineWidth: isSelected ? channelStroke + 2 : channelStroke,
-                            lineCap: .round,
-                            lineJoin: .round
-                        )
+                let color: Color = isSelected ? .accentColor : layerColor(entry.segment.layer)
+                ctx.stroke(
+                    path,
+                    with: .color(color.opacity(isSelected ? 0.9 : 0.55)),
+                    style: StrokeStyle(
+                        lineWidth: isSelected ? channelStroke + 2 : channelStroke,
+                        lineCap: .round,
+                        lineJoin: .round
                     )
-                }
+                )
             }
         }
         .allowsHitTesting(false)
+    }
+
+    /// Every visible segment, ordered by its layer's paint rank (lower first
+    /// = underneath). Ties preserve the document encounter order via `seq`
+    /// so within-layer stacking stays deterministic. Layers missing from
+    /// `layerOrder` rank last, so they paint on top rather than vanishing.
+    private func orderedSegments() -> [(netId: UUID, segIdx: Int, segment: Segment)] {
+        var rows: [(netId: UUID, segIdx: Int, segment: Segment, rank: Int, seq: Int)] = []
+        var seq = 0
+        for route in document.physical.routes {
+            for (segIdx, segment) in route.segments.enumerated() {
+                guard visible.contains(segment.layer) else { continue }
+                let rank = layerOrder.firstIndex(of: segment.layer) ?? layerOrder.count
+                rows.append((route.netId, segIdx, segment, rank, seq))
+                seq += 1
+            }
+        }
+        rows.sort { $0.rank != $1.rank ? $0.rank < $1.rank : $0.seq < $1.seq }
+        return rows.map { ($0.netId, $0.segIdx, $0.segment) }
     }
 
     private func waypoints(for netId: UUID, segmentIndex: Int, fallback: [Point]) -> [Point] {
