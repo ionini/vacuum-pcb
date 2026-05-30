@@ -273,8 +273,6 @@ struct PhysicalInspector: View {
                             NSItemProvider(object: id.uuidString as NSString)
                         },
                         onPlaceAll: placeAllUnplaced,
-                        onAutoPlace: autoPlace,
-                        onAutoRoute: autoRoute,
                         onMinimize: minimize,
                         isMinimizing: isMinimizing
                     )
@@ -506,33 +504,6 @@ struct PhysicalInspector: View {
                     depth: start.depth
                 )
             )
-        }
-    }
-
-    /// Force-directed re-layout of every already-placed component.
-    /// Components move in place — relative ordering is preserved — so
-    /// existing routes mostly survive, but the user will typically need
-    /// to re-route. Best run on a fresh "Place all" before any routing.
-    private func autoPlace() {
-        let result = AutoPlacer.place(document.circuit)
-        for entry in result {
-            guard let i = document.circuit.physical.placements.firstIndex(where: { $0.componentId == entry.componentId })
-            else { continue }
-            document.circuit.physical.placements[i].position = entry.position
-        }
-    }
-
-    /// One-shot auto-router. Appends segments for any net pair on the
-    /// same layer that an A* path can find on the current occupancy.
-    /// Existing routes are preserved.
-    private func autoRoute() {
-        let plan = AutoRouter.plan(document.circuit)
-        for entry in plan {
-            if let i = document.circuit.physical.routes.firstIndex(where: { $0.netId == entry.netId }) {
-                document.circuit.physical.routes[i].segments.append(entry.segment)
-            } else {
-                document.circuit.physical.routes.append(Route(netId: entry.netId, segments: [entry.segment]))
-            }
         }
     }
 

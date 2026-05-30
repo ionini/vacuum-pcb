@@ -10,17 +10,10 @@ struct ParkingLotView: View {
     let providerForComponent: (UUID) -> NSItemProvider
     /// Drops every unplaced component onto the board in a default grid.
     let onPlaceAll: () -> Void
-    /// Runs a force-directed auto-placer over already-placed components,
-    /// trying to compact the layout. User is expected to fix by hand.
-    let onAutoPlace: () -> Void
-    /// Runs a grid-A* auto-router over every still-unrouted net pair
-    /// whose pins share a layer. Single-pass, no rip-up — nets that can't
-    /// be routed stay in the ratsnest for the user to handle manually.
-    let onAutoRoute: () -> Void
-    /// Simulated-annealing compaction over the already-placed-and-routed
-    /// board: shrinks the die's bounding-box area, re-routing affected nets
-    /// after each move and never increasing the DRC issue count, then
-    /// shrink-fits the outline. Runs off the main thread.
+    /// Simulated-annealing die compaction over the already-placed-and-routed
+    /// board: shrinks the board outline, re-routing as it goes (multi-layer
+    /// aware) and never increasing the DRC issue count, then shrink-fits the
+    /// outline.
     let onMinimize: () -> Void
     /// True while a minimize run is in flight — drives the button's spinner
     /// and disabled state.
@@ -54,17 +47,7 @@ struct ParkingLotView: View {
             }
 
             Divider().padding(.vertical, 4)
-            Text("Auto").font(.caption.bold()).foregroundStyle(.secondary)
-            Button("Auto-place", action: onAutoPlace)
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .disabled(document.physical.placements.count < 2)
-            Button("Auto-route", action: onAutoRoute)
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .disabled(document.logic.nets.isEmpty)
+            Text("Optimize").font(.caption.bold()).foregroundStyle(.secondary)
             Button(action: onMinimize) {
                 HStack(spacing: 5) {
                     if isMinimizing { ProgressView().controlSize(.mini) }

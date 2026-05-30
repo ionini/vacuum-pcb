@@ -23,8 +23,8 @@ import Foundation
 ///    within the DRC baseline *and* is actually smaller. Otherwise the input is
 ///    returned unchanged — so Minimize never breaks a board, it just declines.
 ///
-/// Why annealing rather than gradient descent / the force-directed
-/// `AutoPlacer`: the realised objective (does it route? does DRC pass?) is
+/// Why annealing rather than gradient descent / a force-directed placer:
+/// the realised objective (does it route? does DRC pass?) is
 /// non-differentiable and the grid/rotation space is discrete, so there's no
 /// gradient to follow and a plain hill-climb wedges in local minima. Annealing
 /// accepts cost-worse moves with a temperature-decaying probability and climbs
@@ -184,7 +184,11 @@ enum Minimizer {
 
         // ── Phase 2: realise & validate ──────────────────────────────────────
         var candidate = best
-        rerouteAll(&candidate)
+        // Re-route only the nets whose pins actually moved; nets the search
+        // didn't touch keep their original (hand-drawn) routing. Re-routing the
+        // whole board from scratch would discard good hand-routing the greedy
+        // single-pass router can't reproduce on a congested design.
+        reroute(&candidate, nets: movedNets(from: input, to: candidate))
         if blockingIssueCount(candidate) <= baseline {
             candidate = shrinkFit(candidate, baseline: baseline, pitch: pitch, margin: options.margin)
         }
@@ -389,15 +393,32 @@ enum Minimizer {
 
     // MARK: - Re-routing & validity
 
-    /// Rips up every route and re-plans the whole board with `AutoRouter`.
-    /// Used in phase 2 to route the compacted placement from scratch.
-    private static func rerouteAll(_ doc: inout CircuitDocument) {
-        doc.physical.routes.removeAll()
-        applyPlan(&doc)
+    /// Nets with at least one pin whose pose changed between `a` and `b` — the
+    /// ones whose routing must be regenerated. Everything else keeps its
+    /// original routing.
+    private static func movedNets(from a: CircuitDocument, to b: CircuitDocument) -> Set<UUID> {
+        let eps = 0.01
+        var movedComponents: Set<UUID> = []
+        for placement in b.physical.placements {
+            guard let before = a.physical.placements.first(where: { $0.componentId == placement.componentId })
+            else { movedComponents.insert(placement.componentId); continue }
+            if abs(before.position.x - placement.position.x) > eps
+                || abs(before.position.y - placement.position.y) > eps
+                || before.rotation != placement.rotation
+                || before.layer != placement.layer
+                || before.depth != placement.depth {
+                movedComponents.insert(placement.componentId)
+            }
+        }
+        var nets: Set<UUID> = []
+        for net in b.logic.nets where net.pins.contains(where: { movedComponents.contains($0.componentId) }) {
+            nets.insert(net.id)
+        }
+        return nets
     }
 
     /// Re-plans only the given nets (the ones whose pins moved), leaving other
-    /// routing intact. Used by the shrink-fit when it re-anchors edge features.
+    /// routing intact. Used in phase 2 and by the shrink-fit's edge re-anchor.
     private static func reroute(_ doc: inout CircuitDocument, nets: Set<UUID>) {
         guard !nets.isEmpty else { return }
         doc.physical.routes.removeAll { nets.contains($0.netId) }
