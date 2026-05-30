@@ -35,6 +35,8 @@ let package = Package(
                 "Vacuum PCB/Vacuum PCB/Assets.xcassets",
                 "Vacuum PCB/Vacuum PCB/Vacuum PCB.entitlements",
                 "Vacuum PCB/Vacuum PCB/Examples",
+                // The app's XCTest/Swift Testing target — not part of the CLI.
+                "Vacuum PCB/Vacuum PCBTests",
                 // Everything under the repo root that isn't our source.
                 "Vacuum PCB/Vacuum PCB.xcodeproj",
                 "README.md",
