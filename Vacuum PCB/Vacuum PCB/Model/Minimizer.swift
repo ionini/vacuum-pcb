@@ -18,10 +18,12 @@ import Foundation
 ///    explores thousands of moves cheaply instead of the ~8 the old
 ///    route-every-move design managed in a second.
 ///
-///  * **Phase 2 — realise & validate.** Re-route the compacted placement once,
-///    shrink-fit the outline to it, and adopt the result only if it re-routes
-///    within the DRC baseline *and* is actually smaller. Otherwise the input is
-///    returned unchanged — so Minimize never breaks a board, it just declines.
+///  * **Phase 2 — realise & validate.** Re-route the nets that moved (keeping
+///    untouched nets' existing routing), shrink-fit the outline, and adopt the
+///    result only if it re-routes within the DRC baseline *and* is a genuine
+///    improvement — a smaller die, or (when the die can't shrink) a tidier
+///    layout with less wirelength. Otherwise the input is returned unchanged,
+///    so Minimize never breaks a board, it just declines.
 ///
 /// Why annealing rather than gradient descent / a force-directed placer:
 /// the realised objective (does it route? does DRC pass?) is
@@ -197,13 +199,19 @@ enum Minimizer {
         stats.candidateArea = area(of: candidate) ?? 0
         stats.candidateIssues = candIssues
         stats.candidateOutline = candidate.physical.boardOutline
-        // Adopt only a genuine improvement that still builds. The goal is a
-        // smaller *die* — `boardOutline` area — not a smaller feature box: the
-        // feature box can legitimately grow as edge features move out to the
-        // perimeter even as the die shrinks around them.
+        // Adopt a result that still builds (DRC ≤ baseline) and is a genuine
+        // improvement — either:
+        //   * a smaller *die* (`boardOutline` area — the headline goal; we
+        //     measure the die, not the feature box, which can grow as edge
+        //     features ride out to the perimeter), or
+        //   * when the die can't shrink, a meaningfully tidier layout (≥1% less
+        //     total wirelength). This is what pulls a displaced component back
+        //     toward its net on a board whose outline is already minimal.
         let inDie = areaOf(input.physical.boardOutline)
         let candDie = areaOf(candidate.physical.boardOutline)
-        if candIssues <= baseline, candDie < inDie - 1e-6 {
+        let smaller = candDie < inDie - 1e-6
+        let tidier = candDie <= inDie + 1e-6 && hpwl(of: candidate) < hpwl(of: input) * 0.99
+        if candIssues <= baseline, smaller || tidier {
             return finish(candidate, adopted: true)
         }
         return finish(input, adopted: false)
@@ -220,8 +228,8 @@ enum Minimizer {
     /// Total half-perimeter wirelength: for each net, the half-perimeter of the
     /// bounding box of its pins' world positions. The standard wirelength proxy
     /// — minimising it pulls each net's components together (the rigorous form
-    /// of "give them gravity to each other").
-    private static func hpwl(of doc: CircuitDocument) -> Double {
+    /// of "give them gravity to each other"). Internal so tests can assert on it.
+    static func hpwl(of doc: CircuitDocument) -> Double {
         var total = 0.0
         for net in doc.logic.nets {
             var minX = Double.greatestFiniteMagnitude, minY = Double.greatestFiniteMagnitude

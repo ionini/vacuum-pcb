@@ -52,3 +52,6 @@ fastlane/test_output
 .idea/
 .vscode/
 *.swp
+
+# Claude Code local state (agent worktrees, settings, etc.)
+.claude/

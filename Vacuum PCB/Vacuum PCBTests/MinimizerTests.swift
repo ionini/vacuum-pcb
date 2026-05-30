@@ -192,4 +192,47 @@ struct MinimizerTests {
         #expect(dieArea(result) < dieArea(input))
         #expect(stats.finalIssues <= stats.baselineIssues)
     }
+
+    /// A board whose die is pinned at all four edges by vents (so the outline
+    /// can't shrink), with a free resistor displaced into the wrong corner away
+    /// from its net. Minimize should pull it back — adopting a tidier layout
+    /// (less wirelength) even though the die size is unchanged.
+    private func displacedOnFullDie() -> CircuitDocument {
+        var doc = CircuitDocument.blank()
+        doc.physical.boardOutline = Rect(origin: .zero, size: Size(width: 40, height: 30))
+        let vN = Component(kind: .atmVent, label: "VN")
+        let vS = Component(kind: .atmVent, label: "VS")
+        let vE = Component(kind: .atmVent, label: "VE")
+        let vW = Component(kind: .atmVent, label: "VW")
+        let r1 = Component(kind: .resistor, label: "R1", resistorSize: .medium)
+        doc.logic.components = [vN, vS, vE, vW, r1]
+        // R1 belongs near the north + east vents, but we place it in the SW
+        // corner — far from both, so its wirelength is large.
+        doc.logic.nets = [
+            Net(label: "n1", pins: [PinRef(componentId: vN.id, pinKey: "p"), PinRef(componentId: r1.id, pinKey: "1")]),
+            Net(label: "n2", pins: [PinRef(componentId: r1.id, pinKey: "2"), PinRef(componentId: vE.id, pinKey: "p")]),
+        ]
+        doc.physical.placements = [
+            Placement(componentId: vN.id, position: Point(x: 20, y: 28), rotation: .r0, layer: .top),
+            Placement(componentId: vS.id, position: Point(x: 20, y: 2), rotation: .r0, layer: .top),
+            Placement(componentId: vE.id, position: Point(x: 38, y: 15), rotation: .r0, layer: .top),
+            Placement(componentId: vW.id, position: Point(x: 2, y: 15), rotation: .r0, layer: .top),
+            Placement(componentId: r1.id, position: Point(x: 8, y: 8), rotation: .r0, layer: .top),
+        ]
+        route(&doc)
+        return doc
+    }
+
+    @Test("Minimize pulls a displaced component back even when the die can't shrink")
+    func tidiesADisplacedComponent() {
+        let input = displacedOnFullDie()
+        let (result, stats) = Minimizer.report(input, options: testOptions(seed: 5))
+        #expect(stats.adopted)
+        // Wirelength drops sharply (the resistor moved back toward its net)…
+        #expect(Minimizer.hpwl(of: result) < Minimizer.hpwl(of: input) * 0.99)
+        // …without growing the die (the vents pin it; this is the tidier path)…
+        #expect(dieArea(result) <= dieArea(input) + 1e-6)
+        // …and without worsening DRC relative to the starting board.
+        #expect(stats.finalIssues <= stats.baselineIssues)
+    }
 }
