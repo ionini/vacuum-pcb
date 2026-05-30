@@ -98,13 +98,14 @@ struct SimulationParameters: Equatable {
         channelCapacitancePerMm: 0.04,
         dtSeconds: 0.01,
         timeScale: 1.0,
-        // Pump defaults match a real diaphragm pump curve measured at the
-        // bench: deadhead at −46.7 kPa (P_scaled ≈ 0.54), free flow of
-        // 2.10 L/min (G ≈ 2.10 / (1 − 0.54) ≈ 4.6), and a slightly convex
-        // shape (droop ≈ −0.14) where the per-step flow loss accelerates as
-        // the pump approaches max vacuum.
-        pumpMaxVacuum: 0.54,
-        pumpFlowCapacity: 4.6,
+        // Pump defaults are tuned for clean digital-style swings rather than
+        // a specific weak bench pump: a strong deadhead near full vacuum
+        // (P_scaled ≈ 0.1, ~−91 kPa) so a Vac-driven net clears the 0.3 gate
+        // threshold and actually switches a transistor, and a generous free
+        // flow so rails hold their vacuum under load. The user can dial these
+        // back toward a measured curve from the sidebar sliders.
+        pumpMaxVacuum: 0.1,
+        pumpFlowCapacity: 10.0,
         busDriveConductance: 5.0,
         pumpDroopExponent: -0.14
     )
