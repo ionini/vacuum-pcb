@@ -1,0 +1,297 @@
+import Foundation
+
+// Headless driver for validating Vacuum PCB simulations from the command line.
+//
+// Reuses the app's own model: a `.vpcb` file is just JSON of a
+// `CircuitDocument`, which we flatten, compile into a `PneumaticNetwork`, and
+// step deterministically with `SimulationEngine.step`. We bypass
+// `SimulationState` on purpose — its `advance` is wall-clock throttled for the
+// live UI, whereas validation wants an exact, reproducible number of steps.
+
+// MARK: - Pipeline
+
+/// Load a `.vpcb` (or raw CircuitDocument JSON) file from disk.
+func loadDocument(_ path: String) throws -> CircuitDocument {
+    let url = URL(fileURLWithPath: path)
+    let data = try Data(contentsOf: url)
+    return try CircuitDocument.decoded(from: data)
+}
+
+/// Build the flattened pneumatic network for a document.
+func buildNetwork(_ doc: CircuitDocument) -> PneumaticNetwork {
+    let flattened = doc.flattenedForSimulation()
+    return PneumaticNetwork.build(from: flattened.document)
+}
+
+/// Seed initial net pressures. Mirrors `SimulationState.initialPressures`:
+/// everything starts at atmosphere (1.0); hard boundaries and pumps prime to
+/// their rail; hard inputs toggled to Vac join the pump manifold.
+func seedPressures(
+    network: PneumaticNetwork,
+    params: SimulationParameters,
+    inputs: [UUID: Double]
+) -> [UUID: Double] {
+    var out: [UUID: Double] = [:]
+    for net in network.nets { out[net.id] = 1.0 }
+    for boundary in network.hardBoundaries { out[boundary.netId] = boundary.value }
+    for pump in network.pumps { out[pump.netId] = params.pumpMaxVacuum }
+    for input in network.inputs where !input.soft {
+        let v = inputs[input.id] ?? 1.0
+        out[input.netId] = v < 0.5 ? params.pumpMaxVacuum : 1.0
+    }
+    return out
+}
+
+/// Run a fixed number of solver steps and return the final net pressures plus
+/// per-transistor open fractions.
+func simulate(
+    network: PneumaticNetwork,
+    params: SimulationParameters,
+    inputs: [UUID: Double],
+    steps: Int
+) -> (pressures: [UUID: Double], transistors: [UUID: Double]) {
+    var pressures = seedPressures(network: network, params: params, inputs: inputs)
+    var transistors: [UUID: Double] = [:]
+    for _ in 0..<steps {
+        SimulationEngine.step(
+            network: network,
+            params: params,
+            pressures: &pressures,
+            inputs: inputs,
+            transistorOpenness: &transistors
+        )
+    }
+    return (pressures, transistors)
+}
+
+// MARK: - Input resolution
+
+/// Translate an `--set NAME=VALUE` pair into a numeric drive. Accepts the
+/// pressure convention (0 = vacuum, 1 = atmosphere) by keyword or number.
+func parseDrive(_ raw: String) -> Double? {
+    switch raw.lowercased() {
+    case "vac", "vacuum", "0", "low": return 0.0
+    case "atm", "atmosphere", "1", "high": return 1.0
+    default: return Double(raw)
+    }
+}
+
+/// Resolve user `--set LABEL=VALUE` arguments into an input-id → pressure map,
+/// matching inputs by label (case-insensitive). Returns the map and any labels
+/// that matched nothing.
+func resolveInputs(
+    network: PneumaticNetwork,
+    sets: [(label: String, value: Double)]
+) -> (map: [UUID: Double], unmatched: [String]) {
+    var map: [UUID: Double] = [:]
+    var unmatched: [String] = []
+    for set in sets {
+        let matches = network.inputs.filter { $0.label.lowercased() == set.label.lowercased() }
+        if matches.isEmpty {
+            unmatched.append(set.label)
+        } else {
+            for input in matches { map[input.id] = set.value }
+        }
+    }
+    return (map, unmatched)
+}
+
+// MARK: - Reporting
+
+func fmt(_ v: Double) -> String { String(format: "%.4f", v) }
+
+func reportSimulate(
+    network: PneumaticNetwork,
+    pressures: [UUID: Double],
+    transistors: [UUID: Double],
+    steps: Int,
+    showAllNets: Bool,
+    probeFilter: [String],
+    json: Bool
+) {
+    let filter = Set(probeFilter.map { $0.lowercased() })
+    let probes = network.probes.filter { filter.isEmpty || filter.contains($0.label.lowercased()) }
+
+    if json {
+        var root: [String: Any] = ["steps": steps]
+        root["probes"] = probes.map { probe -> [String: Any] in
+            ["label": probe.label, "kind": "\(probe.kind)", "pressure": pressures[probe.netId] ?? 1.0]
+        }
+        if showAllNets {
+            root["nets"] = network.nets.map { net -> [String: Any] in
+                ["id": net.id.uuidString, "pressure": pressures[net.id] ?? 1.0]
+            }
+        }
+        printJSON(root)
+        return
+    }
+
+    print("steps: \(steps)")
+    print("probes (\(probes.count)):")
+    if probes.isEmpty {
+        print("  (none)")
+    }
+    for probe in probes {
+        let p = pressures[probe.netId] ?? 1.0
+        print("  \(probe.label.isEmpty ? "<unnamed>" : probe.label)  [\(probe.kind)]  P=\(fmt(p))  \(bar(p))")
+    }
+    if showAllNets {
+        print("nets (\(network.nets.count)):")
+        for net in network.nets.sorted(by: { $0.label < $1.label }) {
+            let p = pressures[net.id] ?? 1.0
+            let name = net.label.isEmpty ? net.id.uuidString.prefix(8).description : net.label
+            print("  \(name)  P=\(fmt(p))  \(bar(p))")
+        }
+    }
+}
+
+/// A tiny vacuum↔atm gauge so runs are skimmable at a glance.
+func bar(_ p: Double) -> String {
+    let clamped = max(0, min(1, p))
+    let filled = Int((clamped * 10).rounded())
+    return "[" + String(repeating: "#", count: 10 - filled) + String(repeating: ".", count: filled) + "]"
+}
+
+func reportInspect(_ network: PneumaticNetwork, json: Bool) {
+    if json {
+        let root: [String: Any] = [
+            "nets": network.nets.count,
+            "inputs": network.inputs.map { ["label": $0.label, "soft": $0.soft] },
+            "probes": network.probes.map { ["label": $0.label, "kind": "\($0.kind)"] },
+            "transistors": network.transistors.map { ["label": $0.label] },
+            "resistors": network.resistors.count,
+            "pumps": network.pumps.map { ["label": $0.label] },
+        ]
+        printJSON(root)
+        return
+    }
+    print("nets:        \(network.nets.count)")
+    print("inputs (\(network.inputs.count)):")
+    for i in network.inputs { print("  \(i.label.isEmpty ? "<unnamed>" : i.label)\(i.soft ? "  (soft/bus)" : "")") }
+    print("probes (\(network.probes.count)):")
+    for p in network.probes { print("  \(p.label.isEmpty ? "<unnamed>" : p.label)  [\(p.kind)]") }
+    print("transistors: \(network.transistors.count)")
+    print("resistors:   \(network.resistors.count)")
+    print("pumps:       \(network.pumps.count)")
+}
+
+func printJSON(_ obj: Any) {
+    guard let data = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]),
+          let str = String(data: data, encoding: .utf8) else {
+        print("{}")
+        return
+    }
+    print(str)
+}
+
+// MARK: - Argument parsing
+
+let usage = """
+vacuum-cli — headless validation for Vacuum PCB circuits
+
+USAGE:
+  vacuum-cli inspect <file.vpcb> [--json]
+      List the simulatable inputs, probes, transistors and nets.
+
+  vacuum-cli simulate <file.vpcb> [options]
+      Run the solver and print probe pressures (0 = vacuum, 1 = atmosphere).
+
+SIMULATE OPTIONS:
+  --steps N            Number of fixed solver steps (default 500).
+  --set LABEL=VALUE     Drive an input. VALUE is vac/atm or a number 0…1.
+                        Repeatable.
+  --probe LABEL         Only report this probe. Repeatable.
+  --all-nets            Also print every net's pressure.
+  --json                Machine-readable output.
+"""
+
+func fail(_ message: String) -> Never {
+    FileHandle.standardError.write(Data((message + "\n").utf8))
+    exit(2)
+}
+
+var args = Array(CommandLine.arguments.dropFirst())
+guard let command = args.first else {
+    print(usage)
+    exit(0)
+}
+args.removeFirst()
+
+if command == "-h" || command == "--help" || command == "help" {
+    print(usage)
+    exit(0)
+}
+
+// Pull the positional file path (first arg not starting with "-").
+guard let pathIndex = args.firstIndex(where: { !$0.hasPrefix("-") }) else {
+    fail("error: missing <file.vpcb>\n\n\(usage)")
+}
+let path = args.remove(at: pathIndex)
+
+// Flags / options.
+var steps = 500
+var sets: [(label: String, value: Double)] = []
+var probeFilter: [String] = []
+var showAllNets = false
+var json = false
+
+var i = 0
+while i < args.count {
+    let arg = args[i]
+    switch arg {
+    case "--json": json = true
+    case "--all-nets": showAllNets = true
+    case "--steps":
+        i += 1
+        guard i < args.count, let n = Int(args[i]) else { fail("error: --steps needs an integer") }
+        steps = n
+    case "--set":
+        i += 1
+        guard i < args.count else { fail("error: --set needs LABEL=VALUE") }
+        let parts = args[i].split(separator: "=", maxSplits: 1)
+        guard parts.count == 2, let value = parseDrive(String(parts[1])) else {
+            fail("error: --set expects LABEL=VALUE (e.g. --set A=vac)")
+        }
+        sets.append((String(parts[0]), value))
+    case "--probe":
+        i += 1
+        guard i < args.count else { fail("error: --probe needs a LABEL") }
+        probeFilter.append(args[i])
+    default:
+        fail("error: unknown option \(arg)\n\n\(usage)")
+    }
+    i += 1
+}
+
+// MARK: - Dispatch
+
+do {
+    let doc = try loadDocument(path)
+    let network = buildNetwork(doc)
+
+    switch command {
+    case "inspect":
+        reportInspect(network, json: json)
+
+    case "simulate":
+        let (inputMap, unmatched) = resolveInputs(network: network, sets: sets)
+        if !unmatched.isEmpty {
+            fail("error: no input labelled \(unmatched.map { "'\($0)'" }.joined(separator: ", ")). Run `inspect` to see available labels.")
+        }
+        let result = simulate(network: network, params: .defaults, inputs: inputMap, steps: steps)
+        reportSimulate(
+            network: network,
+            pressures: result.pressures,
+            transistors: result.transistors,
+            steps: steps,
+            showAllNets: showAllNets,
+            probeFilter: probeFilter,
+            json: json
+        )
+
+    default:
+        fail("error: unknown command '\(command)'\n\n\(usage)")
+    }
+} catch {
+    fail("error: \(error.localizedDescription)")
+}
