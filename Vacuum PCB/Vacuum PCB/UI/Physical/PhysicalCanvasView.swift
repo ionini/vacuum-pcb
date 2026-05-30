@@ -8,6 +8,11 @@ struct PhysicalCanvasView: View {
     @Binding var selection: PhysicalSelection
     @Binding var routingState: RoutingState
     @Binding var visible: LayerVisibility
+    /// Bottom-to-top paint order of the channel layers, driven by the
+    /// drag-reorderable visibility pills. Placements, pin handles, and route
+    /// segments are drawn in this order so the layer the user dragged to the
+    /// end stacks visually on top of the rest.
+    var layerOrder: [Layer]
     @Binding var routingLayer: Layer
     @Binding var routingError: String?
     var showRatsnest: Bool
@@ -176,6 +181,7 @@ struct PhysicalCanvasView: View {
                     document: document.circuit,
                     transform: transform,
                     visible: visible,
+                    layerOrder: layerOrder,
                     selection: selection,
                     manufacturing: manufacturing,
                     dragOverride: dragOverride,
@@ -582,9 +588,29 @@ struct PhysicalCanvasView: View {
 
     // MARK: - Placement layers
 
+    /// Index of `layer` in the user's paint order; layers not listed sort
+    /// last so they paint on top rather than disappearing.
+    private func paintRank(_ layer: Layer) -> Int {
+        layerOrder.firstIndex(of: layer) ?? layerOrder.count
+    }
+
+    /// Placements sorted by their layer's paint order (lower rank = painted
+    /// first = underneath). Ties fall back to the document's array order via
+    /// the captured offset, so component identity stays stable across
+    /// reorders and SwiftUI doesn't tear down views needlessly.
+    private var placementsInPaintOrder: [Placement] {
+        document.circuit.physical.placements.enumerated()
+            .sorted { a, b in
+                let ra = paintRank(Layer(plate: a.element.layer, depth: a.element.depth))
+                let rb = paintRank(Layer(plate: b.element.layer, depth: b.element.depth))
+                return ra != rb ? ra < rb : a.offset < b.offset
+            }
+            .map(\.element)
+    }
+
     private var placementBodies: some View {
         ZStack {
-            ForEach(document.circuit.physical.placements, id: \.componentId) { placement in
+            ForEach(placementsInPaintOrder, id: \.componentId) { placement in
                 if let component = component(for: placement.componentId),
                    visible.shows(componentKind: component.kind,
                                  on: Layer(plate: placement.layer, depth: placement.depth)) {
@@ -607,7 +633,7 @@ struct PhysicalCanvasView: View {
     /// component drag state without conflicting with click handlers.
     private var placementHitTargets: some View {
         ZStack {
-            ForEach(document.circuit.physical.placements, id: \.componentId) { placement in
+            ForEach(placementsInPaintOrder, id: \.componentId) { placement in
                 if let component = component(for: placement.componentId),
                    visible.shows(componentKind: component.kind,
                                  on: Layer(plate: placement.layer, depth: placement.depth)) {
@@ -908,7 +934,7 @@ struct PhysicalCanvasView: View {
 
     private var pinHandles: some View {
         ZStack {
-            ForEach(document.circuit.physical.placements, id: \.componentId) { placement in
+            ForEach(placementsInPaintOrder, id: \.componentId) { placement in
                 if let component = component(for: placement.componentId) {
                     ForEach(component.footprint(manufacturing, snapshots: librarySnapshots).pins, id: \.key) { pin in
                         // Sub-part boundary pins carry their library-internal

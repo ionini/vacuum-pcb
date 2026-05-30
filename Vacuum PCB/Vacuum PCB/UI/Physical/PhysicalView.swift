@@ -25,6 +25,13 @@ struct PhysicalView: View {
     let exportMenu: ExportMenuButton
 
     @State private var visible: LayerVisibility = .both
+    /// Bottom-to-top paint order of the channel layers. The visibility pills
+    /// are drag-reorderable and rewrite this array; the canvas paints layers
+    /// in this order so the last entry stacks on top (drag B1 to the right
+    /// end to see it above the rest). Reconciled against `allLayers` whenever
+    /// the plate layer counts change so added layers appear and removed ones
+    /// drop out without disturbing the user's chosen ordering.
+    @State private var layerOrder: [Layer] = []
     @State private var routingLayer: Layer = .top
     @State private var routingError: String?
     @State private var showRatsnest: Bool = true
@@ -47,6 +54,7 @@ struct PhysicalView: View {
             selection: $selection,
             routingState: $routingState,
             visible: $visible,
+            layerOrder: orderedLayers,
             routingLayer: $routingLayer,
             routingError: $routingError,
             showRatsnest: showRatsnest,
@@ -65,11 +73,14 @@ struct PhysicalView: View {
                                         startsAtVia: startsAtVia)
             }
         }
+        .onAppear { reconcileLayerOrder() }
         .onChange(of: document.circuit.physical.topLayers) { _, _ in
             ensureRoutingLayerValid()
+            reconcileLayerOrder()
         }
         .onChange(of: document.circuit.physical.bottomLayers) { _, _ in
             ensureRoutingLayerValid()
+            reconcileLayerOrder()
         }
     }
 
@@ -90,7 +101,8 @@ struct PhysicalView: View {
         // mode is active so the toolbar reads cleanly.
         if !visible.isSiliconeSheet {
             ToolbarItem(placement: .automatic) {
-                LayerVisibilityPills(layers: allLayers, visible: $visible)
+                LayerVisibilityPills(layers: orderedLayers, visible: $visible,
+                                     order: $layerOrder)
             }
         }
         ToolbarItem(placement: .automatic) {
@@ -165,6 +177,26 @@ struct PhysicalView: View {
     var allLayers: [Layer] {
         document.circuit.physical.layers(in: .top) +
         document.circuit.physical.layers(in: .bottom)
+    }
+
+    /// The configured layers in the user's chosen paint order. Falls back to
+    /// `allLayers` for any layer not yet recorded in `layerOrder` (e.g. on
+    /// the very first render before `reconcileLayerOrder` runs), so the pills
+    /// and canvas always have a complete, deterministic sequence to draw.
+    var orderedLayers: [Layer] {
+        let all = allLayers
+        var result = layerOrder.filter { all.contains($0) }
+        for layer in all where !result.contains(layer) { result.append(layer) }
+        return result
+    }
+
+    /// Persist the reconciled paint order back into state after a layer-count
+    /// change so the stored array tracks the configured layers — kept layers
+    /// hold their position, new ones append in default order, removed ones
+    /// drop out. A no-op write is skipped to avoid a redundant invalidation.
+    private func reconcileLayerOrder() {
+        let next = orderedLayers
+        if next != layerOrder { layerOrder = next }
     }
 
     /// If the routing layer dropdown was pointing at e.g. T1 and the user
