@@ -68,7 +68,7 @@ enum Minimizer {
         static func make(forComponentCount n: Int) -> Options {
             Options(
                 maxIterations: min(20000, max(2000, n * 800)),
-                timeBudget: 1.0,
+                timeBudget: 3.0,
                 seed: 0x5EED_FACE,
                 margin: 3.0
             )
@@ -149,51 +149,45 @@ enum Minimizer {
 
         let options = optionsIn ?? .make(forComponentCount: input.physical.placements.count)
 
-        // ── Phase 1: placement search on the proxy cost (no routing) ──────────
-        var rng = SplitMix64(seed: options.seed)
+        // ── Phase 1: greedy, routing-aware local repair ───────────────────────
+        // Pull each component toward the centroid of what it's wired to,
+        // re-routing only its own nets and keeping the move only when it stays
+        // DRC-clean *and* lowers the cost. A part already well placed has no
+        // improving move, so it stays put — the search fixes a displaced part
+        // (and tightens the wiring everywhere it can) without scrambling the
+        // rest, which would force a full re-route the single-pass router can't
+        // realise on a congested board. Most-displaced parts are repaired first
+        // so a tight time budget is spent where it matters. Passes repeat until
+        // a pass makes no progress, the iteration cap, or the deadline.
         var working = input
-        var currentCost = cost(of: working)
-        var best = working
-        var bestCost = currentCost
-
-        let maxIter = max(1, options.maxIterations)
-        let t0 = max(currentCost * 0.05, 1e-6)
-        let tMin = max(currentCost * 1e-4, 1e-9)
-        let alpha = pow(tMin / t0, 1.0 / Double(maxIter))
-        var temperature = t0
         let deadline = Date().addingTimeInterval(options.timeBudget)
-
-        var iter = 0
-        while iter < maxIter {
-            defer { iter += 1; temperature *= alpha }
-            if iter & 0x3F == 0, Date() >= deadline { break }
-            stats.iterations += 1
-            let progress = Double(iter) / Double(maxIter)
-
-            var trial = working
-            guard applyRandomMove(to: &trial, pitch: pitch, progress: progress, rng: &rng) else { continue }
-            let trialCost = cost(of: trial)
-            let dE = trialCost - currentCost
-            if dE < 0 || Double.random(in: 0..<1, using: &rng) < exp(-dE / max(temperature, 1e-12)) {
-                working = trial
-                currentCost = trialCost
-                stats.accepted += 1
-                if trialCost < bestCost { best = trial; bestCost = trialCost }
-            } else {
-                stats.rejected += 1
+        let maxPasses = max(2, options.maxIterations / max(1, input.physical.placements.count) / 4)
+        passLoop: for _ in 0..<maxPasses {
+            // Recompute each pass: a component's slack (distance from its net
+            // centroid) shrinks as it's repaired, so the ordering re-prioritises.
+            let order = working.physical.placements.indices
+                .map { (index: $0, slack: displacementToNetCentroid(working, $0)) }
+                .filter { $0.slack > pitch }
+                .sorted { $0.slack > $1.slack }
+            if order.isEmpty { break }
+            var improvedThisPass = false
+            for entry in order {
+                if Date() >= deadline { break passLoop }
+                stats.iterations += 1
+                if tryRepair(&working, index: entry.index, baseline: baseline, pitch: pitch) {
+                    stats.accepted += 1
+                    improvedThisPass = true
+                } else {
+                    stats.rejected += 1
+                }
             }
+            if !improvedThisPass { break }
         }
 
-        // ── Phase 2: realise & validate ──────────────────────────────────────
-        var candidate = best
-        // Re-route only the nets whose pins actually moved; nets the search
-        // didn't touch keep their original (hand-drawn) routing. Re-routing the
-        // whole board from scratch would discard good hand-routing the greedy
-        // single-pass router can't reproduce on a congested design.
-        reroute(&candidate, nets: movedNets(from: input, to: candidate))
-        if blockingIssueCount(candidate) <= baseline {
-            candidate = shrinkFit(candidate, baseline: baseline, pitch: pitch, margin: options.margin)
-        }
+        // ── Phase 2: shrink-fit & adopt ──────────────────────────────────────
+        // `working` is already re-routed and within the DRC baseline (every
+        // accepted repair preserved that), so tighten the outline around it.
+        let candidate = shrinkFit(working, baseline: baseline, pitch: pitch, margin: options.margin)
 
         let candIssues = blockingIssueCount(candidate)
         stats.candidateArea = area(of: candidate) ?? 0
@@ -275,158 +269,116 @@ enum Minimizer {
         return total
     }
 
-    // MARK: - Moves
+    // MARK: - Local repair
 
-    /// Applies one random perturbation to `doc`. Returns false when no move
-    /// could be formed (no eligible component). No routing happens here — the
-    /// move is scored by the proxy cost only.
-    private static func applyRandomMove(
-        to doc: inout CircuitDocument, pitch: Double, progress: Double, rng: inout SplitMix64
+    /// Tries to improve component `index` by nudging it toward the centroid of
+    /// the foreign pins it shares nets with (the wirelength-minimising target),
+    /// re-routing only its own nets. A few fractions of the full step are tried
+    /// (a full jump can overshoot or overlap); the cheapest variant that stays
+    /// within the DRC `baseline` *and* lowers the overall cost is kept. Returns
+    /// true if `working` was improved. Edge features slide along their edge
+    /// toward the target rather than moving inward.
+    private static func tryRepair(
+        _ working: inout CircuitDocument, index: Int, baseline: Int, pitch: Double
     ) -> Bool {
-        var freeIdx: [Int] = []
-        var edgeIdx: [Int] = []     // edge features + connectors: slide along an edge
-        for (i, p) in doc.physical.placements.enumerated() {
-            guard let kind = doc.logic.components.first(where: { $0.id == p.componentId })?.kind
-            else { continue }
-            if kind == .connector, p.edgeAnchor != nil { edgeIdx.append(i) }
-            else if edgeFeatureKinds.contains(kind) { edgeIdx.append(i) }
-            else { freeIdx.append(i) }
-        }
-        guard !freeIdx.isEmpty || !edgeIdx.isEmpty else { return false }
+        guard let info = footprintInfo(working, index),
+              let target = netCentroidTarget(working, index),
+              let myCentroid = pinCentroid(working, index)
+        else { return false }
+        let comp = info.comp
+        let outline = working.physical.boardOutline
+        let placement = working.physical.placements[index]
+        let isConnector = comp.kind == .connector && placement.edgeAnchor != nil
+        let isEdge = isConnector || edgeFeatureKinds.contains(comp.kind)
 
-        // Pick an edge feature ~1 in 5 when both kinds exist (most of the work
-        // is interior compaction), or always when there are no free bodies.
-        let pickEdge = !edgeIdx.isEmpty && (freeIdx.isEmpty || Int.random(in: 0..<5, using: &rng) == 0)
-        if pickEdge {
-            return slideAlongEdge(&doc, index: edgeIdx.randomElement(using: &rng)!,
-                                  pitch: pitch, progress: progress, rng: &rng)
+        // The nets that must be re-routed when this component moves.
+        var nets: Set<UUID> = []
+        for net in working.logic.nets where net.pins.contains(where: { $0.componentId == comp.id }) {
+            nets.insert(net.id)
         }
 
-        let i = freeIdx.randomElement(using: &rng)!
-        switch Int.random(in: 0..<100, using: &rng) {
-        case 0..<70:
-            translate(&doc, index: i, pitch: pitch, progress: progress, rng: &rng)
-        case 70..<85 where freeIdx.count >= 2:
-            var j = freeIdx.randomElement(using: &rng)!
-            while j == i { j = freeIdx.randomElement(using: &rng)! }
-            swap(&doc, i: i, j: j, pitch: pitch)
-        default:
-            rotate(&doc, index: i, pitch: pitch)
+        let baseCost = cost(of: working)
+        var bestDoc: CircuitDocument?
+        var bestCost = baseCost
+        let dxFull = target.x - myCentroid.x, dyFull = target.y - myCentroid.y
+
+        for frac in [1.0, 0.5] {
+            var trial = working
+            if isEdge {
+                let edge = isConnector ? placement.edgeAnchor!.edge
+                                       : nearestEdge(to: placement.position, in: outline)
+                let clearance = isConnector ? info.fp.exclusionRect.size.height / 2
+                    : max(info.fp.boundingRect.size.width, info.fp.boundingRect.size.height) / 2
+                let len = edgeLength(edge, in: outline)
+                let desired = Point(x: placement.position.x + dxFull * frac,
+                                    y: placement.position.y + dyFull * frac)
+                var off = (offsetAlongEdge(desired, edge: edge, outline: outline) / pitch).rounded() * pitch
+                off = len - clearance >= clearance ? max(clearance, min(len - clearance, off)) : len / 2
+                let inset = isConnector ? 0 : edgeInset(info.fp)
+                placeOnEdge(&trial.physical.placements[index], edge: edge, offset: off, inset: inset,
+                            isConnector: isConnector, outline: outline)
+            } else {
+                let ext = rotatedExtents(info.fp.boundingRect, placement.rotation)
+                trial.physical.placements[index].position = clampInside(
+                    Point(x: placement.position.x + dxFull * frac, y: placement.position.y + dyFull * frac),
+                    ext: ext, outline: outline, pitch: pitch)
+            }
+            // Skip if the clamped/snapped result is a no-op.
+            let np = trial.physical.placements[index].position
+            if abs(np.x - placement.position.x) < 0.01, abs(np.y - placement.position.y) < 0.01 { continue }
+
+            reroute(&trial, nets: nets)
+            guard blockingIssueCount(trial) <= baseline else { continue }
+            let c = cost(of: trial)
+            if c < bestCost - 1e-6 { bestCost = c; bestDoc = trial }
         }
-        return true
+        if let bestDoc { working = bestDoc; return true }
+        return false
     }
 
-    private static func translate(
-        _ doc: inout CircuitDocument, index: Int, pitch: Double, progress: Double, rng: inout SplitMix64
-    ) {
-        guard let info = footprintInfo(doc, index) else { return }
-        let ext = rotatedExtents(info.fp.boundingRect, doc.physical.placements[index].rotation)
-        let span = max(doc.physical.boardOutline.size.width, doc.physical.boardOutline.size.height)
-        let baseCells = min(12, max(1, Int((span / pitch / 8).rounded())))
-        let cells = max(1, Int((Double(baseCells) * (1.0 - 0.85 * progress)).rounded()))
-        var dx = Double(Int.random(in: -cells...cells, using: &rng)) * pitch
-        let dy = Double(Int.random(in: -cells...cells, using: &rng)) * pitch
-        if dx == 0, dy == 0 { dx = Bool.random(using: &rng) ? pitch : -pitch }
-        let p = doc.physical.placements[index].position
-        doc.physical.placements[index].position = clampInside(
-            Point(x: p.x + dx, y: p.y + dy), ext: ext, outline: doc.physical.boardOutline, pitch: pitch)
-    }
-
-    private static func rotate(_ doc: inout CircuitDocument, index: Int, pitch: Double) {
-        guard let info = footprintInfo(doc, index) else { return }
-        let next: Rotation
-        switch doc.physical.placements[index].rotation {
-        case .r0:   next = .r90
-        case .r90:  next = .r180
-        case .r180: next = .r270
-        case .r270: next = .r0
-        }
-        doc.physical.placements[index].rotation = next
-        let ext = rotatedExtents(info.fp.boundingRect, next)
-        doc.physical.placements[index].position = clampInside(
-            doc.physical.placements[index].position, ext: ext, outline: doc.physical.boardOutline, pitch: pitch)
-    }
-
-    private static func swap(_ doc: inout CircuitDocument, i: Int, j: Int, pitch: Double) {
-        let pi = doc.physical.placements[i].position
-        let pj = doc.physical.placements[j].position
-        doc.physical.placements[i].position = pj
-        doc.physical.placements[j].position = pi
-        for idx in [i, j] {
-            if let info = footprintInfo(doc, idx) {
-                let ext = rotatedExtents(info.fp.boundingRect, doc.physical.placements[idx].rotation)
-                doc.physical.placements[idx].position = clampInside(
-                    doc.physical.placements[idx].position, ext: ext,
-                    outline: doc.physical.boardOutline, pitch: pitch)
+    /// Centroid of the foreign pins this component shares nets with — the point
+    /// its connections pull toward. Nil if it has no connected foreign pins.
+    private static func netCentroidTarget(_ doc: CircuitDocument, _ index: Int) -> Point? {
+        let id = doc.physical.placements[index].componentId
+        var sumX = 0.0, sumY = 0.0, n = 0
+        for net in doc.logic.nets where net.pins.contains(where: { $0.componentId == id }) {
+            for pin in net.pins where pin.componentId != id {
+                guard let p = doc.physical.placements.first(where: { $0.componentId == pin.componentId }),
+                      let c = doc.logic.components.first(where: { $0.id == pin.componentId }),
+                      let fp = c.footprint(doc.manufacturing, snapshots: doc.librarySnapshots).pin(pin.pinKey)
+                else { continue }
+                let w = p.worldPosition(of: fp)
+                sumX += w.x; sumY += w.y; n += 1
             }
         }
+        guard n > 0 else { return nil }
+        return Point(x: sumX / Double(n), y: sumY / Double(n))
     }
 
-    /// Slides an edge feature (or a connector) along a board edge, never
-    /// inward. Connectors keep their assigned `edgeAnchor.edge`; bare edge
-    /// features (vent / vacuum / port) ride whichever edge they're nearest and
-    /// have their bore rotated to point outward along it.
-    private static func slideAlongEdge(
-        _ doc: inout CircuitDocument, index: Int, pitch: Double, progress: Double, rng: inout SplitMix64
-    ) -> Bool {
-        guard let info = footprintInfo(doc, index) else { return false }
-        let outline = doc.physical.boardOutline
-        let comp = info.comp
+    /// Centroid of this component's own pins in world space (its body's
+    /// connection point); the component's anchor if it has no pins.
+    private static func pinCentroid(_ doc: CircuitDocument, _ index: Int) -> Point? {
+        guard let info = footprintInfo(doc, index) else { return nil }
+        let placement = doc.physical.placements[index]
+        let pins = info.fp.pins
+        guard !pins.isEmpty else { return placement.position }
+        var sx = 0.0, sy = 0.0
+        for fp in pins { let w = placement.worldPosition(of: fp); sx += w.x; sy += w.y }
+        return Point(x: sx / Double(pins.count), y: sy / Double(pins.count))
+    }
 
-        let edge: Edge
-        let clearance: Double
-        if comp.kind == .connector, let anchor = doc.physical.placements[index].edgeAnchor {
-            edge = anchor.edge
-            clearance = info.fp.exclusionRect.size.height / 2
-        } else {
-            edge = nearestEdge(to: doc.physical.placements[index].position, in: outline)
-            clearance = max(info.fp.boundingRect.size.width, info.fp.boundingRect.size.height) / 2
-        }
-
-        let len = edgeLength(edge, in: outline)
-        guard len - clearance > clearance else { return true }   // edge too short to slide
-        let current = offsetAlongEdge(doc.physical.placements[index].position, edge: edge, outline: outline)
-        let baseCells = min(10, max(1, Int((len / pitch / 6).rounded())))
-        let cells = max(1, Int((Double(baseCells) * (1.0 - 0.85 * progress)).rounded()))
-        var delta = Double(Int.random(in: -cells...cells, using: &rng)) * pitch
-        if delta == 0 { delta = Bool.random(using: &rng) ? pitch : -pitch }
-        var off = ((current + delta) / pitch).rounded() * pitch
-        off = max(clearance, min(len - clearance, off))
-
-        let inset = comp.kind == .connector ? 0 : edgeInset(info.fp)
-        placeOnEdge(&doc.physical.placements[index], edge: edge, offset: off, inset: inset,
-                    isConnector: comp.kind == .connector, outline: outline)
-        return true
+    /// How far this component sits from its net centroid — used to repair the
+    /// most-displaced parts first.
+    private static func displacementToNetCentroid(_ doc: CircuitDocument, _ index: Int) -> Double {
+        guard let t = netCentroidTarget(doc, index), let c = pinCentroid(doc, index) else { return 0 }
+        return hypot(t.x - c.x, t.y - c.y)
     }
 
     // MARK: - Re-routing & validity
 
-    /// Nets with at least one pin whose pose changed between `a` and `b` — the
-    /// ones whose routing must be regenerated. Everything else keeps its
-    /// original routing.
-    private static func movedNets(from a: CircuitDocument, to b: CircuitDocument) -> Set<UUID> {
-        let eps = 0.01
-        var movedComponents: Set<UUID> = []
-        for placement in b.physical.placements {
-            guard let before = a.physical.placements.first(where: { $0.componentId == placement.componentId })
-            else { movedComponents.insert(placement.componentId); continue }
-            if abs(before.position.x - placement.position.x) > eps
-                || abs(before.position.y - placement.position.y) > eps
-                || before.rotation != placement.rotation
-                || before.layer != placement.layer
-                || before.depth != placement.depth {
-                movedComponents.insert(placement.componentId)
-            }
-        }
-        var nets: Set<UUID> = []
-        for net in b.logic.nets where net.pins.contains(where: { movedComponents.contains($0.componentId) }) {
-            nets.insert(net.id)
-        }
-        return nets
-    }
-
-    /// Re-plans only the given nets (the ones whose pins moved), leaving other
-    /// routing intact. Used in phase 2 and by the shrink-fit's edge re-anchor.
+    /// Re-plans only the given nets (the ones whose moved component touches),
+    /// leaving other routing intact. Used by the local repair and the
+    /// shrink-fit's edge re-anchor.
     private static func reroute(_ doc: inout CircuitDocument, nets: Set<UUID>) {
         guard !nets.isEmpty else { return }
         doc.physical.routes.removeAll { nets.contains($0.netId) }
@@ -671,18 +623,4 @@ enum Minimizer {
     }
 
     private static func areaOf(_ r: Rect) -> Double { r.size.width * r.size.height }
-}
-
-/// Deterministic, seedable PRNG (SplitMix64), so a board minimises identically
-/// on every run — reproducible for debugging and tests.
-struct SplitMix64: RandomNumberGenerator {
-    private var state: UInt64
-    init(seed: UInt64) { state = seed }
-    mutating func next() -> UInt64 {
-        state = state &+ 0x9E37_79B9_7F4A_7C15
-        var z = state
-        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
-        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
-        return z ^ (z >> 31)
-    }
 }
