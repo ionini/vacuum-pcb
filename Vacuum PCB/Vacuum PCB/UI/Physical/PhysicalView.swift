@@ -216,6 +216,9 @@ struct PhysicalInspector: View {
     @Binding var routingState: RoutingState
 
     @State private var pendingLayerRemoval: PendingLayerRemoval?
+    /// True while a `minimize()` run is in flight, so the button shows a
+    /// spinner and stays disabled.
+    @State private var isMinimizing = false
     @FocusState private var boardFieldFocused: BoardField?
 
     private enum BoardField: Hashable { case width, height }
@@ -271,7 +274,9 @@ struct PhysicalInspector: View {
                         },
                         onPlaceAll: placeAllUnplaced,
                         onAutoPlace: autoPlace,
-                        onAutoRoute: autoRoute
+                        onAutoRoute: autoRoute,
+                        onMinimize: minimize,
+                        isMinimizing: isMinimizing
                     )
                 }
                 .padding(.horizontal, 14)
@@ -528,6 +533,24 @@ struct PhysicalInspector: View {
             } else {
                 document.circuit.physical.routes.append(Route(netId: entry.netId, segments: [entry.segment]))
             }
+        }
+    }
+
+    /// Simulated-annealing compaction of the placed-and-routed board. The
+    /// pure model layer is main-actor-isolated (the project's default
+    /// isolation), so the search runs on the main actor rather than a detached
+    /// task — its time budget is kept short for that reason. The leading
+    /// `Task.yield()` lets the "Minimizing…" state paint before the compute;
+    /// the result is written back in one mutation, so it's a single undo step,
+    /// and only `physical` is assigned since the minimiser never touches the
+    /// logic graph.
+    private func minimize() {
+        guard !isMinimizing else { return }
+        isMinimizing = true
+        Task { @MainActor in
+            await Task.yield()
+            document.circuit.physical = Minimizer.minimize(document.circuit).physical
+            isMinimizing = false
         }
     }
 }

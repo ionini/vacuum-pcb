@@ -17,6 +17,14 @@ struct ParkingLotView: View {
     /// whose pins share a layer. Single-pass, no rip-up — nets that can't
     /// be routed stay in the ratsnest for the user to handle manually.
     let onAutoRoute: () -> Void
+    /// Simulated-annealing compaction over the already-placed-and-routed
+    /// board: shrinks the die's bounding-box area, re-routing affected nets
+    /// after each move and never increasing the DRC issue count, then
+    /// shrink-fits the outline. Runs off the main thread.
+    let onMinimize: () -> Void
+    /// True while a minimize run is in flight — drives the button's spinner
+    /// and disabled state.
+    let isMinimizing: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -57,6 +65,17 @@ struct ParkingLotView: View {
                 .controlSize(.small)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .disabled(document.logic.nets.isEmpty)
+            Button(action: onMinimize) {
+                HStack(spacing: 5) {
+                    if isMinimizing { ProgressView().controlSize(.mini) }
+                    Text(isMinimizing ? "Minimizing…" : "Minimize")
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .disabled(isMinimizing || document.physical.placements.count < 2)
+            .help("Shrink the die: anneal placements while re-routing, then fit the outline")
 
             Spacer()
         }
