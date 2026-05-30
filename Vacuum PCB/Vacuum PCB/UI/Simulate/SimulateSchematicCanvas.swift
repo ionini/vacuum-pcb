@@ -5,179 +5,18 @@ import SwiftUI
 /// renders without any drag / select / route affordances and tints both nets
 /// and component symbols by their current simulated pressure.
 ///
-/// Stays self-contained instead of layering on top of `SchematicCanvasView`
-/// because the editor's gesture stack would happily start a marquee or pin
-/// drag from inside Simulate — easier to write a small fresh canvas than to
-/// thread "simulate mode" through every editor branch.
+/// This outer view owns only the pan/zoom shell. It deliberately reads *no*
+/// per-tick simulation state, so it isn't re-evaluated when pressures change —
+/// that keeps `SimulatePanZoom` (and its `NSViewRepresentable` gesture/scroll
+/// catchers) stable. All the live drawing lives in `SchematicCanvasLayer`,
+/// which is the only thing that re-renders on a pressure publish.
 struct SimulateSchematicCanvas: View {
     let document: CircuitDocument
     @Bindable var state: SimulationState
 
     var body: some View {
         SimulatePanZoom(fit: fit) {
-            ZStack(alignment: .topLeading) {
-                netLinesLayer
-                ForEach(document.logic.components.filter { $0.kind != .screw }) { component in
-                    let pos = document.schematic.position(for: component.id) ?? Point(x: 200, y: 200)
-                    componentNode(component: component)
-                        .position(x: pos.x, y: pos.y)
-                }
-            }
-        }
-    }
-
-    /// One Canvas pass for every net, drawing edges in the pressure-derived
-    /// colour of that net. Layout rules mirror `NetEdgeBuilder`, so the look
-    /// of the schematic matches the editor exactly. Mating bus-lines paint
-    /// on top in indigo so the user still sees that two connectors are
-    /// snapped together — the surrounding nets animate the pressure flow,
-    /// the bus-line marks the join.
-    private var netLinesLayer: some View {
-        Canvas { ctx, _ in
-            for net in document.logic.nets {
-                let pressure = state.pressure(rawNet: net.id)
-                let stroke = PressureColor.strokeColor(for: pressure)
-                for edge in NetEdgeBuilder.edges(for: net, in: document) {
-                    var path = Path()
-                    path.move(to: edge.a.point)
-                    path.addLine(to: edge.b.point)
-                    ctx.stroke(path, with: .color(stroke), lineWidth: 2.4)
-                }
-            }
-            for mating in document.logic.matings {
-                guard let a = MatingEndpointGeometry.point(for: mating.a, in: document),
-                      let b = MatingEndpointGeometry.point(for: mating.b, in: document)
-                else { continue }
-                var path = Path()
-                path.move(to: a)
-                path.addLine(to: b)
-                ctx.stroke(
-                    path,
-                    with: .color(.indigo.opacity(0.75)),
-                    style: StrokeStyle(lineWidth: 4.5, lineCap: .round)
-                )
-            }
-        }
-        .allowsHitTesting(false)
-    }
-
-    /// One component symbol re-skinned for the simulator. Borrows the
-    /// editor's metrics so positions and pin offsets line up exactly.
-    @ViewBuilder
-    private func componentNode(component: Component) -> some View {
-        let metrics = ComponentSymbolMetrics.metrics(for: component, snapshots: document.librarySnapshots)
-        let pressure = nodePressure(component: component)
-        let fill = PressureColor.color(for: pressure).opacity(0.55)
-        let stroke = PressureColor.strokeColor(for: pressure)
-        ZStack {
-            symbolShape(component.kind)
-                .fill(fill)
-                .overlay(symbolShape(component.kind).stroke(stroke, lineWidth: 1.5))
-                .frame(width: metrics.size.width, height: metrics.size.height)
-            VStack(spacing: 1) {
-                Text(component.label)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.primary)
-                annotation(for: component, pressure: pressure)
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .frame(width: metrics.size.width, height: metrics.size.height)
-        .allowsHitTesting(false)
-    }
-
-    private func symbolShape(_ kind: ComponentKind) -> AnyShape {
-        switch kind {
-        case .transistor: AnyShape(Circle())
-        case .resistor:   AnyShape(RoundedRectangle(cornerRadius: 6))
-        case .vacuumSource, .atmVent, .port:
-                          AnyShape(RoundedRectangle(cornerRadius: 4))
-        case .subpart:    AnyShape(RoundedRectangle(cornerRadius: 6))
-        case .screw:      AnyShape(Circle())
-        case .led:        AnyShape(Circle())
-        case .connector:  AnyShape(RoundedRectangle(cornerRadius: 4))
-        }
-    }
-
-    /// Pressure to tint a component by — usually its "primary" pin's net
-    /// pressure (gate for transistor, "p" for ports/rails/LEDs, midpoint for
-    /// resistor). Subparts default to atmosphere since their internals are
-    /// opaque in v1.
-    private func nodePressure(component: Component) -> Double {
-        switch component.kind {
-        case .transistor:
-            return netPressure(pin: PinRef(componentId: component.id, pinKey: "gate"))
-        case .resistor:
-            // Resistors visually drift between their two end-pressures; mean
-            // works well for the eye when the user is reading a divider.
-            let a = netPressure(pin: PinRef(componentId: component.id, pinKey: "1"))
-            let b = netPressure(pin: PinRef(componentId: component.id, pinKey: "2"))
-            return (a + b) / 2
-        case .vacuumSource: return 0
-        case .atmVent:      return 1
-        case .port, .led:
-            return netPressure(pin: PinRef(componentId: component.id, pinKey: "p"))
-        case .subpart:
-            // Library-driven boundary pins live in `Component.pinKeys`.
-            // Average their net pressures so the symbol's tint reflects
-            // the overall state of the subpart's external connections.
-            let keys = component.pinKeys(snapshots: document.librarySnapshots)
-            guard !keys.isEmpty else { return 1 }
-            let sum = keys.reduce(0.0) {
-                $0 + netPressure(pin: PinRef(componentId: component.id, pinKey: $1))
-            }
-            return sum / Double(keys.count)
-        case .screw: return 1
-        case .connector:
-            // Average every connector pin's net pressure so the symbol tint
-            // reflects the rail-level state of the mating side.
-            let n = max(1, component.connectorPinCount ?? 1)
-            let sum = (1...n).reduce(0.0) {
-                $0 + netPressure(pin: PinRef(componentId: component.id, pinKey: "\($1)"))
-            }
-            return sum / Double(n)
-        }
-    }
-
-    private func netPressure(pin: PinRef) -> Double {
-        guard let netId = document.logic.nets.first(where: { $0.pins.contains(pin) })?.id
-        else { return 1.0 }
-        return state.pressure(rawNet: netId)
-    }
-
-    /// Per-component readout under the label. Output ports / LEDs / probes
-    /// always show their numeric pressure; transistors show the open
-    /// fraction so the user can correlate a gate change with a state flip.
-    @ViewBuilder
-    private func annotation(for component: Component, pressure: Double) -> some View {
-        switch component.kind {
-        case .port:
-            if component.portDirection == .input {
-                Text("IN \(PressureColor.formatted(pressure))")
-            } else {
-                Text("OUT \(PressureColor.formatted(pressure))")
-            }
-        case .led:
-            Text("LED \(PressureColor.formatted(pressure))")
-        case .vacuumSource: Text("VAC")
-        case .atmVent: Text("ATM")
-        case .transistor:
-            let openness = state.transistorOpenness[component.id] ?? 0
-            Text(String(format: "Q %.0f%%", openness * 100))
-        case .resistor:
-            if let size = component.resistorSize {
-                Text("\(size.rawValue) · \(PressureColor.formatted(pressure))")
-            } else {
-                Text(PressureColor.formatted(pressure))
-            }
-        case .subpart:
-            Text(PressureColor.formatted(pressure))
-        case .screw:
-            EmptyView()
-        case .connector:
-            let n = component.connectorPinCount ?? 1
-            Text("J \(n)P · \(PressureColor.formatted(pressure))")
+            SchematicCanvasLayer(document: document, state: state)
         }
     }
 
@@ -208,5 +47,247 @@ struct SimulateSchematicCanvas: View {
             height: (Double(viewSize.height) - h * scale) / 2 - minY * scale
         )
         return (scale, pan)
+    }
+}
+
+/// The live, pressure-driven drawing layer. The whole schematic — net lines,
+/// mating bus-lines, and every component symbol with its label — is drawn in a
+/// single `Canvas`. Drawing imperatively (rather than as a `ForEach` of
+/// positioned SwiftUI views) keeps the symbols out of the SwiftUI attribute
+/// graph: a pressure change re-runs one draw closure instead of invalidating,
+/// re-diffing, and re-laying-out one view per component.
+///
+/// This is a separate `View` from `SimulateSchematicCanvas` on purpose: reading
+/// the observable simulation state *here* scopes the re-render to this leaf, so
+/// the surrounding pan/zoom shell isn't re-evaluated on every publish.
+private struct SchematicCanvasLayer: View {
+    let document: CircuitDocument
+    let state: SimulationState
+
+    var body: some View {
+        // Snapshot the observable simulation state once per render. Reading
+        // these as locals (not inside the Canvas draw closure) ties this view's
+        // redraw to pressure changes and collapses what would otherwise be
+        // O(pins) `@Observable` registrar accesses per frame down to three
+        // property reads.
+        let pressures = state.pressureByNet
+        let remap = state.netIdRemap
+        let openness = state.transistorOpenness
+
+        return Canvas { ctx, _ in
+            drawNets(in: ctx, pressures: pressures, remap: remap)
+            drawMatings(in: ctx)
+            drawComponents(in: ctx, pressures: pressures, remap: remap, openness: openness)
+        }
+        .allowsHitTesting(false)
+    }
+
+    // MARK: - Drawing
+
+    /// One stroked line per net edge, coloured by the net's current pressure.
+    /// Layout rules live in `NetEdgeBuilder`, so the look matches the editor.
+    private func drawNets(in ctx: GraphicsContext, pressures: [UUID: Double], remap: [UUID: UUID]) {
+        for net in document.logic.nets {
+            let pressure = rawNetPressure(net.id, pressures: pressures, remap: remap)
+            let stroke = PressureColor.strokeColor(for: pressure)
+            for edge in NetEdgeBuilder.edges(for: net, in: document) {
+                var path = Path()
+                path.move(to: edge.a.point)
+                path.addLine(to: edge.b.point)
+                ctx.stroke(path, with: .color(stroke), lineWidth: 2.4)
+            }
+        }
+    }
+
+    /// Mating bus-lines paint on top of the nets in indigo so the user still
+    /// sees that two connectors are snapped together — the surrounding nets
+    /// animate the pressure flow, the bus-line marks the join.
+    private func drawMatings(in ctx: GraphicsContext) {
+        for mating in document.logic.matings {
+            guard let a = MatingEndpointGeometry.point(for: mating.a, in: document),
+                  let b = MatingEndpointGeometry.point(for: mating.b, in: document)
+            else { continue }
+            var path = Path()
+            path.move(to: a)
+            path.addLine(to: b)
+            ctx.stroke(
+                path,
+                with: .color(.indigo.opacity(0.75)),
+                style: StrokeStyle(lineWidth: 4.5, lineCap: .round)
+            )
+        }
+    }
+
+    /// Every component symbol, tinted by its pressure, with the editor's
+    /// metrics so positions and sizes line up exactly. Screws are mechanical
+    /// only and never drawn on the schematic.
+    private func drawComponents(
+        in ctx: GraphicsContext,
+        pressures: [UUID: Double],
+        remap: [UUID: UUID],
+        openness: [UUID: Double]
+    ) {
+        for component in document.logic.components where component.kind != .screw {
+            let pos = document.schematic.position(for: component.id) ?? Point(x: 200, y: 200)
+            let center = CGPoint(x: pos.x, y: pos.y)
+            let metrics = ComponentSymbolMetrics.metrics(for: component, snapshots: document.librarySnapshots)
+            let pressure = nodePressure(component: component, pressures: pressures, remap: remap)
+            let fill = PressureColor.color(for: pressure).opacity(0.55)
+            let stroke = PressureColor.strokeColor(for: pressure)
+
+            let rect = CGRect(
+                x: center.x - metrics.size.width / 2,
+                y: center.y - metrics.size.height / 2,
+                width: metrics.size.width,
+                height: metrics.size.height
+            )
+            let path = symbolPath(component.kind, in: rect)
+            ctx.fill(path, with: .color(fill))
+            ctx.stroke(path, with: .color(stroke), lineWidth: 1.5)
+
+            drawLabel(in: ctx, component: component, center: center,
+                      pressure: pressure, openness: openness)
+        }
+    }
+
+    /// The component label, with its per-kind readout stacked underneath —
+    /// mirrors the old `VStack(spacing: 1)` of two `Text`s centred over the
+    /// symbol.
+    private func drawLabel(
+        in ctx: GraphicsContext,
+        component: Component,
+        center: CGPoint,
+        pressure: Double,
+        openness: [UUID: Double]
+    ) {
+        let unbounded = CGSize(width: 1000, height: 1000)
+        var label = ctx.resolve(Text(component.label).font(.system(size: 12, weight: .semibold)))
+        label.shading = .color(.primary)
+        let labelSize = label.measure(in: unbounded)
+
+        guard let annotationText = annotation(for: component, pressure: pressure, openness: openness) else {
+            ctx.draw(label, at: center, anchor: .center)
+            return
+        }
+        var annotation = ctx.resolve(annotationText.font(.system(size: 9)))
+        annotation.shading = .color(.secondary)
+        let annotationSize = annotation.measure(in: unbounded)
+
+        let spacing: CGFloat = 1
+        let totalHeight = labelSize.height + spacing + annotationSize.height
+        ctx.draw(label,
+                 at: CGPoint(x: center.x, y: center.y - totalHeight / 2 + labelSize.height / 2),
+                 anchor: .center)
+        ctx.draw(annotation,
+                 at: CGPoint(x: center.x, y: center.y + totalHeight / 2 - annotationSize.height / 2),
+                 anchor: .center)
+    }
+
+    /// Symbol outline per kind — mirrors the shapes the editor uses so the
+    /// simulator's symbols match the schematic's.
+    private func symbolPath(_ kind: ComponentKind, in rect: CGRect) -> Path {
+        switch kind {
+        case .transistor, .screw, .led:
+            return Path(ellipseIn: rect)
+        case .resistor, .subpart:
+            return Path(roundedRect: rect, cornerRadius: 6)
+        case .vacuumSource, .atmVent, .port, .connector:
+            return Path(roundedRect: rect, cornerRadius: 4)
+        }
+    }
+
+    // MARK: - Pressure lookup (reads the per-render snapshot, not @Observable)
+
+    /// Pressure of a net identified by its *unflattened* id, resolving the
+    /// flatten's net merges first. Mirrors `SimulationState.pressure(rawNet:)`
+    /// but against the snapshot captured in `body`.
+    private func rawNetPressure(_ netId: UUID, pressures: [UUID: Double], remap: [UUID: UUID]) -> Double {
+        pressures[remap[netId] ?? netId] ?? 1.0
+    }
+
+    private func netPressure(pin: PinRef, pressures: [UUID: Double], remap: [UUID: UUID]) -> Double {
+        guard let netId = document.logic.nets.first(where: { $0.pins.contains(pin) })?.id
+        else { return 1.0 }
+        return rawNetPressure(netId, pressures: pressures, remap: remap)
+    }
+
+    /// Pressure to tint a component by — usually its "primary" pin's net
+    /// pressure (gate for transistor, "p" for ports/rails/LEDs, midpoint for
+    /// resistor). Subparts/connectors average their pins.
+    private func nodePressure(component: Component, pressures: [UUID: Double], remap: [UUID: UUID]) -> Double {
+        switch component.kind {
+        case .transistor:
+            return netPressure(pin: PinRef(componentId: component.id, pinKey: "gate"),
+                               pressures: pressures, remap: remap)
+        case .resistor:
+            // Resistors visually drift between their two end-pressures; mean
+            // works well for the eye when the user is reading a divider.
+            let a = netPressure(pin: PinRef(componentId: component.id, pinKey: "1"),
+                                pressures: pressures, remap: remap)
+            let b = netPressure(pin: PinRef(componentId: component.id, pinKey: "2"),
+                                pressures: pressures, remap: remap)
+            return (a + b) / 2
+        case .vacuumSource: return 0
+        case .atmVent:      return 1
+        case .port, .led:
+            return netPressure(pin: PinRef(componentId: component.id, pinKey: "p"),
+                               pressures: pressures, remap: remap)
+        case .subpart:
+            // Library-driven boundary pins live in `Component.pinKeys`.
+            // Average their net pressures so the symbol's tint reflects the
+            // overall state of the subpart's external connections.
+            let keys = component.pinKeys(snapshots: document.librarySnapshots)
+            guard !keys.isEmpty else { return 1 }
+            let sum = keys.reduce(0.0) {
+                $0 + netPressure(pin: PinRef(componentId: component.id, pinKey: $1),
+                                 pressures: pressures, remap: remap)
+            }
+            return sum / Double(keys.count)
+        case .screw: return 1
+        case .connector:
+            // Average every connector pin's net pressure so the symbol tint
+            // reflects the rail-level state of the mating side.
+            let n = max(1, component.connectorPinCount ?? 1)
+            let sum = (1...n).reduce(0.0) {
+                $0 + netPressure(pin: PinRef(componentId: component.id, pinKey: "\($1)"),
+                                 pressures: pressures, remap: remap)
+            }
+            return sum / Double(n)
+        }
+    }
+
+    // MARK: - Annotation
+
+    /// Per-component readout drawn under the label. Output ports / LEDs / probes
+    /// show their numeric pressure; transistors show the open fraction so the
+    /// user can correlate a gate change with a state flip. Returns `nil` for
+    /// kinds with no readout (screws, which aren't drawn anyway).
+    private func annotation(for component: Component, pressure: Double, openness: [UUID: Double]) -> Text? {
+        let formatted = PressureColor.formatted(pressure)
+        switch component.kind {
+        case .port:
+            return Text(component.portDirection == .input ? "IN \(formatted)" : "OUT \(formatted)")
+        case .led:
+            return Text("LED \(formatted)")
+        case .vacuumSource:
+            return Text("VAC")
+        case .atmVent:
+            return Text("ATM")
+        case .transistor:
+            let fraction = openness[component.id] ?? 0
+            return Text(String(format: "Q %.0f%%", fraction * 100))
+        case .resistor:
+            if let size = component.resistorSize {
+                return Text("\(size.rawValue) · \(formatted)")
+            }
+            return Text(formatted)
+        case .subpart:
+            return Text(formatted)
+        case .screw:
+            return nil
+        case .connector:
+            let n = component.connectorPinCount ?? 1
+            return Text("J \(n)P · \(formatted)")
+        }
     }
 }

@@ -50,30 +50,41 @@ struct SimulateView: View {
     }
 
     @ViewBuilder private var content: some View {
-        // Timer drives the integrator at ~60 Hz. We pause the schedule when
-        // the user pauses playback — otherwise every paused tab still
-        // burned its tick on a no-op `advance` call and triggered a layout
-        // pass for the surrounding views.
+        Group {
+            switch viewMode {
+            case .schematic:
+                SimulateSchematicCanvas(document: document.circuit, state: state)
+            case .physical:
+                SimulatePhysicalCanvas(document: document.circuit, state: state,
+                                       visible: visible)
+            }
+        }
+        .background { simulationClock }
+    }
+
+    /// Invisible ~60 Hz clock that advances the integrator. Deliberately kept
+    /// as a *sibling* of the canvases (via `.background`) rather than wrapping
+    /// them: a `TimelineView(.animation)` re-evaluates its entire subtree on
+    /// every frame, so when it wrapped the schematic it forced SwiftUI to
+    /// rebuild and re-diff every component symbol ~60×/s even when nothing
+    /// visibly changed. Now a tick only runs `advance`; the canvases redraw on
+    /// their own when that publishes new pressures through `@Observable`.
+    ///
+    /// We still pause the schedule on `!isPlaying` so a paused tab doesn't burn
+    /// a tick on a no-op `advance`.
+    private var simulationClock: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !state.isPlaying)) { ctx in
-            Group {
-                switch viewMode {
-                case .schematic:
-                    SimulateSchematicCanvas(document: document.circuit, state: state)
-                case .physical:
-                    SimulatePhysicalCanvas(document: document.circuit, state: state,
-                                           visible: visible)
+            Color.clear
+                .onChange(of: ctx.date) { _, newDate in
+                    let elapsed = max(0, newDate.timeIntervalSince(lastTick))
+                    lastTick = newDate
+                    if elapsed > 0 {
+                        state.advance(wallSeconds: elapsed)
+                    }
                 }
-            }
-            .onChange(of: ctx.date) { _, newDate in
-                let elapsed = max(0, newDate.timeIntervalSince(lastTick))
-                lastTick = newDate
-                if elapsed > 0 {
-                    state.advance(wallSeconds: elapsed)
+                .onAppear {
+                    lastTick = ctx.date
                 }
-            }
-            .onAppear {
-                lastTick = ctx.date
-            }
         }
     }
 

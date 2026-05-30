@@ -44,8 +44,27 @@ final class SimulationState {
     var isPlaying: Bool = false
 
     /// Sim-time accumulator so the engine takes fixed steps even when the
-    /// view's clock tick is jittery. Drained on each tick.
-    private var simAccumulator: Double = 0
+    /// view's clock tick is jittery. Drained on each tick. `@ObservationIgnored`
+    /// because it's pure integrator bookkeeping — no view should re-render when
+    /// it changes.
+    @ObservationIgnored private var simAccumulator: Double = 0
+
+    /// Non-observable working copies the integrator steps into between UI
+    /// publications. Seeded from the published dictionaries on first use and
+    /// after `reset()` / `rebuild(...)` clear them. Keeping the fine-grained
+    /// fixed steps off the observable properties is what lets us publish to
+    /// SwiftUI at a throttled rate (see `advance`).
+    @ObservationIgnored private var workingPressures: [UUID: Double]?
+    @ObservationIgnored private var workingTransistors: [UUID: Double]?
+
+    /// Real wall-time accumulated since we last published pressures to the
+    /// observable properties. We integrate at the fine fixed `dt` for fidelity
+    /// but only reassign `pressureByNet` / `transistorOpenness` — the thing that
+    /// forces SwiftUI to re-render the schematic and every live readout in the
+    /// inspector — once per `publishInterval`, so a 60 Hz clock doesn't drive
+    /// 60 full re-renders per second.
+    @ObservationIgnored private var sincePublish: Double = 0
+    @ObservationIgnored private let publishInterval: Double = 1.0 / 20.0
 
     init(document: CircuitDocument) {
         let flattened = document.flattenedForSimulation()
@@ -79,6 +98,10 @@ final class SimulationState {
         transistorOpenness = transistorOpenness.filter { liveTransistorIds.contains($0.key) }
         network = next
         _ = existingNetIds  // silence
+        // The integrator restarts from the freshly published pressures.
+        workingPressures = nil
+        workingTransistors = nil
+        sincePublish = 0
     }
 
     /// Snap every pressure back to atmosphere and clear transistor states.
@@ -87,6 +110,9 @@ final class SimulationState {
         pressureByNet = initialPressures(for: network)
         transistorOpenness = [:]
         simAccumulator = 0
+        workingPressures = nil
+        workingTransistors = nil
+        sincePublish = 0
     }
 
     /// Advance the simulator by `wallSeconds` of real time. Takes as many
@@ -103,8 +129,11 @@ final class SimulationState {
         simAccumulator += scaledSeconds
         let dt = max(params.dtSeconds, 1e-6)
         guard simAccumulator >= dt else { return }
-        var localPressures = pressureByNet
-        var localTransistors = transistorOpenness
+        // Step into non-observable working copies so each fixed step doesn't
+        // publish an `@Observable` change. Seed from the published state the
+        // first time, and whenever `reset()` / `rebuild(...)` cleared them.
+        var localPressures = workingPressures ?? pressureByNet
+        var localTransistors = workingTransistors ?? transistorOpenness
         // Clamp to a small batch of steps per frame so a hitch in the UI
         // clock doesn't snowball into a multi-second catch-up burst.
         var steps = 0
@@ -122,6 +151,18 @@ final class SimulationState {
             // Drop the rest of the backlog instead of catching up forever.
             simAccumulator = 0
         }
+        workingPressures = localPressures
+        workingTransistors = localTransistors
+
+        // Throttle the publish to SwiftUI. Reassigning these two observable
+        // dictionaries is the single most expensive thing the simulator does —
+        // it re-renders the schematic canvas and re-evaluates every live row in
+        // the inspector sidebar. At the clock's 60 Hz that pegged the main
+        // thread; ~20 Hz is visually smooth for a heatmap and cuts that work
+        // roughly 3×.
+        sincePublish += wallSeconds
+        guard sincePublish >= publishInterval else { return }
+        sincePublish = 0
         pressureByNet = localPressures
         transistorOpenness = localTransistors
     }
