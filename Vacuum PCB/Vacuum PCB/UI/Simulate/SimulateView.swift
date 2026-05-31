@@ -37,15 +37,6 @@ struct SimulateView: View {
                 // Rebuild the network whenever the document changes so newly
                 // added components / nets show up in the heatmap immediately.
                 state.rebuild(from: new)
-                // Crossing into assembly mode hides the physical canvas —
-                // force the view mode back to schematic so the user isn't
-                // stuck on a now-disabled toggle.
-                if new.isAssembly, viewMode == .physical { viewMode = .schematic }
-            }
-            .onAppear {
-                if document.circuit.isAssembly, viewMode == .physical {
-                    viewMode = .schematic
-                }
             }
             .toolbar { simulateToolbar }
     }
@@ -127,24 +118,21 @@ struct SimulateView: View {
             }
         }
 
-        // Assembly mode has no single plate stack to draw — hide the
-        // schematic/physical picker entirely so the user isn't offered a
-        // disabled "Physical" choice; the schematic canvas is the only
-        // simulator surface available.
-        if !document.circuit.isAssembly {
-            ToolbarItem(placement: .principal) {
-                Picker("View", selection: $viewMode) {
-                    Text("Schematic").tag(ViewMode.schematic)
-                    Text("Physical").tag(ViewMode.physical)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
+        // Both editing modes have a physical heatmap to show — the canvas
+        // renders the subpart-flattened doc, so an assembly's mated boards
+        // lay out in one world-space frame just like a single board's
+        // routes and components do.
+        ToolbarItem(placement: .principal) {
+            Picker("View", selection: $viewMode) {
+                Text("Schematic").tag(ViewMode.schematic)
+                Text("Physical").tag(ViewMode.physical)
             }
+            .pickerStyle(.segmented)
+            .labelsHidden()
         }
 
-        // Layer visibility is only relevant on the physical heatmap, and
-        // the physical heatmap is hidden in assembly mode anyway.
-        if !document.circuit.isAssembly, viewMode == .physical {
+        // Layer visibility is only relevant on the physical heatmap.
+        if viewMode == .physical {
             ToolbarItem(placement: .automatic) {
                 Picker("Plates", selection: $visible) {
                     Text("All").tag(LayerVisibility.both)
