@@ -169,9 +169,10 @@ func applyParamOverride(_ params: inout SimulationParameters, name: String, valu
     case "channelcapacitancepermm": params.channelCapacitancePerMm = value
     case "busdrive", "busdriveconductance": params.busDriveConductance = value
     case "droop", "pumpdroopexponent": params.pumpDroopExponent = value
+    case "leak", "leakconductance": params.leakConductance = value
     case "dt", "dtseconds": params.dtSeconds = value
     default:
-        fail("error: unknown --param '\(name)'. Known: resistance, flow, pumpMax, onConductance, offConductance, gateThreshold, gateHysteresis, capacitance, busDrive, droop, dt.")
+        fail("error: unknown --param '\(name)'. Known: resistance, flow, pumpMax, onConductance, offConductance, gateThreshold, gateHysteresis, capacitance, busDrive, droop, leak, dt.")
     }
 }
 
@@ -511,7 +512,7 @@ SIMULATE OPTIONS:
   --param NAME=VALUE    Override a simulation parameter. Repeatable. Names:
                         resistance, flow, pumpMax, onConductance,
                         offConductance, gateThreshold, gateHysteresis,
-                        capacitance, busDrive, droop, dt.
+                        capacitance, busDrive, droop, leak, dt.
                         e.g. --param resistance=0.15 --param flow=30
   --json                Machine-readable output.
 

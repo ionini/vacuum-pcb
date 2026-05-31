@@ -60,9 +60,12 @@ BIN=.build/debug/vacuum-cli
   blank all-atm state, so it *cannot* show held memory — use `--phase` for that.
 - `--param NAME=VALUE`  Override a `SimulationParameters` field. Repeatable.
   Names: `resistance`, `flow`, `pumpMax`, `onConductance`, `offConductance`,
-  `gateThreshold`, `gateHysteresis`, `capacitance`, `busDrive`, `droop`, `dt`.
+  `gateThreshold`, `gateHysteresis`, `capacitance`, `busDrive`, `droop`,
+  `leak`, `dt`.
   Higher `resistance` (e.g. 0.15) + `flow` (e.g. 30) sharpen logic levels on
-  bus/latch designs.
+  bus/latch designs. `leak` (default 0 = perfectly sealed) bleeds every net
+  toward atmosphere; raise it to make held vacuum decay on a visible timescale
+  (e.g. a register cell losing its bit unless refreshed).
 - `--epsilon N`  Settle threshold for `--phase` (default 1e-5).
 - `--json`      Machine-readable output — parse this when asserting exact values.
 

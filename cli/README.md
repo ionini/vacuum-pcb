@@ -52,7 +52,7 @@ BIN=.build/debug/vacuum-cli
 | `--all-nets` | Also print every net's pressure. |
 | `--phase "SETS[@CAP]"` | Run a **stateful sequence**, carrying latch/register state across phases. `SETS` is comma-separated `LABEL=VALUE` (sticky — unnamed inputs hold). Each phase runs until it settles or hits `CAP` steps (default 20000), then prints its probes. Repeatable; runs in order. Overrides `--set`. |
 | `--epsilon N` | Settle threshold for `--phase` (default 1e-5). |
-| `--param NAME=VALUE` | Override a `SimulationParameters` field. Repeatable. Names: `resistance`, `flow`, `pumpMax`, `onConductance`, `offConductance`, `gateThreshold`, `gateHysteresis`, `capacitance`, `busDrive`, `droop`, `dt`. |
+| `--param NAME=VALUE` | Override a `SimulationParameters` field. Repeatable. Names: `resistance`, `flow`, `pumpMax`, `onConductance`, `offConductance`, `gateThreshold`, `gateHysteresis`, `capacitance`, `busDrive`, `droop`, `leak`, `dt`. |
 | `--json` | Machine-readable output — parse this for exact assertions. |
 
 ### Sequential designs (`--phase`)
@@ -70,6 +70,21 @@ value written early is still held when a later phase reads it back. Drives are
   --phase "WRITE=atm,READ=vac,B0=vac,B1=vac,B2=vac,B3=vac" \
   --phase "READ=atm,B0=atm,B1=atm,B2=atm,B3=atm" \
   --phase "WRITE=vac"
+```
+
+`--param leak=N` models the silicone/PCB sandwich never sealing perfectly:
+every net bleeds toward atmosphere through a faint conductance `N`, so any
+segment holding vacuum decays back to atm at a rate set by `N` (0 = perfectly
+sealed). It's most visible on stored state — a register cell whose data drive
+has been released loses its bit faster the higher the leak, and a refresh
+(re-asserting WRITE) restores it.
+
+```sh
+# Watch a leak drain a written register over a few seconds, then refresh it.
+"$BIN" simulate reg.vpcb --param leak=0.025 \
+  --phase "WRITE=vac,READ=vac,B0=vac,B1=vac,B2=vac,B3=vac" \
+  --phase "WRITE=atm,B0=atm,B1=atm,B2=atm,B3=atm" \
+  --phase "WRITE=vac,B0=vac,B1=vac,B2=vac,B3=vac"
 ```
 
 A stored 1 reads back as deep vacuum and a stored 0 as atmosphere; bumping

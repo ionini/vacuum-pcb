@@ -69,6 +69,17 @@ struct SimulateControlsView: View {
                 range: 0.05...0.9,
                 format: "%.2f"
             )
+            tuningSlider(
+                label: "Leak",
+                help: "Global leak conductance. Every segment bleeds toward " +
+                      "atmosphere in proportion to how deep its vacuum is, so " +
+                      "a higher leak makes the pump work to hold a rail down " +
+                      "and lets idle nets drift back to atm. 0 = perfectly " +
+                      "sealed.",
+                value: $state.params.leakConductance,
+                range: 0.0...1.0,
+                format: "%.3f"
+            )
             pumpTuning
         }
     }

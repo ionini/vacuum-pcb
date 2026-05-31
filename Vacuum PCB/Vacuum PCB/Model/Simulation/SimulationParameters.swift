@@ -77,6 +77,16 @@ struct SimulationParameters: Equatable {
     /// Must stay > −1 so flow still reaches 0 at deadhead.
     var pumpDroopExponent: Double
 
+    /// Global leak conductance. Models the silicone/PCB sandwich never being
+    /// perfectly sealed: every net gets a faint conductive edge to atmosphere,
+    /// so any segment holding vacuum bleeds back toward atm at a rate
+    /// proportional to how deep its vacuum is (flow = g · (1 − P)). 0 = a
+    /// perfectly sealed system (the historical behaviour); higher = a leakier
+    /// board where the pump has to keep working to hold a rail down. Sized to
+    /// be comparable to a resistor edge so a few tenths visibly fights the
+    /// pump without overwhelming it.
+    var leakConductance: Double
+
     // Defaults are sized for crisp digital-style swings on the canonical
     // NMOS inverter while still letting an unloaded net equalize back to
     // atmosphere in a couple of seconds. We want G_off ≪ G_resistor ≪
@@ -107,7 +117,8 @@ struct SimulationParameters: Equatable {
         pumpMaxVacuum: 0.1,
         pumpFlowCapacity: 30.0,
         busDriveConductance: 5.0,
-        pumpDroopExponent: -0.14
+        pumpDroopExponent: -0.14,
+        leakConductance: 0.025
     )
 
     /// Smooth-step blend between `transistorOffConductance` (gate at atm) and
