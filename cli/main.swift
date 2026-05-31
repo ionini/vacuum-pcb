@@ -64,6 +64,167 @@ func simulate(
     return (pressures, transistors)
 }
 
+// MARK: - Sequenced (stateful) simulation
+
+/// One step of a `--phase` sequence: the input drives to apply, and a cap on
+/// how many solver steps to run before giving up on convergence.
+struct Phase {
+    var sets: [(label: String, value: Double)]
+    var maxSteps: Int
+}
+
+/// Result of running a single phase: the effective (cumulative) input map, how
+/// many steps it actually took, whether it settled, and the resulting state.
+struct PhaseResult {
+    var index: Int
+    var sets: [(label: String, value: Double)]
+    var steps: Int
+    var converged: Bool
+    var pressures: [UUID: Double]
+    var transistors: [UUID: Double]
+}
+
+/// Run an ordered list of phases against one network, *carrying state forward*.
+///
+/// This is what lets us validate sequential designs (latches, registers): the
+/// net pressures and transistor states from phase N feed into phase N+1, so a
+/// value written in one phase is still held when a later phase reads it back —
+/// exactly what a single fixed-input `simulate` run can't show, because it
+/// always re-seeds from a blank (all-atmosphere) state.
+///
+/// Input drives are *sticky*: each phase only overrides the labels it names;
+/// everything else holds its previous value. Each phase runs until the largest
+/// per-net pressure change between steps falls below `epsilon` (it "settles"),
+/// or until its `maxSteps` cap — whichever comes first.
+func simulateSequence(
+    network: PneumaticNetwork,
+    params: SimulationParameters,
+    phases: [Phase],
+    epsilon: Double
+) -> [PhaseResult] {
+    var cumulative: [(label: String, value: Double)] = []
+    var pressures: [UUID: Double] = [:]
+    var transistors: [UUID: Double] = [:]
+    var seeded = false
+    var results: [PhaseResult] = []
+
+    for (idx, phase) in phases.enumerated() {
+        // Sticky merge: a phase overrides only the labels it names.
+        for s in phase.sets {
+            if let j = cumulative.firstIndex(where: { $0.label.lowercased() == s.label.lowercased() }) {
+                cumulative[j] = s
+            } else {
+                cumulative.append(s)
+            }
+        }
+        let (inputMap, unmatched) = resolveInputs(network: network, sets: cumulative)
+        if !unmatched.isEmpty {
+            fail("error: no input labelled \(unmatched.map { "'\($0)'" }.joined(separator: ", ")). Run `inspect` to see available labels.")
+        }
+
+        // Seed once, from the first phase's drives; thereafter carry state.
+        if !seeded {
+            pressures = seedPressures(network: network, params: params, inputs: inputMap)
+            seeded = true
+        }
+
+        var steps = 0
+        var converged = false
+        for _ in 0..<max(1, phase.maxSteps) {
+            let prev = pressures
+            SimulationEngine.step(
+                network: network,
+                params: params,
+                pressures: &pressures,
+                inputs: inputMap,
+                transistorOpenness: &transistors
+            )
+            steps += 1
+            var maxDelta = 0.0
+            for (netId, value) in pressures {
+                maxDelta = max(maxDelta, abs(value - (prev[netId] ?? value)))
+            }
+            if maxDelta < epsilon { converged = true; break }
+        }
+        results.append(PhaseResult(
+            index: idx, sets: phase.sets, steps: steps,
+            converged: converged, pressures: pressures, transistors: transistors
+        ))
+    }
+    return results
+}
+
+/// Friendly-named overrides for `SimulationParameters`, applied with
+/// `--param NAME=VALUE`. Names match the Simulate sidebar's vocabulary.
+func applyParamOverride(_ params: inout SimulationParameters, name: String, value: Double) {
+    switch name.lowercased() {
+    case "resistance", "resistorresistancepermm": params.resistorResistancePerMm = value
+    case "flow", "pumpflowcapacity": params.pumpFlowCapacity = value
+    case "pumpmax", "pumpmaxvacuum": params.pumpMaxVacuum = value
+    case "onconductance", "transistoronconductance": params.transistorOnConductance = value
+    case "offconductance", "transistoroffconductance": params.transistorOffConductance = value
+    case "gatethreshold": params.gateThreshold = value
+    case "gatehysteresis": params.gateHysteresis = value
+    case "capacitance", "nodebasecapacitance": params.nodeBaseCapacitance = value
+    case "channelcapacitancepermm": params.channelCapacitancePerMm = value
+    case "busdrive", "busdriveconductance": params.busDriveConductance = value
+    case "droop", "pumpdroopexponent": params.pumpDroopExponent = value
+    case "dt", "dtseconds": params.dtSeconds = value
+    default:
+        fail("error: unknown --param '\(name)'. Known: resistance, flow, pumpMax, onConductance, offConductance, gateThreshold, gateHysteresis, capacitance, busDrive, droop, dt.")
+    }
+}
+
+/// Parse one `--phase` argument: `LABEL=VAL,LABEL=VAL[@MAXSTEPS]`.
+func parsePhase(_ raw: String, defaultMaxSteps: Int) -> Phase {
+    var body = raw
+    var maxSteps = defaultMaxSteps
+    if let at = raw.lastIndex(of: "@") {
+        body = String(raw[raw.startIndex..<at])
+        let stepsStr = String(raw[raw.index(after: at)...])
+        guard let n = Int(stepsStr), n > 0 else { fail("error: --phase step cap after '@' must be a positive integer") }
+        maxSteps = n
+    }
+    var sets: [(label: String, value: Double)] = []
+    for pair in body.split(separator: ",") {
+        let parts = pair.split(separator: "=", maxSplits: 1)
+        guard parts.count == 2, let value = parseDrive(String(parts[1]).trimmingCharacters(in: .whitespaces)) else {
+            fail("error: --phase expects LABEL=VALUE pairs (e.g. --phase \"READ=vac,B0=vac@4000\")")
+        }
+        sets.append((String(parts[0]).trimmingCharacters(in: .whitespaces), value))
+    }
+    return Phase(sets: sets, maxSteps: maxSteps)
+}
+
+func reportSequence(network: PneumaticNetwork, results: [PhaseResult], probeFilter: [String], json: Bool) {
+    let filter = Set(probeFilter.map { $0.lowercased() })
+    let probes = network.probes.filter { filter.isEmpty || filter.contains($0.label.lowercased()) }
+
+    if json {
+        let root: [String: Any] = ["phases": results.map { r -> [String: Any] in
+            [
+                "phase": r.index,
+                "set": r.sets.map { ["label": $0.label, "value": $0.value] },
+                "steps": r.steps,
+                "converged": r.converged,
+                "probes": probes.map { p in ["label": p.label, "pressure": r.pressures[p.netId] ?? 1.0] },
+            ]
+        }]
+        printJSON(root)
+        return
+    }
+
+    for r in results {
+        let drive = r.sets.map { "\($0.label)=\(fmt($0.value))" }.joined(separator: " ")
+        let settle = r.converged ? "settled in \(r.steps) steps" : "did NOT settle (\(r.steps) steps cap)"
+        print("── phase \(r.index): set \(drive.isEmpty ? "(hold)" : drive)  [\(settle)]")
+        for probe in probes {
+            let p = r.pressures[probe.netId] ?? 1.0
+            print("    \(probe.label.isEmpty ? "<unnamed>" : probe.label)  [\(probe.kind)]  P=\(fmt(p))  \(bar(p))")
+        }
+    }
+}
+
 // MARK: - Input resolution
 
 /// Translate an `--set NAME=VALUE` pair into a numeric drive. Accepts the
@@ -336,6 +497,22 @@ SIMULATE OPTIONS:
                         Repeatable.
   --probe LABEL         Only report this probe. Repeatable.
   --all-nets            Also print every net's pressure.
+  --phase "SETS[@CAP]"  Run a *stateful* sequence, carrying latch/register
+                        state forward between phases (use this to validate
+                        memory: write in one phase, read it back in a later
+                        one). SETS is comma-separated LABEL=VALUE; drives are
+                        sticky (unnamed inputs hold). Each phase runs until it
+                        settles or hits CAP steps (default 20000). Repeatable;
+                        phases run in order. Overrides --set.
+                        e.g. --phase "READ=vac,B0=vac,B1=vac,B2=vac,B3=vac"
+                             --phase "READ=atm,B0=atm,B1=atm,B2=atm,B3=atm"
+                             --phase "WRITE=vac"
+  --epsilon N           Settle threshold for --phase (default 1e-5).
+  --param NAME=VALUE    Override a simulation parameter. Repeatable. Names:
+                        resistance, flow, pumpMax, onConductance,
+                        offConductance, gateThreshold, gateHysteresis,
+                        capacitance, busDrive, droop, dt.
+                        e.g. --param resistance=0.15 --param flow=30
   --json                Machine-readable output.
 
 MINIMIZE OPTIONS:
@@ -383,6 +560,9 @@ var seconds: Double = 10
 var seed: UInt64 = 0
 var iters: Int?
 var restarts = 1
+var phaseArgs: [String] = []
+var epsilon = 1e-5
+var params = SimulationParameters.defaults
 
 var i = 0
 while i < args.count {
@@ -406,6 +586,22 @@ while i < args.count {
         i += 1
         guard i < args.count else { fail("error: --probe needs a LABEL") }
         probeFilter.append(args[i])
+    case "--phase":
+        i += 1
+        guard i < args.count else { fail("error: --phase needs LABEL=VALUE[,...][@MAXSTEPS]") }
+        phaseArgs.append(args[i])
+    case "--epsilon":
+        i += 1
+        guard i < args.count, let v = Double(args[i]), v > 0 else { fail("error: --epsilon needs a positive number") }
+        epsilon = v
+    case "--param":
+        i += 1
+        guard i < args.count else { fail("error: --param needs NAME=VALUE") }
+        let parts = args[i].split(separator: "=", maxSplits: 1)
+        guard parts.count == 2, let value = Double(parts[1]) else {
+            fail("error: --param expects NAME=VALUE (e.g. --param resistance=0.15)")
+        }
+        applyParamOverride(&params, name: String(parts[0]), value: value)
     case "--out":
         i += 1
         guard i < args.count else { fail("error: --out needs a PATH") }
@@ -443,11 +639,20 @@ do {
         reportInspect(network, json: json)
 
     case "simulate":
+        if !phaseArgs.isEmpty {
+            // Stateful sequence: carry latch/register state across phases.
+            // Default per-phase cap is generous since convergence exits early.
+            let defaultCap = max(steps, 20000)
+            let phases = phaseArgs.map { parsePhase($0, defaultMaxSteps: defaultCap) }
+            let results = simulateSequence(network: network, params: params, phases: phases, epsilon: epsilon)
+            reportSequence(network: network, results: results, probeFilter: probeFilter, json: json)
+            break
+        }
         let (inputMap, unmatched) = resolveInputs(network: network, sets: sets)
         if !unmatched.isEmpty {
             fail("error: no input labelled \(unmatched.map { "'\($0)'" }.joined(separator: ", ")). Run `inspect` to see available labels.")
         }
-        let result = simulate(network: network, params: .defaults, inputs: inputMap, steps: steps)
+        let result = simulate(network: network, params: params, inputs: inputMap, steps: steps)
         reportSimulate(
             network: network,
             pressures: result.pressures,

@@ -89,7 +89,7 @@ struct SimulationParameters: Equatable {
     // doesn't accidentally trigger the switch. Bumping it back up toward
     // 0.5 from the sidebar slider widens the activation band.
     static let defaults = SimulationParameters(
-        resistorResistancePerMm: 0.05,
+        resistorResistancePerMm: 0.15,
         transistorOnConductance: 5.0,
         transistorOffConductance: 0.0005,
         gateThreshold: 0.3,
@@ -105,7 +105,7 @@ struct SimulationParameters: Equatable {
         // flow so rails hold their vacuum under load. The user can dial these
         // back toward a measured curve from the sidebar sliders.
         pumpMaxVacuum: 0.1,
-        pumpFlowCapacity: 10.0,
+        pumpFlowCapacity: 30.0,
         busDriveConductance: 5.0,
         pumpDroopExponent: -0.14
     )

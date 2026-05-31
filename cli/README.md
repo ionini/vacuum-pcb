@@ -50,7 +50,31 @@ BIN=.build/debug/vacuum-cli
 | `--set LABEL=VALUE` | Drive an input. `VALUE` is `vac`/`atm` or a number in `0…1`. Repeatable. |
 | `--probe LABEL` | Only report this probe. Repeatable. |
 | `--all-nets` | Also print every net's pressure. |
+| `--phase "SETS[@CAP]"` | Run a **stateful sequence**, carrying latch/register state across phases. `SETS` is comma-separated `LABEL=VALUE` (sticky — unnamed inputs hold). Each phase runs until it settles or hits `CAP` steps (default 20000), then prints its probes. Repeatable; runs in order. Overrides `--set`. |
+| `--epsilon N` | Settle threshold for `--phase` (default 1e-5). |
+| `--param NAME=VALUE` | Override a `SimulationParameters` field. Repeatable. Names: `resistance`, `flow`, `pumpMax`, `onConductance`, `offConductance`, `gateThreshold`, `gateHysteresis`, `capacitance`, `busDrive`, `droop`, `dt`. |
 | `--json` | Machine-readable output — parse this for exact assertions. |
+
+### Sequential designs (`--phase`)
+
+A plain `simulate` run always seeds from a blank, all-atmosphere state, so it
+**cannot** show held memory — a latch/register reads back whatever its reset
+state is, not what you "wrote". `--phase` fixes that: it keeps the net pressures
+and transistor states from one phase as the starting point of the next, so a
+value written early is still held when a later phase reads it back. Drives are
+**sticky** (a phase only overrides the labels it names).
+
+```sh
+# Validate a 4-bit register: write 1111, release, read it back on the LEDs.
+"$BIN" simulate reg.vpcb --param resistance=0.15 --param flow=30 \
+  --phase "WRITE=atm,READ=vac,B0=vac,B1=vac,B2=vac,B3=vac" \
+  --phase "READ=atm,B0=atm,B1=atm,B2=atm,B3=atm" \
+  --phase "WRITE=vac"
+```
+
+A stored 1 reads back as deep vacuum and a stored 0 as atmosphere; bumping
+`resistance` and `flow` above their defaults sharpens that separation on
+bus/latch designs.
 
 ## What you can validate
 
@@ -71,7 +95,7 @@ BIN=.build/debug/vacuum-cli
 EX="Vacuum PCB/Vacuum PCB/Examples/inverter.vpcb"
 
 "$BIN" simulate "$EX" --steps 5000 --set IN=atm --probe OUT   # OUT ≈ 0.10 (low)
-"$BIN" simulate "$EX" --steps 5000 --set IN=vac --probe OUT   # OUT ≈ 0.86 (high)
+"$BIN" simulate "$EX" --steps 5000 --set IN=vac --probe OUT   # OUT ≈ 0.94 (high)
 ```
 
 `IN` high (atmosphere) → `OUT` low (vacuum), and vice versa: it inverts. With a
