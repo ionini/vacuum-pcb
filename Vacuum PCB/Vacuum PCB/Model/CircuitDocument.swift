@@ -127,6 +127,16 @@ extension CircuitDocument {
             labels[route.netId] = ownNetLabels[route.netId] ?? "?"
         }
 
+        // Fast path: a document with no sub-parts to expand and no matings to
+        // merge already *is* its own flattening, so skip the (allocation-heavy)
+        // rebuild entirely. This is the common case, and it's hit hard — DRC's
+        // cross-net-merge check flattens on every `DRC.check`, which the
+        // minimiser runs once per trial. Measured as a top cost in profiling.
+        if logic.matings.isEmpty,
+           !logic.components.contains(where: { $0.kind == .subpart }) {
+            return (self, labels)
+        }
+
         var primitives = self
         var components = primitives.logic.components.filter { $0.kind != .subpart }
         var placements: [Placement] = primitives.physical.placements.filter { p in

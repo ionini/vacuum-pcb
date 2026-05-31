@@ -1,16 +1,22 @@
-# vacuum-cli — headless simulation validation
+# vacuum-cli — headless validation & layout tools
 
-A command-line entry point into the app's own simulation engine, for validating
-circuit behavior without launching the GUI. It compiles the app's source tree
-directly (see `../Package.swift`) and drives the exact same
-`PneumaticNetwork` / `SimulationEngine` the Simulate tab uses, so results match
-the app. Builds with plain `swift build` — no Xcode, independent of the app's
-Xcode project. (It does link Euclid, consumed as a local SwiftPM package from
-`../Euclid`.)
+A command-line entry point into the app's own engine, for working with a
+`.vpcb` design without launching the GUI. It compiles the app's source tree
+directly (see `../Package.swift`) and drives the exact same model the app does,
+so results match. Builds with plain `swift build` — no Xcode, independent of the
+app's Xcode project. (It does link Euclid, consumed as a local SwiftPM package
+from `../Euclid`.)
 
-This exists so circuit *logic* can be validated automatically (in scripts, CI,
-or by an agent) rather than by eyeballing the Simulate tab. It does **not**
-validate anything visual — layout and rendering still need a human.
+Commands:
+
+- `inspect` / `simulate` — validate circuit *logic* automatically (scripts, CI,
+  or an agent) instead of eyeballing the Simulate tab.
+- `minimize` — compact a board's die headlessly, with as much compute (and as
+  many parallel restarts) as you care to give it — no in-app main-thread cap.
+- `reroute` — measure auto-router quality on a board (DRC from scratch).
+
+It does **not** validate anything visual — layout and rendering still need a
+human.
 
 ## Build
 
@@ -71,6 +77,50 @@ EX="Vacuum PCB/Vacuum PCB/Examples/inverter.vpcb"
 `IN` high (atmosphere) → `OUT` low (vacuum), and vice versa: it inverts. With a
 weaker pump default the gate can't switch and both cases read the same — which
 is itself a useful thing for the tool to reveal.
+
+## Compacting a board (`minimize`)
+
+`minimize` runs the app's `Minimizer` headlessly — the same simulated-annealing
+placement search the Physical tab's **Minimize** button uses, but without the
+in-app main-thread time cap, so you can throw real compute at it. It shrinks the
+die (and tidies wiring) while keeping the board within its DRC baseline, then
+writes the result with `--out`.
+
+```sh
+BIN=.build/release/vacuum-cli          # build -c release; the search is CPU-bound
+
+# One search, 30 s, write the compacted board:
+"$BIN" minimize design.vpcb --seconds 30 --out design.min.vpcb
+
+# Overnight-grade: 16 independent restarts across all cores, 10 min each;
+# the smallest DRC-clean die wins. Wall time ≈ --seconds, not 16×.
+"$BIN" minimize design.vpcb --restarts 16 --seconds 600 --out design.min.vpcb
+```
+
+| Option | Meaning |
+|--------|---------|
+| `--out PATH` | Write the compacted `.vpcb`. Omit to just print the report. |
+| `--seconds N` | Wall-clock budget **per restart** (default 10). |
+| `--restarts N` | Independent restarts (distinct seeds), run in parallel across cores; best result wins. Wall ≈ `--seconds`. |
+| `--seed N` | Base PRNG seed (restart *k* uses `seed+k`); runs are reproducible. |
+| `--iters N` | Per-restart trial cap (default auto — usually leave it to `--seconds`). |
+
+Boards with slack compact a lot (a loose layout routinely drops 40–50 % of its
+die area); a board already hand-optimised to its routing limit will report
+`0.0% area saved` and leave itself unchanged — that's the tool correctly
+declining rather than breaking a good board.
+
+## Router quality (`reroute`)
+
+`reroute` strips every route and re-routes from scratch with the negotiated-
+congestion router, printing the DRC breakdown before/after. It measures the
+auto-router in isolation (independent of placement) — handy when judging whether
+a dense board is routable at all.
+
+```sh
+"$BIN" reroute design.vpcb            # DRC histogram before vs. after
+"$BIN" reroute design.vpcb --out design.rerouted.vpcb
+```
 
 ## Gotchas
 

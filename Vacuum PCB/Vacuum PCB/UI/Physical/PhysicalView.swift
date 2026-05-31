@@ -251,6 +251,9 @@ struct PhysicalInspector: View {
     /// True while a `minimize()` run is in flight, so the button shows a
     /// spinner and stays disabled.
     @State private var isMinimizing = false
+    /// Diagnostics from the most recent minimize run, shown under the button
+    /// (iterations, area saved, DRC). Nil until the user runs Minimize once.
+    @State private var minimizeStats: Minimizer.Stats?
     @FocusState private var boardFieldFocused: BoardField?
 
     private enum BoardField: Hashable { case width, height }
@@ -306,7 +309,8 @@ struct PhysicalInspector: View {
                         },
                         onPlaceAll: placeAllUnplaced,
                         onMinimize: minimize,
-                        isMinimizing: isMinimizing
+                        isMinimizing: isMinimizing,
+                        minimizeStats: minimizeStats
                     )
                 }
                 .padding(.horizontal, 14)
@@ -552,7 +556,14 @@ struct PhysicalInspector: View {
         isMinimizing = true
         Task { @MainActor in
             await Task.yield()
-            document.circuit.physical = Minimizer.minimize(document.circuit).physical
+            let result = Minimizer.report(document.circuit)
+            // Only the physical projection changes (one undo step); the logic
+            // graph is never touched. Always assign so a no-improvement run is
+            // a true no-op rather than a redundant mutation.
+            if result.stats.adopted {
+                document.circuit.physical = result.doc.physical
+            }
+            minimizeStats = result.stats
             isMinimizing = false
         }
     }
