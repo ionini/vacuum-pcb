@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -24,9 +25,6 @@ struct SimulateView: View {
     /// per-layer pills so the user can isolate T0 / B0 / etc. while tracing
     /// pressure flow. Schematic mode ignores this.
     @State private var visible: LayerVisibility = .both
-    /// Last wall-clock instant we tick'd the integrator. Updated by the
-    /// TimelineView's `date` so the elapsed delta is real seconds.
-    @State private var lastTick: Date = .now
 
     enum ViewMode: Hashable { case schematic, physical }
 
@@ -51,33 +49,7 @@ struct SimulateView: View {
                                        visible: visible)
             }
         }
-        .background { simulationClock }
-    }
-
-    /// Invisible ~60 Hz clock that advances the integrator. Deliberately kept
-    /// as a *sibling* of the canvases (via `.background`) rather than wrapping
-    /// them: a `TimelineView(.animation)` re-evaluates its entire subtree on
-    /// every frame, so when it wrapped the schematic it forced SwiftUI to
-    /// rebuild and re-diff every component symbol ~60×/s even when nothing
-    /// visibly changed. Now a tick only runs `advance`; the canvases redraw on
-    /// their own when that publishes new pressures through `@Observable`.
-    ///
-    /// We still pause the schedule on `!isPlaying` so a paused tab doesn't burn
-    /// a tick on a no-op `advance`.
-    private var simulationClock: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !state.isPlaying)) { ctx in
-            Color.clear
-                .onChange(of: ctx.date) { _, newDate in
-                    let elapsed = max(0, newDate.timeIntervalSince(lastTick))
-                    lastTick = newDate
-                    if elapsed > 0 {
-                        state.advance(wallSeconds: elapsed)
-                    }
-                }
-                .onAppear {
-                    lastTick = ctx.date
-                }
-        }
+        .background { SimulationClock(state: state) }
     }
 
     /// All view-mode / transport / speed controls go in the window toolbar
@@ -162,6 +134,30 @@ struct SimulateView: View {
         document.circuit.physical.layers(in: .bottom)
     }
 
+}
+
+/// Invisible ~60 Hz clock that advances the integrator.
+///
+/// Driven by a plain `Timer` publisher via `.onReceive` rather than a
+/// `TimelineView(.animation)`. `TimelineView` re-evaluates its content (and any
+/// `.onChange` on it) on *every* frame, and on this OS that stranded a SwiftUI
+/// observation-tracking node per frame — `ObservationRegistrar` instances piled
+/// up and the CPU crept to 100% the longer the sim ran (confirmed by a `heap`
+/// generation diff: the leak grew at the frame rate while playing and stopped
+/// dead when paused). `.onReceive` fires its action without re-evaluating this
+/// view's `body`, and the wall-clock delta now lives in `SimulationState.tick()`
+/// (`@ObservationIgnored`), so a tick touches no view state at all. `advance`
+/// already no-ops when paused, so the always-on timer is harmless; it stops
+/// entirely when the Simulate tab leaves the view hierarchy.
+private struct SimulationClock: View {
+    let state: SimulationState
+
+    private let ticks = Timer.publish(every: 1.0 / 60.0, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        Color.clear
+            .onReceive(ticks) { _ in state.tick() }
+    }
 }
 
 /// Horizontal row of T0/B1/… pill toggles for layer visibility. Used by

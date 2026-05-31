@@ -217,8 +217,10 @@ struct SimulateControlsView: View {
     /// setting, since the whole point is that the pin reads whatever the bus
     /// settles to.
     private func softInputRow(_ input: PneumaticNetwork.Input) -> some View {
-        let netPressure = state.pressure(net: input.netId)
-        return HStack(spacing: 8) {
+        // Deliberately does NOT read the live net pressure here — that would
+        // pull this row (and its segmented Picker) into the 20 Hz publish
+        // invalidation. The live indicator is the leaf `NetPressureDot`.
+        HStack(spacing: 8) {
             Text(input.label)
                 .font(.system(size: 12, weight: .medium).monospaced())
                 .frame(width: 56, alignment: .leading)
@@ -234,9 +236,7 @@ struct SimulateControlsView: View {
             .labelsHidden()
             .frame(width: 150)
             Spacer()
-            Circle()
-                .fill(PressureColor.color(for: netPressure))
-                .frame(width: 12, height: 12)
+            NetPressureDot(state: state, netId: input.netId)
         }
     }
 
@@ -244,14 +244,55 @@ struct SimulateControlsView: View {
         if !state.network.probes.isEmpty {
             Text("Probes").font(.subheadline).bold()
             ForEach(state.network.probes) { probe in
-                probeRow(probe: probe)
+                ProbeRow(state: state, probe: probe)
             }
         }
     }
 
-    private func probeRow(probe: PneumaticNetwork.Probe) -> some View {
+    @ViewBuilder private var transistors: some View {
+        if !state.network.transistors.isEmpty {
+            Text("Transistors").font(.subheadline).bold()
+            ForEach(state.network.transistors) { t in
+                TransistorRow(state: state, transistor: t)
+            }
+        }
+    }
+
+    /// Compact net list at the bottom — every net with its current pressure.
+    /// Useful for debugging dividers and unanchored floats.
+    @ViewBuilder private var netList: some View {
+        if !state.network.nets.isEmpty {
+            Divider()
+            DisclosureGroup("Nets (\(state.network.nets.count))") {
+                ForEach(state.network.nets) { net in
+                    NetRow(state: state, net: net)
+                }
+            }
+            .font(.caption)
+        }
+    }
+}
+
+// MARK: - Live readout rows (leaf views)
+//
+// Each row that reads the integrator's live pressures is its own `View` struct
+// rather than a method on `SimulateControlsView`. A method's reads get inlined
+// into the parent `body`, so a 20 Hz pressure publish re-ran the whole sidebar
+// body — which recreated every segmented `Picker` in the input rows and forced
+// AppKit to re-measure them (`SystemSegmentedControl._overrideSizeThatFits`
+// dominated the Time Profiler). As separate leaves, only these cheap Text /
+// ProgressView / Circle rows re-render on a publish; the parent body (and its
+// Pickers) only re-evaluates when the network or the user's input toggles
+// change.
+
+/// Live pressure readout for one probe (output port / LED).
+private struct ProbeRow: View {
+    let state: SimulationState
+    let probe: PneumaticNetwork.Probe
+
+    var body: some View {
         let pressure = state.pressure(probe: probe)
-        return HStack(spacing: 8) {
+        HStack(spacing: 8) {
             Image(systemName: probe.kind == .led ? "lightbulb" : "dot.circle")
                 .foregroundStyle(.secondary)
                 .frame(width: 14)
@@ -268,21 +309,18 @@ struct SimulateControlsView: View {
                 .animation(nil, value: pressure)
         }
     }
+}
 
-    @ViewBuilder private var transistors: some View {
-        if !state.network.transistors.isEmpty {
-            Text("Transistors").font(.subheadline).bold()
-            ForEach(state.network.transistors) { t in
-                transistorRow(t)
-            }
-        }
-    }
+/// Live open/closed + gate-pressure readout for one transistor.
+private struct TransistorRow: View {
+    let state: SimulationState
+    let transistor: PneumaticNetwork.TransistorEdge
 
-    private func transistorRow(_ t: PneumaticNetwork.TransistorEdge) -> some View {
-        let openness = state.transistorOpenness[t.id] ?? 0
-        let gateP = state.pressure(net: t.gateNet)
-        return HStack(spacing: 8) {
-            Text(t.label)
+    var body: some View {
+        let openness = state.transistorOpenness[transistor.id] ?? 0
+        let gateP = state.pressure(net: transistor.gateNet)
+        HStack(spacing: 8) {
+            Text(transistor.label)
                 .font(.system(size: 12, weight: .medium).monospaced())
                 .frame(width: 56, alignment: .leading)
             Text(openness > 0.5 ? "open" : "closed")
@@ -295,29 +333,40 @@ struct SimulateControlsView: View {
                 .foregroundStyle(.secondary)
         }
     }
+}
 
-    /// Compact net list at the bottom — every net with its current pressure.
-    /// Useful for debugging dividers and unanchored floats.
-    @ViewBuilder private var netList: some View {
-        if !state.network.nets.isEmpty {
-            Divider()
-            DisclosureGroup("Nets (\(state.network.nets.count))") {
-                ForEach(state.network.nets) { net in
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(PressureColor.color(for: state.pressure(net: net.id)))
-                            .frame(width: 10, height: 10)
-                        Text(net.label)
-                            .font(.caption.monospacedDigit())
-                            .lineLimit(1)
-                        Spacer()
-                        Text(PressureColor.formatted(state.pressure(net: net.id)))
-                            .font(.caption2.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .font(.caption)
+/// One row of the debug net list: colour dot + label + live pressure.
+private struct NetRow: View {
+    let state: SimulationState
+    let net: Net
+
+    var body: some View {
+        let pressure = state.pressure(net: net.id)
+        HStack(spacing: 6) {
+            Circle()
+                .fill(PressureColor.color(for: pressure))
+                .frame(width: 10, height: 10)
+            Text(net.label)
+                .font(.caption.monospacedDigit())
+                .lineLimit(1)
+            Spacer()
+            Text(PressureColor.formatted(pressure))
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
         }
+    }
+}
+
+/// Live colour dot for a single net's pressure. Lets a row keep its (static)
+/// segmented Picker in the parent body while only this dot re-renders when the
+/// net's pressure changes.
+private struct NetPressureDot: View {
+    let state: SimulationState
+    let netId: UUID
+
+    var body: some View {
+        Circle()
+            .fill(PressureColor.color(for: state.pressure(net: netId)))
+            .frame(width: 12, height: 12)
     }
 }

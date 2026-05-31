@@ -71,6 +71,13 @@ final class SimulationState {
     @ObservationIgnored private var sincePublish: Double = 0
     @ObservationIgnored private let publishInterval: Double = 1.0 / 20.0
 
+    /// Wall-clock instant of the previous `tick()`. `@ObservationIgnored` so the
+    /// clock can update it 60×/s without ever invalidating a view — the whole
+    /// point of moving the delta calc here is to keep the simulator's heartbeat
+    /// off SwiftUI's per-frame view-evaluation path (a `TimelineView`-driven
+    /// clock leaked an observation-tracking node every frame).
+    @ObservationIgnored private var lastTick: Date?
+
     init(document: CircuitDocument) {
         let prepared = Self.prepare(document)
         self.flattenedDoc = prepared.flattened.document
@@ -136,6 +143,19 @@ final class SimulationState {
         workingPressures = nil
         workingTransistors = nil
         sincePublish = 0
+    }
+
+    /// Heartbeat for the Simulate clock: advance by the real wall-time elapsed
+    /// since the previous tick. The view fires this from a plain timer rather
+    /// than a `TimelineView`, so no SwiftUI body is re-evaluated per frame. The
+    /// first tick after (re)starting just establishes the baseline. Updating
+    /// `lastTick` even while paused keeps the resume delta small.
+    func tick() {
+        let now = Date.now
+        defer { lastTick = now }
+        guard let last = lastTick else { return }
+        let elapsed = max(0, now.timeIntervalSince(last))
+        if elapsed > 0 { advance(wallSeconds: elapsed) }
     }
 
     /// Advance the simulator by `wallSeconds` of real time. Takes as many
