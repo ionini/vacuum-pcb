@@ -71,6 +71,13 @@ final class SimulationState {
     @ObservationIgnored private var sincePublish: Double = 0
     @ObservationIgnored private let publishInterval: Double = 1.0 / 20.0
 
+    /// Wall-clock instant of the previous `tick()`. `@ObservationIgnored` so the
+    /// clock can update it 60×/s without ever invalidating a view — the whole
+    /// point of moving the delta calc here is to keep the simulator's heartbeat
+    /// off SwiftUI's per-frame view-evaluation path (a `TimelineView`-driven
+    /// clock leaked an observation-tracking node every frame).
+    @ObservationIgnored private var lastTick: Date?
+
     init(document: CircuitDocument) {
         let prepared = Self.prepare(document)
         self.flattenedDoc = prepared.flattened.document
@@ -138,6 +145,19 @@ final class SimulationState {
         sincePublish = 0
     }
 
+    /// Heartbeat for the Simulate clock: advance by the real wall-time elapsed
+    /// since the previous tick. The view fires this from a plain timer rather
+    /// than a `TimelineView`, so no SwiftUI body is re-evaluated per frame. The
+    /// first tick after (re)starting just establishes the baseline. Updating
+    /// `lastTick` even while paused keeps the resume delta small.
+    func tick() {
+        let now = Date.now
+        defer { lastTick = now }
+        guard let last = lastTick else { return }
+        let elapsed = max(0, now.timeIntervalSince(last))
+        if elapsed > 0 { advance(wallSeconds: elapsed) }
+    }
+
     /// Advance the simulator by `wallSeconds` of real time. Takes as many
     /// fixed-`dt` steps as fit, leaving any remainder in the accumulator.
     ///
@@ -157,10 +177,20 @@ final class SimulationState {
         // first time, and whenever `reset()` / `rebuild(...)` cleared them.
         var localPressures = workingPressures ?? pressureByNet
         var localTransistors = workingTransistors ?? transistorOpenness
-        // Clamp to a small batch of steps per frame so a hitch in the UI
-        // clock doesn't snowball into a multi-second catch-up burst.
+        // Per-tick fixed-step budget. It scales with `timeScale` so a fast
+        // clock actually advances that much sim-time — we hold `dt` small for
+        // per-step accuracy and buy speed by taking *more* steps, not bigger
+        // ones. The budget is what one 60 Hz frame would need at this speed,
+        // times a 4× slack so ordinary clock jitter is absorbed without
+        // dropping time, and it stays bounded by an absolute ceiling. Hitting
+        // the ceiling drains the backlog so a real stall (e.g. the app paused
+        // by the OS) can't snowball into an unrecoverable catch-up burst — the
+        // sim just runs slower than the requested multiple under that load.
+        let nominalFrame = 1.0 / 60.0
+        let targetSteps = Int((nominalFrame * max(0, params.timeScale) / dt).rounded(.up))
+        let maxSteps = min(2000, max(8, targetSteps * 4))
         var steps = 0
-        while simAccumulator >= dt && steps < 8 {
+        while simAccumulator >= dt && steps < maxSteps {
             SimulationEngine.step(
                 network: network, params: params,
                 pressures: &localPressures,
@@ -170,7 +200,7 @@ final class SimulationState {
             simAccumulator -= dt
             steps += 1
         }
-        if steps == 8 {
+        if steps == maxSteps {
             // Drop the rest of the backlog instead of catching up forever.
             simAccumulator = 0
         }
