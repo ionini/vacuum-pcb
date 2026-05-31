@@ -26,6 +26,11 @@ final class SimulationState {
     /// pressure through this map. Identity for nets that weren't merged.
     private(set) var netIdRemap: [UUID: UUID] = [:]
 
+    /// In assembly mode, the boards (parent + each subpart) laid out so their
+    /// mated connectors join — what the physical canvas draws as outlines and
+    /// fits to. Empty for ordinary single-board documents.
+    private(set) var assemblyBoards: [AssemblyLayout.Board] = []
+
     var params: SimulationParameters = .defaults
 
     /// User-controlled input port pressures keyed by input component id.
@@ -67,11 +72,27 @@ final class SimulationState {
     @ObservationIgnored private let publishInterval: Double = 1.0 / 20.0
 
     init(document: CircuitDocument) {
-        let flattened = document.flattenedForSimulation()
-        self.flattenedDoc = flattened.document
-        self.netIdRemap = flattened.netIdRemap
-        self.network = PneumaticNetwork.build(from: flattened.document)
+        let prepared = Self.prepare(document)
+        self.flattenedDoc = prepared.flattened.document
+        self.netIdRemap = prepared.flattened.netIdRemap
+        self.assemblyBoards = prepared.boards
+        self.network = PneumaticNetwork.build(from: prepared.flattened.document)
         self.pressureByNet = initialPressures(for: network)
+    }
+
+    /// Flatten the document for the simulator, first laying out an assembly's
+    /// boards so their mated connectors join (a no-op for single-board docs).
+    /// The layout is a rigid transform per board, so it never changes the
+    /// netlist or channel lengths — only where geometry lands in world space.
+    private static func prepare(
+        _ document: CircuitDocument
+    ) -> (flattened: (document: CircuitDocument, netIdRemap: [UUID: UUID]),
+          boards: [AssemblyLayout.Board]) {
+        if let layout = document.assemblyLayout() {
+            let laidOut = document.applyingAssemblyLayout(layout)
+            return (laidOut.flattenedForSimulation(), layout.boards)
+        }
+        return (document.flattenedForSimulation(), [])
     }
 
     /// Replace the latched network with one built from a fresh snapshot of
@@ -79,10 +100,12 @@ final class SimulationState {
     /// component id where possible, so editing the document while playing
     /// doesn't flash everything back to atmosphere.
     func rebuild(from document: CircuitDocument) {
-        let flattened = document.flattenedForSimulation()
+        let prepared = Self.prepare(document)
+        let flattened = prepared.flattened
         let next = PneumaticNetwork.build(from: flattened.document)
         self.flattenedDoc = flattened.document
         self.netIdRemap = flattened.netIdRemap
+        self.assemblyBoards = prepared.boards
         // Preserve pressures for nets that still exist; default new nets to atm.
         var nextPressures: [UUID: Double] = [:]
         let existingNetIds = Set(next.nets.map(\.id))

@@ -108,6 +108,30 @@ struct SimulatePhysicalCanvas: View {
     // MARK: - Drawing
 
     private func drawBoard(in ctx: inout GraphicsContext) {
+        // Assembly: draw every laid-out board's outline at its mated pose, so
+        // the mated halves read as separate PCBs joined at their connectors.
+        if !state.assemblyBoards.isEmpty {
+            for board in state.assemblyBoards {
+                let corners = board.worldCorners().map { transform.toScreen($0) }
+                guard corners.count == 4 else { continue }
+                var path = Path()
+                path.move(to: corners[0])
+                for c in corners.dropFirst() { path.addLine(to: c) }
+                path.closeSubpath()
+                ctx.fill(path, with: .color(Color.gray.opacity(0.15)))
+                ctx.stroke(path, with: .color(Color.gray), lineWidth: 1.2)
+                if !board.label.isEmpty {
+                    let midX = corners.map(\.x).reduce(0, +) / 4
+                    let topY = corners.map(\.y).min() ?? corners[0].y
+                    ctx.draw(
+                        Text(board.label).font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary),
+                        at: CGPoint(x: midX, y: topY - 10)
+                    )
+                }
+            }
+            return
+        }
         let outline = document.physical.boardOutline
         let topLeft = transform.toScreen(outline.origin)
         let size = transform.toScreenSize(outline.size)
@@ -392,7 +416,23 @@ struct SimulatePhysicalCanvas: View {
     /// Picks `ptsPerMm` directly so the rendering is sharp at the fit zoom
     /// level.
     private func fit(in viewSize: CGSize) {
-        transform = CanvasTransform.fit(rect: document.physical.boardOutline, in: viewSize)
+        transform = CanvasTransform.fit(rect: fitRect, in: viewSize)
         userAdjusted = false
+    }
+
+    /// The board rect to frame on a fit. In assembly mode that's the bounding
+    /// box of every laid-out board so the whole mated stack is visible; for a
+    /// single board it's just its outline.
+    private var fitRect: Rect {
+        guard !state.assemblyBoards.isEmpty else { return document.physical.boardOutline }
+        let pts = state.assemblyBoards.flatMap { $0.worldCorners() }
+        guard let first = pts.first else { return document.physical.boardOutline }
+        var minX = first.x, minY = first.y, maxX = first.x, maxY = first.y
+        for p in pts {
+            minX = min(minX, p.x); minY = min(minY, p.y)
+            maxX = max(maxX, p.x); maxY = max(maxY, p.y)
+        }
+        return Rect(origin: Point(x: minX, y: minY),
+                    size: Size(width: maxX - minX, height: maxY - minY))
     }
 }
