@@ -82,6 +82,14 @@ struct PhysicalView: View {
             ensureRoutingLayerValid()
             reconcileLayerOrder()
         }
+        // Keep edge-anchored connectors glued to their perimeter edge when
+        // the board is resized (the inspector mutates the same document, so
+        // this fires for size edits made over there too). Routes ride along
+        // when the "Drag with routes" link toggle is on.
+        .onChange(of: document.circuit.physical.boardOutline) { _, _ in
+            PhysicalActions.reanchorConnectors(in: &document.circuit,
+                                               carryRoutes: dragWithRoutes)
+        }
     }
 
     @ToolbarContentBuilder private var physicalToolbar: some ToolbarContent {
@@ -818,6 +826,69 @@ enum PhysicalActions {
         circuit.physical.placements[i].rotation = anchor.edge.outwardRotation
         let role = component.connectorRole ?? .bottomExtend
         circuit.physical.placements[i].layer = role == .bottomExtend ? .bottom : .top
+    }
+
+    /// Re-derive every edge-anchored connector's pose after the board
+    /// outline changed size. The stored `position` is only a cache of
+    /// `edgeAnchor.worldPosition(in:)` against the *previous* outline, so
+    /// without this connectors on the east / north edges (whose anchor
+    /// world-position tracks `maxX` / `maxY`) — and any whose offset now
+    /// overruns a shortened edge — are left floating off the new perimeter
+    /// until the user nudges them. We recompute position / rotation from the
+    /// anchor and re-clamp `offsetAlongEdge` so the protrusion stays clear of
+    /// the resized edge's corners.
+    ///
+    /// When `carryRoutes` is set (the "Drag with routes" toolbar toggle), the
+    /// route waypoints sitting on each moved connector's pins are shifted by
+    /// the same world delta so the wiring rides along instead of being left
+    /// behind — the resize equivalent of a link-drag.
+    static func reanchorConnectors(in circuit: inout CircuitDocument, carryRoutes: Bool) {
+        let outline = circuit.physical.boardOutline
+        let m = circuit.manufacturing
+        for i in circuit.physical.placements.indices {
+            guard let anchor = circuit.physical.placements[i].edgeAnchor,
+                  let component = circuit.logic.components
+                    .first(where: { $0.id == circuit.physical.placements[i].componentId }),
+                  component.kind == .connector
+            else { continue }
+            let fp = component.footprint(m, snapshots: circuit.librarySnapshots)
+            let clearance = fp.exclusionRect.size.height / 2
+            let len = anchor.edgeLength(in: outline)
+            // Keep the offset within [clearance, len - clearance]; if the edge
+            // is now shorter than the protrusion, fall back to centring it.
+            let lo = min(clearance, len / 2)
+            let hi = max(len - clearance, len / 2)
+            let offset = max(lo, min(hi, anchor.offsetAlongEdge))
+            let newAnchor = EdgeAnchor(edge: anchor.edge, offsetAlongEdge: offset)
+            let oldPos = circuit.physical.placements[i].position
+            let newPos = newAnchor.worldPosition(in: outline)
+            circuit.physical.placements[i].edgeAnchor = newAnchor
+            circuit.physical.placements[i].position = newPos
+            circuit.physical.placements[i].rotation = newAnchor.edge.outwardRotation
+
+            guard carryRoutes else { continue }
+            let dx = newPos.x - oldPos.x, dy = newPos.y - oldPos.y
+            guard abs(dx) > 1e-6 || abs(dy) > 1e-6 else { continue }
+            // The edge (and thus rotation) is unchanged across a resize, so
+            // the connector's pins translate uniformly by (dx, dy). Resolve
+            // the pins' *old* world positions and slide every coincident
+            // waypoint — same 0.05 mm tolerance the drag rubber-band uses.
+            var oldPlacement = circuit.physical.placements[i]
+            oldPlacement.position = oldPos
+            let oldPinWorlds = fp.pins.map { oldPlacement.worldPosition(of: $0) }
+            for rIdx in circuit.physical.routes.indices {
+                for sIdx in circuit.physical.routes[rIdx].segments.indices {
+                    for wIdx in circuit.physical.routes[rIdx].segments[sIdx].waypoints.indices {
+                        let wp = circuit.physical.routes[rIdx].segments[sIdx].waypoints[wIdx]
+                        guard oldPinWorlds.contains(where: {
+                            abs($0.x - wp.position.x) < 0.05 && abs($0.y - wp.position.y) < 0.05
+                        }) else { continue }
+                        circuit.physical.routes[rIdx].segments[sIdx].waypoints[wIdx].position =
+                            Point(x: wp.position.x + dx, y: wp.position.y + dy)
+                    }
+                }
+            }
+        }
     }
 
     /// Cycle each selected placement's layer. Pure-hole components

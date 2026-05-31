@@ -324,6 +324,13 @@ struct PhysicalCanvasView: View {
             .onContinuousHover { phase in
                 if case .active(let p) = phase { mouseLocation = p }
             }
+            // Open-hand cursor whenever the pointer is over a draggable
+            // object (placement, pin, via, or route). The discrete hit
+            // targets sit above this view, but pointer-style resolution
+            // picks the innermost match — so a single root-level style keyed
+            // on the unified hit-test reads correctly without instrumenting
+            // every child. No-op on touch devices (no pointer).
+            .pointerStyle(pointerOverDraggable ? .grabIdle : nil)
             .gesture(magnifyGesture(viewSize: geo.size))
             // Lock-mode pan. Child drag gestures (placement move, pin
             // drag-to-route, waypoint drag) read `\.canvasLocked` and
@@ -638,7 +645,7 @@ struct PhysicalCanvasView: View {
                    visible.shows(componentKind: component.kind,
                                  on: Layer(plate: placement.layer, depth: placement.depth)) {
                     let pos = hitCenter(for: placement, component: component)
-                    let size = hitSize(for: component)
+                    let size = hitSize(for: component, rotation: placement.rotation)
                     Rectangle()
                         .fill(Color.clear)
                         .contentShape(Rectangle())
@@ -910,7 +917,7 @@ struct PhysicalCanvasView: View {
         }
     }
 
-    private func hitSize(for c: Component) -> CGSize {
+    private func hitSize(for c: Component, rotation: Rotation) -> CGSize {
         // Footprint exclusion-rect dimensions in pts, padded so small parts
         // stay easy to grab. The arrowhead glyph for ports / rails extends
         // well past the pin anchor — and the tip is exactly what users aim
@@ -919,14 +926,22 @@ struct PhysicalCanvasView: View {
         // the body's own target has to be considerably bigger than the
         // pin's to leave finger-sized slack around the glyph.
         let bounds = c.footprint(manufacturing, snapshots: librarySnapshots).boundingRect
+        // The hit rectangle is screen-axis-aligned, but the body is drawn
+        // rotated — so a quarter-turn swaps the footprint's width and height
+        // on screen. Connectors are authored as a long thin row along local
+        // Y; on the north / south edges (r90 / r270) that row runs
+        // horizontally, and without this swap the hit zone collapses to a
+        // narrow strip down the connector's centre.
+        var bw = bounds.size.width, bh = bounds.size.height
+        if rotation == .r90 || rotation == .r270 { swap(&bw, &bh) }
         let isArrowLike: Bool = (c.kind == .port || c.kind == .vacuumSource || c.kind == .atmVent)
         let minSize: Double = {
             if InputPlatform.isTouch { return isArrowLike ? 88 : 56 }
             return isArrowLike ? 60 : 40
         }()
         let pad: Double = InputPlatform.isTouch ? 20 : 12
-        let w = max(minSize, bounds.size.width * transform.ptsPerMm + pad)
-        let h = max(minSize, bounds.size.height * transform.ptsPerMm + pad)
+        let w = max(minSize, bw * transform.ptsPerMm + pad)
+        let h = max(minSize, bh * transform.ptsPerMm + pad)
         return CGSize(width: w, height: h)
     }
 
@@ -1570,6 +1585,38 @@ struct PhysicalCanvasView: View {
         return best.map { ($0.componentId, $0.pinKey) }
     }
 
+    /// True when `pt` (screen-space) lands on any placement's drag hit rect.
+    /// Cheap early-out variant of the placement loop in
+    /// `collectDisambigCandidates`, used to drive the hover cursor.
+    private func placementAtPoint(_ pt: CGPoint) -> Bool {
+        for placement in document.circuit.physical.placements {
+            guard let component = component(for: placement.componentId),
+                  visible.shows(componentKind: component.kind,
+                                on: Layer(plate: placement.layer, depth: placement.depth))
+            else { continue }
+            let centre = hitCenter(for: placement, component: component)
+            let size = hitSize(for: component, rotation: placement.rotation)
+            let rect = CGRect(x: centre.x - size.width / 2, y: centre.y - size.height / 2,
+                              width: size.width, height: size.height)
+            if rect.contains(pt) { return true }
+        }
+        return false
+    }
+
+    /// Whether the pointer is currently over something the user can grab and
+    /// drag — a placement, a pin, a via, or a route segment. Drives the
+    /// open-hand cursor so movable objects read as movable on hover. Skipped
+    /// while panning (lock mode) or routing, where a drag means something
+    /// else and the default cursor is correct.
+    private var pointerOverDraggable: Bool {
+        guard !navigateMode, !routingState.inProgress, mouseLocation != .zero else { return false }
+        let pt = mouseLocation
+        return pinHit(at: pt) != nil
+            || viaAtTap(at: pt) != nil
+            || placementAtPoint(pt)
+            || routeSegmentHit(at: pt) != nil
+    }
+
     private func handlePinTap(componentId: UUID, pinKey: String) {
         guard let placement = document.circuit.physical.placements.first(where: { $0.componentId == componentId }),
               let component = component(for: componentId),
@@ -1847,7 +1894,7 @@ struct PhysicalCanvasView: View {
                                 on: Layer(plate: placement.layer, depth: placement.depth))
             else { continue }
             let centre = hitCenter(for: placement, component: component)
-            let size = hitSize(for: component)
+            let size = hitSize(for: component, rotation: placement.rotation)
             let rect = CGRect(
                 x: centre.x - size.width / 2, y: centre.y - size.height / 2,
                 width: size.width, height: size.height
