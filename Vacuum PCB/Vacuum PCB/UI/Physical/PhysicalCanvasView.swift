@@ -329,8 +329,11 @@ struct PhysicalCanvasView: View {
             // targets sit above this view, but pointer-style resolution
             // picks the innermost match — so a single root-level style keyed
             // on the unified hit-test reads correctly without instrumenting
-            // every child. No-op on touch devices (no pointer).
+            // every child. macOS-only: `pointerStyle(_:)` isn't in the
+            // iOS/iPadOS SDK, and there's no pointer to style on touch.
+            #if os(macOS)
             .pointerStyle(pointerOverDraggable ? .grabIdle : nil)
+            #endif
             .gesture(magnifyGesture(viewSize: geo.size))
             // Lock-mode pan. Child drag gestures (placement move, pin
             // drag-to-route, waypoint drag) read `\.canvasLocked` and
