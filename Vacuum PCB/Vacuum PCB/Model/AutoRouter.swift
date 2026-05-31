@@ -187,6 +187,168 @@ enum AutoRouter {
         return out
     }
 
+    // MARK: - Negotiated-congestion (PathFinder) router
+
+    /// Routes **every** net from scratch using negotiated congestion — the
+    /// standard fix for the single-pass router's failure mode, where nets
+    /// routed early hog channels and later nets can't get through (the bulk of
+    /// the DRC on a dense board). Unlike `plan`, routes are *soft*: a cell
+    /// already used by another net costs more but isn't impassable, so A*
+    /// always finds *a* path; then over several rounds the cost of contested
+    /// cells is raised (present congestion + accumulated history) until the
+    /// nets negotiate themselves apart. Sub-part bodies and resistor
+    /// serpentines stay *hard* obstacles.
+    ///
+    /// Returns the same `(netId, segment)` shape as `plan` so callers add the
+    /// segments the same way. `rounds` caps the negotiation; it stops early
+    /// once no two nets' channels are within clearance.
+    ///
+    /// `ripUp` selects which nets to (re)route. `nil` routes **all** nets from
+    /// scratch (ignoring existing routes). A non-nil set routes only those
+    /// nets, treating every *other* net's existing route as a fixed hard
+    /// obstacle — the incremental rip-up the minimizer leans on: move a part,
+    /// rip up the nets it disturbs (plus any congested neighbours), and let
+    /// them renegotiate around everything left in place. The caller is
+    /// responsible for removing the ripped nets' old routes before adding the
+    /// returned segments.
+    static func planNegotiated(_ doc: CircuitDocument, ripUp: Set<UUID>? = nil, rounds: Int = 14)
+        -> [(netId: UUID, segment: Segment)] {
+        let pitch = doc.manufacturing.gridPitch
+        let outline = doc.physical.boardOutline
+        guard pitch > 0, outline.size.width > 0, outline.size.height > 0 else { return [] }
+        let halo = max(1, Int((doc.manufacturing.minChannelSpacing / pitch).rounded(.up)) - 1)
+        let layers = doc.physical.layers(in: .top) + doc.physical.layers(in: .bottom)
+        guard !layers.isEmpty else { return [] }
+
+        // Hard obstacles: sub-part bodies (all layers) + resistor serpentines
+        // (their layer), with placed pins punched back open so routes can dock.
+        // Existing routes are ignored — this is a from-scratch plan.
+        var blocked: [Layer: OccupancyGrid] = [:]
+        for l in layers { blocked[l] = OccupancyGrid(outline: outline, pitch: pitch) }
+        seedComponentFeatures(in: doc, grids: blocked, halo: halo)
+        let noVias = OccupancyGrid(outline: outline, pitch: pitch)
+        seedNoViaZones(in: doc, grid: noVias)
+        seedSubpartObstacles(in: doc, grids: blocked, noVias: noVias, halo: halo)
+        // Incremental mode: every net NOT being ripped up keeps its current
+        // route, seeded as a fixed obstacle so the ripped nets route around it.
+        if let ripUp {
+            for route in doc.physical.routes where !ripUp.contains(route.netId) {
+                for seg in route.segments {
+                    guard let grid = blocked[seg.layer] else { continue }
+                    let pts = seg.waypoints.map(\.position)
+                    guard pts.count >= 2 else { continue }
+                    for i in 0..<(pts.count - 1) { grid.markLine(pts[i], pts[i + 1], halo: halo) }
+                }
+            }
+        }
+        clearPinNeighborhoods(in: doc, grids: blocked)
+
+        let anyGrid = blocked[layers[0]]!
+        let cols = anyGrid.cols, rows = anyGrid.rows
+        let cellCount = cols * rows
+        let layerCount = layers.count
+        let blockedArr: [OccupancyGrid] = layers.map { blocked[$0]! }
+        let layerIndex = Dictionary(uniqueKeysWithValues: layers.enumerated().map { ($1, $0) })
+        func flat(_ l: Int, _ i: Int, _ j: Int) -> Int { l * cellCount + j * cols + i }
+
+        struct Conn { let a: Point; let aL: Int; let b: Point; let bL: Int }
+        struct Job { let id: UUID; let conns: [Conn] }
+        var jobs: [Job] = []
+        for net in doc.logic.nets {
+            if let ripUp, !ripUp.contains(net.id) { continue }
+            let placed = placedPins(for: net, in: doc)
+            guard placed.count >= 2 else { continue }
+            var conns: [Conn] = []
+            for e in mstEdges(placed.map(\.position)) {
+                let a = placed[e.i], b = placed[e.j]
+                guard let aL = layerIndex[a.layer], let bL = layerIndex[b.layer] else { continue }
+                conns.append(Conn(a: a.position, aL: aL, b: b.position, bL: bL))
+            }
+            if !conns.isEmpty { jobs.append(Job(id: net.id, conns: conns)) }
+        }
+
+        // PathFinder fields, flat over (layer, cell).
+        var stamp = [Int](repeating: 0, count: layerCount * cellCount)     // # nets within clearance
+        var history = [Double](repeating: 0, count: layerCount * cellCount) // accumulated congestion
+        var netStampCells = [UUID: [Int]]()                                 // this net's stamped flats
+        var netResult = [UUID: [(path: [(point: Point, layer: Layer)], a: Point, b: Point)]]()
+
+        var pFactor = 0.6
+        for _ in 0..<rounds {
+            for job in jobs {
+                // Rip up: remove this net's stamp from the present field.
+                if let cells = netStampCells[job.id] { for f in cells { stamp[f] -= 1 } }
+                netStampCells[job.id] = nil
+
+                var centers = Set<Int>()
+                var results: [(path: [(point: Point, layer: Layer)], a: Point, b: Point)] = []
+                for conn in job.conns {
+                    guard let path = AStarCost.run(
+                        blocked: blockedArr, noVias: noVias, layers: layers,
+                        cols: cols, rows: rows, cellCount: cellCount,
+                        stamp: stamp, history: history, pFactor: pFactor,
+                        from: conn.a, fromLayer: conn.aL, to: conn.b, toLayer: conn.bL
+                    ) else { continue }
+                    results.append((path, conn.a, conn.b))
+                    for (pt, lay) in path {
+                        let (ci, cj) = anyGrid.toGrid(pt)
+                        guard let li = layerIndex[lay], anyGrid.inBounds(ci, cj) else { continue }
+                        centers.insert(flat(li, ci, cj))
+                    }
+                }
+                netResult[job.id] = results
+
+                // Stamp = centerline dilated by the clearance halo. Two nets
+                // conflict when one's centerline lands on another's stamp —
+                // exactly the boolean router's collision model, made soft.
+                var stampCells = Set<Int>()
+                for fc in centers {
+                    let li = fc / cellCount, cell = fc % cellCount
+                    let ci = cell % cols, cj = cell / cols
+                    for dy in -halo...halo {
+                        for dx in -halo...halo {
+                            let ni = ci + dx, nj = cj + dy
+                            if ni >= 0, ni < cols, nj >= 0, nj < rows { stampCells.insert(flat(li, ni, nj)) }
+                        }
+                    }
+                }
+                let arr = Array(stampCells)
+                netStampCells[job.id] = arr
+                for f in arr { stamp[f] += 1 }
+            }
+
+            // Raise history wherever a net's centerline sits on a cell another
+            // net also stamps. Converged when there's no such overlap.
+            var overuse = false
+            for job in jobs {
+                guard let results = netResult[job.id] else { continue }
+                let selfCells = Set(netStampCells[job.id] ?? [])
+                for (path, _, _) in results {
+                    for (pt, lay) in path {
+                        let (ci, cj) = anyGrid.toGrid(pt)
+                        guard let li = layerIndex[lay], anyGrid.inBounds(ci, cj) else { continue }
+                        let f = flat(li, ci, cj)
+                        let others = stamp[f] - (selfCells.contains(f) ? 1 : 0)
+                        if others > 0 { history[f] += 1; overuse = true }
+                    }
+                }
+            }
+            pFactor *= 1.7
+            if !overuse { break }
+        }
+
+        var planned: [(netId: UUID, segment: Segment)] = []
+        for job in jobs {
+            guard let results = netResult[job.id] else { continue }
+            for r in results {
+                var segs = pathToSegments(r.path)
+                snapSegmentEndpointsToPins(&segs, startPin: r.a, endPin: r.b)
+                for s in segs { planned.append((job.id, s)) }
+            }
+        }
+        return planned
+    }
+
     // MARK: - Helpers
 
     private struct PlacedPin {
@@ -326,6 +488,94 @@ enum AutoRouter {
                 break
             }
         }
+    }
+
+    /// Seeds every sub-part's **actual internal geometry** as obstacles, in
+    /// parent coordinates: its internal route polylines and resistor
+    /// serpentines become hard channel blocks (so an external route can't cut
+    /// through them and electrically merge), and its internal vertical bores
+    /// (transistor / LED dimples, resistor bodies) join the no-via mask. The
+    /// sub-part's *empty interior* is deliberately left open, so the bus lines
+    /// can thread through the same whitespace the hand-routing uses — blocking
+    /// the whole footprint box instead would wall off a board-spanning
+    /// sub-part like U1 and strand half the nets. `clearPinNeighborhoods`
+    /// re-opens the boundary pins afterward so routes can still dock.
+    private static func seedSubpartObstacles(
+        in doc: CircuitDocument, grids: [Layer: OccupancyGrid],
+        noVias: OccupancyGrid, halo: Int
+    ) {
+        for placement in doc.physical.placements {
+            guard let comp = doc.logic.components.first(where: { $0.id == placement.componentId }),
+                  comp.kind == .subpart,
+                  let part = comp.resolvedPart(snapshots: doc.librarySnapshots)
+            else { continue }
+            // Expand nested sub-parts so `child` is all primitives, then map
+            // child (library) coordinates into the parent board.
+            let child = part.document.flattened()
+            let outline = part.document.physical.boardOutline
+            let ox = outline.minX, oy = outline.minY
+            let r = placement.rotation.radians, cr = cos(r), sr = sin(r)
+            func toWorld(_ p: Point) -> Point {
+                let dx = p.x - ox, dy = p.y - oy
+                return Point(x: placement.position.x + dx * cr - dy * sr,
+                             y: placement.position.y + dx * sr + dy * cr)
+            }
+
+            // Internal routes → hard blocks on their own layers.
+            for route in child.physical.routes {
+                for seg in route.segments {
+                    guard let grid = grids[seg.layer] else { continue }
+                    let pts = seg.waypoints.map { toWorld($0.position) }
+                    guard pts.count >= 2 else { continue }
+                    for i in 0..<(pts.count - 1) { grid.markLine(pts[i], pts[i + 1], halo: halo) }
+                }
+            }
+            // Internal resistor serpentines → hard blocks; internal vertical
+            // bores → no-via mask.
+            for ip in child.physical.placements {
+                guard let ic = child.logic.components.first(where: { $0.id == ip.componentId })
+                else { continue }
+                switch ic.kind {
+                case .resistor:
+                    let halfLen = ManufacturingConstants.resistorFootprintLength / 2
+                    let halfWid = ManufacturingConstants.resistorFootprintWidth / 2
+                    let transitions = ResistorGeometry.transitions(for: ic.resistorSize ?? .medium)
+                    let local = ResistorGeometry.path(transitions: transitions, halfLen: halfLen, halfWid: halfWid)
+                    let pts = local.map { toWorld(localToWorld($0, placement: ip)) }
+                    if let grid = grids[Layer(plate: ip.layer, depth: ip.depth)] {
+                        for i in 0..<(pts.count - 1) { grid.markLine(pts[i], pts[i + 1], halo: halo) }
+                    }
+                    seedNoViaRect(ic.footprint(doc.manufacturing).exclusionRect, ip, toWorld, into: noVias)
+                case .transistor, .led:
+                    seedNoViaRect(ic.footprint(doc.manufacturing).exclusionRect, ip, toWorld, into: noVias)
+                default:
+                    break
+                }
+            }
+        }
+    }
+
+    /// Marks a footprint exclusion rect (under an internal placement's
+    /// rotation, then the parent transform) into the no-via mask.
+    private static func seedNoViaRect(
+        _ rect: Rect, _ ip: Placement, _ toWorld: (Point) -> Point, into grid: OccupancyGrid
+    ) {
+        if rect.size.width == 0, rect.size.height == 0 { return }
+        let r = ip.rotation.radians, c = cos(r), s = sin(r)
+        let corners = [
+            Point(x: rect.minX, y: rect.minY), Point(x: rect.maxX, y: rect.minY),
+            Point(x: rect.maxX, y: rect.maxY), Point(x: rect.minX, y: rect.maxY),
+        ].map { local -> Point in
+            let lx = ip.position.x + local.x * c - local.y * s
+            let ly = ip.position.y + local.x * s + local.y * c
+            return toWorld(Point(x: lx, y: ly))
+        }
+        let minX = corners.map(\.x).min()!, maxX = corners.map(\.x).max()!
+        let minY = corners.map(\.y).min()!, maxY = corners.map(\.y).max()!
+        let (i0, j0) = grid.toGrid(Point(x: minX, y: minY))
+        let (i1, j1) = grid.toGrid(Point(x: maxX, y: maxY))
+        guard i0 <= i1, j0 <= j1 else { return }
+        for j in j0...j1 { for i in i0...i1 { grid.mark(i, j) } }
     }
 
     /// Carves a 1-cell-radius "pad" around every placed pin in the document
@@ -606,6 +856,161 @@ enum AStarML {
             idx = next
         }
         return result.reversed().map { (point: $0.0, layer: $0.1) }
+    }
+}
+
+// MARK: - Cost-based multi-layer A* (negotiated congestion)
+
+/// Like `AStarML` but over a real-valued cost field: each step's cost is
+/// `1 + history[cell] + pFactor·stamp[cell]` (vias use `viaCost` as the base),
+/// so a path is steered away from congested cells without ever being blocked
+/// by them. Only sub-part bodies / resistor serpentines (the `blocked` grids)
+/// and the no-via mask are hard constraints. `stamp` / `history` are flat
+/// arrays indexed `layer·cellCount + j·cols + i`, matching `planNegotiated`.
+enum AStarCost {
+    static func run(
+        blocked: [OccupancyGrid], noVias: OccupancyGrid, layers: [Layer],
+        cols: Int, rows: Int, cellCount: Int,
+        stamp: [Int], history: [Double], pFactor: Double,
+        from start: Point, fromLayer: Int,
+        to goal: Point, toLayer: Int,
+        viaCost: Double = 6
+    ) -> [(point: Point, layer: Layer)]? {
+        let anyGrid = blocked[0]
+        let (sx, sy) = anyGrid.toGrid(start)
+        let (gx, gy) = anyGrid.toGrid(goal)
+        guard anyGrid.inBounds(sx, sy), anyGrid.inBounds(gx, gy) else { return nil }
+        let layerCount = layers.count
+
+        var viaAdj: [[Int]] = Array(repeating: [], count: layerCount)
+        for (a, la) in layers.enumerated() {
+            for (b, lb) in layers.enumerated() where a != b {
+                let samePlateStep = la.plate == lb.plate && abs(la.depth - lb.depth) == 1
+                let crossSilicone = la.depth == 0 && lb.depth == 0 && la.plate != lb.plate
+                if samePlateStep || crossSilicone { viaAdj[a].append(b) }
+            }
+        }
+
+        func stateIdx(_ i: Int, _ j: Int, _ l: Int) -> Int { l * cellCount + j * cols + i }
+        func heuristic(_ i: Int, _ j: Int, _ l: Int) -> Double {
+            Double(abs(i - gx) + abs(j - gy)) + (l == toLayer ? 0 : viaCost)
+        }
+
+        let total = cellCount * layerCount
+        var gScore = [Double](repeating: .infinity, count: total)
+        var parent = [Int](repeating: -1, count: total)
+        var visited = [Bool](repeating: false, count: total)
+        let startIdx = stateIdx(sx, sy, fromLayer)
+        let goalIdx = stateIdx(gx, gy, toLayer)
+        gScore[startIdx] = 0
+
+        var open = DoubleHeap()
+        open.push(f: heuristic(sx, sy, fromLayer), state: startIdx)
+        let neighbours = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+
+        while let popped = open.pop() {
+            let current = popped.state
+            if visited[current] { continue }
+            visited[current] = true
+            if current == goalIdx {
+                return reconstruct(parent: parent, goalIdx: goalIdx,
+                                   cellCount: cellCount, cols: cols,
+                                   layers: layers, grids: blocked)
+            }
+            let l = current / cellCount
+            let rem = current % cellCount
+            let ci = rem % cols, cj = rem / cols
+            let curGrid = blocked[l]
+
+            for (dx, dy) in neighbours {
+                let ni = ci + dx, nj = cj + dy
+                guard curGrid.inBounds(ni, nj) else { continue }
+                let isGoalCell = (ni == gx && nj == gy && l == toLayer)
+                if curGrid.isBlocked(ni, nj), !isGoalCell { continue }
+                let flat = l * cellCount + nj * cols + ni
+                let step = 1 + history[flat] + pFactor * Double(stamp[flat])
+                let tentative = gScore[current] + step
+                let nIdx = stateIdx(ni, nj, l)
+                if tentative < gScore[nIdx] {
+                    gScore[nIdx] = tentative
+                    parent[nIdx] = current
+                    open.push(f: tentative + heuristic(ni, nj, l), state: nIdx)
+                }
+            }
+            if !noVias.isBlocked(ci, cj) {
+                for nl in viaAdj[l] {
+                    let isGoalCell = (ci == gx && cj == gy && nl == toLayer)
+                    if blocked[nl].isBlocked(ci, cj), !isGoalCell { continue }
+                    let flat = nl * cellCount + cj * cols + ci
+                    let step = viaCost + history[flat] + pFactor * Double(stamp[flat])
+                    let tentative = gScore[current] + step
+                    let nIdx = stateIdx(ci, cj, nl)
+                    if tentative < gScore[nIdx] {
+                        gScore[nIdx] = tentative
+                        parent[nIdx] = current
+                        open.push(f: tentative + heuristic(ci, cj, nl), state: nIdx)
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func reconstruct(
+        parent: [Int], goalIdx: Int, cellCount: Int, cols: Int,
+        layers: [Layer], grids: [OccupancyGrid]
+    ) -> [(point: Point, layer: Layer)] {
+        var result: [(Point, Layer)] = []
+        var idx = goalIdx
+        while idx >= 0 {
+            let l = idx / cellCount
+            let rem = idx % cellCount
+            let i = rem % cols, j = rem / cols
+            result.append((grids[l].toWorld(i, j), layers[l]))
+            let next = parent[idx]
+            if next == idx || next < 0 { break }
+            idx = next
+        }
+        return result.reversed().map { (point: $0.0, layer: $0.1) }
+    }
+}
+
+/// Min-heap keyed on a `Double` f-score — the negotiated router's open set.
+/// Same lazy-deletion contract as `MinHeap`.
+struct DoubleHeap {
+    private var fs: [Double] = []
+    private var states: [Int] = []
+
+    mutating func push(f: Double, state: Int) {
+        fs.append(f); states.append(state)
+        var c = fs.count - 1
+        while c > 0 {
+            let p = (c - 1) / 2
+            if fs[p] <= fs[c] { break }
+            fs.swapAt(p, c); states.swapAt(p, c)
+            c = p
+        }
+    }
+
+    mutating func pop() -> (f: Double, state: Int)? {
+        guard !fs.isEmpty else { return nil }
+        let top = (f: fs[0], state: states[0])
+        let lastF = fs.removeLast(), lastS = states.removeLast()
+        if !fs.isEmpty {
+            fs[0] = lastF; states[0] = lastS
+            var p = 0
+            let n = fs.count
+            while true {
+                let left = 2 * p + 1, right = 2 * p + 2
+                var m = p
+                if left < n, fs[left] < fs[m] { m = left }
+                if right < n, fs[right] < fs[m] { m = right }
+                if m == p { break }
+                fs.swapAt(p, m); states.swapAt(p, m)
+                p = m
+            }
+        }
+        return top
     }
 }
 

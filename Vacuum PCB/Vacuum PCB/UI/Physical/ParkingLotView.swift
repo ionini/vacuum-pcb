@@ -18,6 +18,9 @@ struct ParkingLotView: View {
     /// True while a minimize run is in flight — drives the button's spinner
     /// and disabled state.
     let isMinimizing: Bool
+    /// Diagnostics from the last minimize run, shown as a compact readout
+    /// under the button. Nil before the first run.
+    let minimizeStats: Minimizer.Stats?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -60,11 +63,49 @@ struct ParkingLotView: View {
             .disabled(isMinimizing || document.physical.placements.count < 2)
             .help("Shrink the die: anneal placements while re-routing, then fit the outline")
 
+            if let s = minimizeStats, !isMinimizing {
+                minimizeReadout(s)
+            }
+
             Spacer()
         }
         .padding(.horizontal, 8)
         // Lives inside the document inspector now; no fixed width and no
         // opaque background — the inspector column provides both.
+    }
+
+    /// Compact post-run summary: how many search trials ran, what happened to
+    /// the die, and the DRC count before/after. Shows the user the search did
+    /// real work even when it declines to change an already-tight board.
+    @ViewBuilder
+    private func minimizeReadout(_ s: Minimizer.Stats) -> some View {
+        let beforeArea = s.outlineBefore.size.width * s.outlineBefore.size.height
+        let afterArea = s.outlineAfter.size.width * s.outlineAfter.size.height
+        let areaPct = beforeArea > 0 ? (1 - afterArea / beforeArea) * 100 : 0
+        let wirePct = s.wirelengthBefore > 0 ? (1 - s.wirelengthAfter / s.wirelengthBefore) * 100 : 0
+        VStack(alignment: .leading, spacing: 2) {
+            Text("\(s.iterations.formatted()) trials · \(String(format: "%.1fs", s.elapsed))")
+                .foregroundStyle(.secondary)
+            if s.adopted, afterArea < beforeArea - 0.5 {
+                Text("\(dims(s.outlineBefore)) → \(dims(s.outlineAfter)) mm  (−\(String(format: "%.0f", areaPct))% area)")
+                    .foregroundStyle(.green)
+            } else if s.adopted {
+                Text("tidier layout (wiring −\(String(format: "%.0f", max(0, wirePct)))%)")
+                    .foregroundStyle(.green)
+            } else {
+                Text("already compact — no smaller fit found")
+                    .foregroundStyle(.secondary)
+            }
+            Text("DRC \(s.baselineIssues) → \(s.finalIssues)")
+                .foregroundStyle(s.finalIssues > s.baselineIssues ? .orange : .secondary)
+        }
+        .font(.caption2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 2)
+    }
+
+    private func dims(_ r: Rect) -> String {
+        "\(Int(r.size.width.rounded()))×\(Int(r.size.height.rounded()))"
     }
 
     private var unplaced: [Component] {

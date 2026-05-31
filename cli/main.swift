@@ -175,6 +175,133 @@ func reportInspect(_ network: PneumaticNetwork, json: Bool) {
     print("pumps:       \(network.pumps.count)")
 }
 
+/// Runs `restarts` independent minimise searches (distinct seeds) in parallel
+/// across all cores and returns the best result — the smallest still-buildable
+/// die. Each search is a pure `CircuitDocument -> CircuitDocument` over a value
+/// type, so the only shared state is the lock-guarded parts cache; that makes
+/// `concurrentPerform` safe here. The whole batch finishes in about one
+/// `--seconds` budget (not N×), since the restarts run concurrently.
+func runMinimize(
+    _ doc: CircuitDocument, restarts: Int, baseSeed: UInt64,
+    options: (UInt64) -> Minimizer.Options, verbose: Bool
+) -> (doc: CircuitDocument, stats: Minimizer.Stats) {
+    if restarts == 1 {
+        return Minimizer.report(doc, options: options(baseSeed))
+    }
+    var results = [(doc: CircuitDocument, stats: Minimizer.Stats)?](repeating: nil, count: restarts)
+    let lock = NSLock()
+    DispatchQueue.concurrentPerform(iterations: restarts) { k in
+        let r = Minimizer.report(doc, options: options(baseSeed &+ UInt64(k)))
+        lock.lock(); results[k] = r; lock.unlock()
+    }
+    let runs = results.compactMap { $0 }
+    func dieArea(_ d: CircuitDocument) -> Double {
+        d.physical.boardOutline.size.width * d.physical.boardOutline.size.height
+    }
+    if verbose {
+        for (k, r) in runs.enumerated() {
+            print(String(format: "  restart %d (seed %llu): %@", k, baseSeed &+ UInt64(k), r.stats.summary))
+        }
+    }
+    // Best = adopted, smallest die, then least wirelength; fall back to any run
+    // (they all return the unchanged input when nothing beat it).
+    let best = runs.min { a, b in
+        if a.stats.adopted != b.stats.adopted { return a.stats.adopted }
+        let da = dieArea(a.doc), db = dieArea(b.doc)
+        if abs(da - db) > 1e-6 { return da < db }
+        return a.stats.wirelengthAfter < b.stats.wirelengthAfter
+    }
+    return best ?? Minimizer.report(doc, options: options(baseSeed))
+}
+
+func reportMinimize(_ before: CircuitDocument, _ after: CircuitDocument, stats: Minimizer.Stats, json: Bool) {
+    let beforeDie = before.physical.boardOutline.size.width * before.physical.boardOutline.size.height
+    let afterDie = after.physical.boardOutline.size.width * after.physical.boardOutline.size.height
+    if json {
+        let root: [String: Any] = [
+            "adopted": stats.adopted,
+            "iterations": stats.iterations,
+            "accepted": stats.accepted,
+            "rejected": stats.rejected,
+            "elapsed": stats.elapsed,
+            "dieBefore": beforeDie,
+            "dieAfter": afterDie,
+            "diePct": beforeDie > 0 ? (1 - afterDie / beforeDie) * 100 : 0,
+            "outlineBefore": ["w": stats.outlineBefore.size.width, "h": stats.outlineBefore.size.height],
+            "outlineAfter": ["w": stats.outlineAfter.size.width, "h": stats.outlineAfter.size.height],
+            "wireBefore": stats.wirelengthBefore,
+            "wireAfter": stats.wirelengthAfter,
+            "drcBefore": stats.baselineIssues,
+            "drcAfter": stats.finalIssues,
+        ]
+        printJSON(root)
+        return
+    }
+    print(stats.summary)
+    let saved = beforeDie > 0 ? (1 - afterDie / beforeDie) * 100 : 0
+    print(String(format: "die: %.0f×%.0f → %.0f×%.0f mm²  (%.1f%% area %@)",
+                 stats.outlineBefore.size.width, stats.outlineBefore.size.height,
+                 stats.outlineAfter.size.width, stats.outlineAfter.size.height,
+                 saved, stats.adopted ? "saved" : "— not adopted"))
+}
+
+/// Collapse a DRC issue list into a "kind: count" histogram for skimmable
+/// router-quality reporting.
+func drcHistogram(_ issues: [DRC.Issue]) -> [(String, Int)] {
+    var counts: [String: Int] = [:]
+    for issue in issues {
+        let key: String
+        switch issue.kind {
+        case .unplacedPin: key = "unplacedPin"
+        case .noRouteDrawn: key = "noRouteDrawn"
+        case .disconnectedPin: key = "disconnectedPin"
+        case .orphanVia: key = "orphanVia"
+        case .channelClearance: key = "channelClearance"
+        case .crossNetMerge: key = "crossNetMerge"
+        case .thinWall(let n, _, _, _, _): key = "thinWall(\(n.rawValue))"
+        case .matingIncompatible: key = "matingIncompatible"
+        case .matingDoubleBooked: key = "matingDoubleBooked"
+        case .screwClearance(_, let n, _, _): key = "screwClearance(\(n.rawValue))"
+        case .viaSpacing: key = "viaSpacing"
+        case .viaPad: key = "viaPad"
+        }
+        counts[key, default: 0] += 1
+    }
+    return counts.sorted { $0.value > $1.value }
+}
+
+/// Strip every route and re-route from scratch with the auto-router. Used to
+/// measure router quality independent of the placement search.
+func rerouteFromScratch(_ doc: CircuitDocument) -> CircuitDocument {
+    var out = doc
+    out.physical.routes.removeAll()
+    for entry in AutoRouter.planNegotiated(out) {
+        if let i = out.physical.routes.firstIndex(where: { $0.netId == entry.netId }) {
+            out.physical.routes[i].segments.append(entry.segment)
+        } else {
+            out.physical.routes.append(Route(netId: entry.netId, segments: [entry.segment]))
+        }
+    }
+    return out
+}
+
+func reportReroute(_ before: CircuitDocument, _ after: CircuitDocument, json: Bool) {
+    let b = DRC.check(before), a = DRC.check(after)
+    if json {
+        printJSON([
+            "drcBefore": b.count, "drcAfter": a.count,
+            "histBefore": Dictionary(uniqueKeysWithValues: drcHistogram(b)),
+            "histAfter": Dictionary(uniqueKeysWithValues: drcHistogram(a)),
+        ])
+        return
+    }
+    print("DRC before reroute: \(b.count)")
+    for (k, v) in drcHistogram(b) { print("  \(k): \(v)") }
+    print("DRC after reroute:  \(a.count)")
+    for (k, v) in drcHistogram(a) { print("  \(k): \(v)") }
+    for issue in a.prefix(40) { print("    • \(issue.summary)") }
+}
+
 func printJSON(_ obj: Any) {
     guard let data = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]),
           let str = String(data: data, encoding: .utf8) else {
@@ -196,12 +323,29 @@ USAGE:
   vacuum-cli simulate <file.vpcb> [options]
       Run the solver and print probe pressures (0 = vacuum, 1 = atmosphere).
 
+  vacuum-cli minimize <file.vpcb> [options]
+      Compact a placed-and-routed board and report the area saved.
+
+  vacuum-cli reroute <file.vpcb> [--out PATH] [--json]
+      Clear all routes, re-route from scratch, report the DRC breakdown.
+      Measures auto-router quality independent of placement.
+
 SIMULATE OPTIONS:
   --steps N            Number of fixed solver steps (default 500).
   --set LABEL=VALUE     Drive an input. VALUE is vac/atm or a number 0…1.
                         Repeatable.
   --probe LABEL         Only report this probe. Repeatable.
   --all-nets            Also print every net's pressure.
+  --json                Machine-readable output.
+
+MINIMIZE OPTIONS:
+  --out PATH            Write the minimized board to PATH (.vpcb).
+  --seconds N           Wall-clock budget per restart (default 10).
+  --restarts N          Independent search restarts, run in parallel across
+                        cores; the smallest DRC-clean result wins (default 1).
+                        Wall time ≈ --seconds regardless of N (up to core count).
+  --seed N              Base PRNG seed (default 0); restart k uses seed+k.
+  --iters N             Cap on placement-search trials per restart (default auto).
   --json                Machine-readable output.
 """
 
@@ -234,6 +378,11 @@ var sets: [(label: String, value: Double)] = []
 var probeFilter: [String] = []
 var showAllNets = false
 var json = false
+var outPath: String?
+var seconds: Double = 10
+var seed: UInt64 = 0
+var iters: Int?
+var restarts = 1
 
 var i = 0
 while i < args.count {
@@ -257,6 +406,26 @@ while i < args.count {
         i += 1
         guard i < args.count else { fail("error: --probe needs a LABEL") }
         probeFilter.append(args[i])
+    case "--out":
+        i += 1
+        guard i < args.count else { fail("error: --out needs a PATH") }
+        outPath = args[i]
+    case "--seconds":
+        i += 1
+        guard i < args.count, let n = Double(args[i]) else { fail("error: --seconds needs a number") }
+        seconds = n
+    case "--seed":
+        i += 1
+        guard i < args.count, let n = UInt64(args[i]) else { fail("error: --seed needs an integer") }
+        seed = n
+    case "--iters":
+        i += 1
+        guard i < args.count, let n = Int(args[i]) else { fail("error: --iters needs an integer") }
+        iters = n
+    case "--restarts":
+        i += 1
+        guard i < args.count, let n = Int(args[i]), n >= 1 else { fail("error: --restarts needs a positive integer") }
+        restarts = n
     default:
         fail("error: unknown option \(arg)\n\n\(usage)")
     }
@@ -288,6 +457,30 @@ do {
             probeFilter: probeFilter,
             json: json
         )
+
+    case "minimize":
+        let auto = Minimizer.Options.make(forComponentCount: doc.physical.placements.count)
+        func optionsFor(seed s: UInt64) -> Minimizer.Options {
+            Minimizer.Options(
+                maxIterations: iters ?? auto.maxIterations,
+                timeBudget: seconds, seed: s, margin: auto.margin
+            )
+        }
+        let (result, stats) = runMinimize(doc, restarts: restarts, baseSeed: seed,
+                                           options: optionsFor, verbose: !json)
+        reportMinimize(doc, result, stats: stats, json: json)
+        if let outPath {
+            try result.encoded().write(to: URL(fileURLWithPath: outPath))
+            if !json { print("wrote \(outPath)") }
+        }
+
+    case "reroute":
+        let result = rerouteFromScratch(doc)
+        reportReroute(doc, result, json: json)
+        if let outPath {
+            try result.encoded().write(to: URL(fileURLWithPath: outPath))
+            if !json { print("wrote \(outPath)") }
+        }
 
     default:
         fail("error: unknown command '\(command)'\n\n\(usage)")

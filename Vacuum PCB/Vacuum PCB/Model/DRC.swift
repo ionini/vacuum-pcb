@@ -15,6 +15,19 @@ enum ThinWallNeighbor: String, Hashable {
     case bore
 }
 
+/// What a screw's clearance bore is too close to. A screw is a full-height
+/// mechanical bore (head countersink + through-hole + nut pocket), so it
+/// conflicts with fluid features on *either* plate — the checks are
+/// plate-agnostic, unlike the per-plate channel checks.
+enum ScrewNeighbor: String, Hashable {
+    /// A routed channel segment (on any layer).
+    case route
+    /// A via / cross-plate bore.
+    case via
+    /// A transistor or LED drop / gate bore (a "pad").
+    case pad
+}
+
 /// Topology checks on the physical projection.
 ///
 /// The schematic owns the netlist; the physical layout is a projection that
@@ -116,6 +129,36 @@ enum DRC {
             /// A connector instance appears in more than one `Mating`.
             /// V1 allows each connector to be mated at most once.
             case matingDoubleBooked
+            /// A screw's clearance bore sits close enough to a routed channel,
+            /// a via, or a transistor/LED pad that the printed wall between
+            /// them falls below `minWallThickness` — the fastener would break
+            /// into the fluid path. `screwId` is the offending screw placement
+            /// (for canvas selection); `position` is the screw centre.
+            case screwClearance(
+                screwId: UUID,
+                neighbor: ScrewNeighbor,
+                gap: Double,
+                position: Point
+            )
+            /// Two vias on **different** nets sit close enough that the printed
+            /// wall between their bores falls below `minWallThickness` (they'd
+            /// merge into one void). `otherNetId` is the other via's net.
+            case viaSpacing(
+                otherNetId: UUID,
+                otherNetLabel: String,
+                layer: Layer,
+                gap: Double,
+                position: Point
+            )
+            /// A via sits close enough to a **foreign** transistor/LED pad bore
+            /// that the printed wall falls below `minWallThickness`.
+            /// `padComponentId` identifies the part whose pad is encroached.
+            case viaPad(
+                padComponentId: UUID,
+                layer: Layer,
+                gap: Double,
+                position: Point
+            )
         }
 
         var summary: String {
@@ -150,6 +193,21 @@ enum DRC {
                 return "\(netLabel): \(reason)"
             case .matingDoubleBooked:
                 return "\(netLabel): connector mated more than once"
+            case let .screwClearance(_, neighbor, gap, _):
+                let what: String
+                switch neighbor {
+                case .route: what = "a channel"
+                case .via:   what = "a via"
+                case .pad:   what = "a transistor pad"
+                }
+                let gapTxt = gap < 0.01 ? "wall < 0.01 mm" : "\(String(format: "%.2f", gap)) mm wall"
+                return "\(netLabel): screw too close to \(what) (\(gapTxt))"
+            case let .viaSpacing(_, other, layer, gap, _):
+                let gapTxt = gap < 0.01 ? "touching" : "\(String(format: "%.2f", gap)) mm wall"
+                return "\(netLabel) ↔ \(other) vias on \(layer.uiLabel): \(gapTxt)"
+            case let .viaPad(_, layer, gap, _):
+                let gapTxt = gap < 0.01 ? "touching" : "\(String(format: "%.2f", gap)) mm wall"
+                return "\(netLabel) via near a transistor pad on \(layer.uiLabel): \(gapTxt)"
             }
         }
     }
@@ -219,6 +277,17 @@ enum DRC {
             selectSide(netId: issue.netId, label: issue.netLabel)
             selectSide(netId: otherNetId, label: otherLabel)
             return sel.isEmpty ? nil : sel
+        case .screwClearance(let screwId, _, _, _):
+            return .placement(screwId)
+        case .viaPad(let padComponentId, _, _, _):
+            return .placement(padComponentId)
+        case .viaSpacing:
+            // Both ends are vias mid-route; the net pins are the actionable
+            // handle (drag a part to open the gap).
+            guard let net = document.logic.nets.first(where: { $0.id == issue.netId }) else { return nil }
+            var sel = PhysicalSelection()
+            sel.placements = Set(net.pins.map(\.componentId))
+            return sel.isEmpty ? nil : sel
         }
     }
 
@@ -252,6 +321,13 @@ enum DRC {
             return (placement.worldPosition(of: pin), placement.resolvedLayer(of: pin, on: comp))
         case let .thinWall(_, layer, _, _, pos):
             return (pos, layer)
+        case let .viaSpacing(_, _, layer, _, pos):
+            return (pos, layer)
+        case let .viaPad(_, layer, _, pos):
+            return (pos, layer)
+        case let .screwClearance(_, _, _, pos):
+            // A screw spans both plates; ping on the top depth-0 layer.
+            return (pos, Layer(plate: .top, depth: 0))
         case .unplacedPin, .noRouteDrawn, .matingIncompatible, .matingDoubleBooked:
             return nil
         }
@@ -266,7 +342,198 @@ enum DRC {
         issues.append(contentsOf: crossNetMergeIssues(in: document))
         issues.append(contentsOf: thinWallIssues(in: document))
         issues.append(contentsOf: matingIssues(in: document))
+        issues.append(contentsOf: screwClearanceIssues(in: document))
+        issues.append(contentsOf: viaClearanceIssues(in: document))
         return issues
+    }
+
+    // MARK: - Screw clearance
+
+    /// A printed bore description used by the screw / via clearance checks:
+    /// a vertical hole of `radius` at `position`, attributed to a net (and,
+    /// for transistor/LED pads, the owning component).
+    private struct Bore {
+        let position: Point
+        let radius: Double
+        let layer: Layer
+        let netId: UUID?
+        let componentId: UUID?
+    }
+
+    /// Collects every via bore (one per via waypoint) and every transistor /
+    /// LED pad bore in the document, on their resolved layers, tagged with the
+    /// net (and component) they belong to so the clearance checks can skip
+    /// same-net pairs that are meant to fuse.
+    private static func collectBores(in doc: CircuitDocument) -> [Bore] {
+        let m = doc.manufacturing
+        let channelRadius = m.channelDiameter / 2
+        var pinToNet: [PinRef: UUID] = [:]
+        for net in doc.logic.nets {
+            for pinRef in net.pins { pinToNet[pinRef] = net.id }
+        }
+        var bores: [Bore] = []
+        for route in doc.physical.routes {
+            for segment in route.segments {
+                for wp in segment.waypoints where wp.kind == .via {
+                    bores.append(Bore(position: wp.position, radius: channelRadius,
+                                      layer: segment.layer, netId: route.netId, componentId: nil))
+                }
+            }
+        }
+        for placement in doc.physical.placements {
+            guard let comp = doc.logic.components.first(where: { $0.id == placement.componentId })
+            else { continue }
+            switch comp.kind {
+            case .transistor, .led:
+                let fp = comp.footprint(m, snapshots: doc.librarySnapshots)
+                for pin in fp.pins {
+                    let ref = PinRef(componentId: placement.componentId, pinKey: pin.key)
+                    bores.append(Bore(
+                        position: placement.worldPosition(of: pin),
+                        radius: channelRadius,
+                        layer: placement.resolvedLayer(of: pin, on: comp),
+                        netId: pinToNet[ref],
+                        componentId: placement.componentId
+                    ))
+                }
+            default:
+                break
+            }
+        }
+        return bores
+    }
+
+    /// Flags screws whose clearance bore would break into a nearby channel,
+    /// via, or transistor/LED pad. A screw is a full-height bore through both
+    /// plates, so the check ignores layers and uses the screw head's
+    /// countersink radius (the widest part). One issue per (screw, neighbor
+    /// kind) so a screw in a crowded area reports at most three times.
+    private static func screwClearanceIssues(in doc: CircuitDocument) -> [Issue] {
+        let m = doc.manufacturing
+        let threshold = m.minWallThickness
+        guard threshold > 0 else { return [] }
+        let headRadius = ScrewGeometry.headDiameter / 2
+        let channelRadius = m.channelDiameter / 2
+
+        let screws: [(id: UUID, label: String, p: Point)] = doc.physical.placements.compactMap { pl in
+            guard let comp = doc.logic.components.first(where: { $0.id == pl.componentId }),
+                  comp.kind == .screw else { return nil }
+            return (comp.id, comp.label.isEmpty ? "Screw" : comp.label, pl.position)
+        }
+        guard !screws.isEmpty else { return [] }
+
+        let edges = collectRouteEdges(in: doc)
+        let bores = collectBores(in: doc)
+
+        struct ReportKey: Hashable { let screwId: UUID; let neighbor: ScrewNeighbor }
+        var reported: Set<ReportKey> = []
+        var issues: [Issue] = []
+        func emit(_ screw: (id: UUID, label: String, p: Point), _ neighbor: ScrewNeighbor, _ gap: Double) {
+            let key = ReportKey(screwId: screw.id, neighbor: neighbor)
+            if reported.contains(key) { return }
+            reported.insert(key)
+            issues.append(Issue(
+                netId: UUID(), netLabel: screw.label,
+                kind: .screwClearance(screwId: screw.id, neighbor: neighbor,
+                                      gap: max(0, gap), position: screw.p)
+            ))
+        }
+
+        for screw in screws {
+            for edge in edges {
+                let d = pointSegmentDistance(screw.p, edge.a, edge.b)
+                if d - headRadius - channelRadius < threshold {
+                    emit(screw, .route, d - headRadius - channelRadius)
+                }
+            }
+            for bore in bores {
+                let dx = screw.p.x - bore.position.x, dy = screw.p.y - bore.position.y
+                let wall = (dx * dx + dy * dy).squareRoot() - headRadius - bore.radius
+                if wall < threshold {
+                    emit(screw, bore.componentId == nil ? .via : .pad, wall)
+                }
+            }
+        }
+        return issues
+    }
+
+    // MARK: - Via clearance (via↔via, via↔pad)
+
+    /// Flags via bores that sit too close to a *foreign-net* via or transistor
+    /// pad on the same plate — the printed walls between the two bores fall
+    /// below `minWallThickness` and would merge into one void. The existing
+    /// `thinWall(.bore)` check only measures *channel edges* against bores;
+    /// this adds the bore-against-bore cases it misses. Same-net pairs are
+    /// skipped (they're meant to fuse).
+    private static func viaClearanceIssues(in doc: CircuitDocument) -> [Issue] {
+        let m = doc.manufacturing
+        let threshold = m.minWallThickness
+        guard threshold > 0 else { return [] }
+        let labels = Dictionary(uniqueKeysWithValues: doc.logic.nets.map { ($0.id, $0.label) })
+
+        let bores = collectBores(in: doc)
+        let vias = bores.filter { $0.componentId == nil }   // route vias only
+        guard !vias.isEmpty else { return [] }
+
+        func dist(_ a: Point, _ b: Point) -> Double {
+            ((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y)).squareRoot()
+        }
+
+        struct PairKey: Hashable {
+            let a: UUID; let b: UUID; let plate: Plate
+            init(_ x: UUID, _ y: UUID, _ plate: Plate) {
+                let ord = x.uuidString < y.uuidString ? (x, y) : (y, x)
+                self.a = ord.0; self.b = ord.1; self.plate = plate
+            }
+        }
+        var reported: Set<PairKey> = []
+        var issues: [Issue] = []
+
+        // via ↔ via (different nets, same plate)
+        for i in 0..<vias.count {
+            for j in (i + 1)..<vias.count {
+                let a = vias[i], b = vias[j]
+                guard a.layer.plate == b.layer.plate else { continue }
+                guard let an = a.netId, let bn = b.netId, an != bn else { continue }
+                let wall = dist(a.position, b.position) - a.radius - b.radius
+                guard wall < threshold else { continue }
+                let key = PairKey(an, bn, a.layer.plate)
+                if reported.contains(key) { continue }
+                reported.insert(key)
+                issues.append(Issue(
+                    netId: an, netLabel: labels[an] ?? "?",
+                    kind: .viaSpacing(otherNetId: bn, otherNetLabel: labels[bn] ?? "?",
+                                      layer: a.layer, gap: max(0, wall),
+                                      position: midpoint(a.position, b.position))
+                ))
+            }
+        }
+
+        // via ↔ foreign transistor/LED pad (same plate)
+        let pads = bores.filter { $0.componentId != nil }
+        struct VPKey: Hashable { let net: UUID; let comp: UUID; let plate: Plate }
+        var reportedVP: Set<VPKey> = []
+        for via in vias {
+            guard let vn = via.netId else { continue }
+            for pad in pads where pad.layer.plate == via.layer.plate {
+                if pad.netId == vn { continue }   // same net: meant to connect
+                let wall = dist(via.position, pad.position) - via.radius - pad.radius
+                guard wall < threshold else { continue }
+                let key = VPKey(net: vn, comp: pad.componentId!, plate: via.layer.plate)
+                if reportedVP.contains(key) { continue }
+                reportedVP.insert(key)
+                issues.append(Issue(
+                    netId: vn, netLabel: labels[vn] ?? "?",
+                    kind: .viaPad(padComponentId: pad.componentId!, layer: via.layer,
+                                  gap: max(0, wall), position: via.position)
+                ))
+            }
+        }
+        return issues
+    }
+
+    private static func midpoint(_ a: Point, _ b: Point) -> Point {
+        Point(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
     }
 
     /// Resolves a `ConnectorEndpoint` against the parent document, returning

@@ -67,7 +67,10 @@ enum Minimizer {
 
         static func make(forComponentCount n: Int) -> Options {
             Options(
-                maxIterations: min(20000, max(2000, n * 800)),
+                // Generous cap so long (CLI / overnight) runs are bounded by
+                // `timeBudget`, not by iterations; the in-app button's short
+                // budget stops well before this.
+                maxIterations: min(2_000_000, max(20_000, n * 4_000)),
                 timeBudget: 3.0,
                 seed: 0x5EED_FACE,
                 margin: 3.0
@@ -149,39 +152,60 @@ enum Minimizer {
 
         let options = optionsIn ?? .make(forComponentCount: input.physical.placements.count)
 
-        // ── Phase 1: greedy, routing-aware local repair ───────────────────────
-        // Pull each component toward the centroid of what it's wired to,
-        // re-routing only its own nets and keeping the move only when it stays
-        // DRC-clean *and* lowers the cost. A part already well placed has no
-        // improving move, so it stays put — the search fixes a displaced part
-        // (and tightens the wiring everywhere it can) without scrambling the
-        // rest, which would force a full re-route the single-pass router can't
-        // realise on a congested board. Most-displaced parts are repaired first
-        // so a tight time budget is spent where it matters. Passes repeat until
-        // a pass makes no progress, the iteration cap, or the deadline.
+        // ── Phase 1: simulated-annealing placement search ─────────────────────
+        // Perturb one component's pose at a time (translate / rotate; edge
+        // features slide along their edge), then **incrementally re-route** the
+        // nets the move disturbs *plus their congested neighbours* with the
+        // negotiated rip-up router — so a part can pack tighter and the router
+        // renegotiates the local channels around it instead of failing. A move
+        // is rejected outright unless it keeps DRC within the baseline; among
+        // DRC-legal moves, annealing accepts cost improvements always and
+        // cost-worse moves with a cooling probability, so it climbs out of the
+        // local minima the old greedy repair got stuck in. The best DRC-clean
+        // layout seen is carried into phase 2.
         var working = input
+        var rng = SplitMix64(seed: options.seed)
         let deadline = Date().addingTimeInterval(options.timeBudget)
-        let maxPasses = max(2, options.maxIterations / max(1, input.physical.placements.count) / 4)
-        passLoop: for _ in 0..<maxPasses {
-            // Recompute each pass: a component's slack (distance from its net
-            // centroid) shrinks as it's repaired, so the ordering re-prioritises.
-            let order = working.physical.placements.indices
-                .map { (index: $0, slack: displacementToNetCentroid(working, $0)) }
-                .filter { $0.slack > pitch }
-                .sorted { $0.slack > $1.slack }
-            if order.isEmpty { break }
-            var improvedThisPass = false
-            for entry in order {
-                if Date() >= deadline { break passLoop }
+        let movable = movableIndices(input)
+
+        var current = working
+        var currentCost = cost(of: current)
+        var bestCost = currentCost
+        // Initial temperature: a small fraction of the starting cost, so early
+        // moves that worsen cost by a few percent are usually accepted and the
+        // search can rearrange before cooling locks it in.
+        let t0 = max(1.0, currentCost * 0.04)
+
+        if !movable.isEmpty {
+            for iter in 0..<options.maxIterations {
+                if Date() >= deadline { break }
                 stats.iterations += 1
-                if tryRepair(&working, index: entry.index, baseline: baseline, pitch: pitch) {
+                let progress = Double(iter) / Double(max(1, options.maxIterations))
+                let temperature = max(t0 * 1e-3, t0 * (1 - progress))   // linear cool
+
+                // Bias selection toward components far from the board centre
+                // (moving an extreme feature inward is what lets the die shrink)
+                // and those displaced from their net centroid.
+                let index = pickComponent(current, movable, &rng)
+                var trial = current
+                guard proposeMove(&trial, index: index, jump: 1 - progress,
+                                  pitch: pitch, rng: &rng) else { stats.rejected += 1; continue }
+
+                let nets = ripUpNets(trial, index: index)
+                reroute(&trial, nets: nets)
+                guard blockingIssueCount(trial) <= baseline else { stats.rejected += 1; continue }
+
+                let c = cost(of: trial)
+                let dCost = c - currentCost
+                if dCost <= 0 || rng.unitDouble() < exp(-dCost / temperature) {
+                    current = trial
+                    currentCost = c
                     stats.accepted += 1
-                    improvedThisPass = true
+                    if c < bestCost - 1e-9 { bestCost = c; working = trial }
                 } else {
                     stats.rejected += 1
                 }
             }
-            if !improvedThisPass { break }
         }
 
         // ── Phase 2: shrink-fit & adopt ──────────────────────────────────────
@@ -271,69 +295,113 @@ enum Minimizer {
 
     // MARK: - Local repair
 
-    /// Tries to improve component `index` by nudging it toward the centroid of
-    /// the foreign pins it shares nets with (the wirelength-minimising target),
-    /// re-routing only its own nets. A few fractions of the full step are tried
-    /// (a full jump can overshoot or overlap); the cheapest variant that stays
-    /// within the DRC `baseline` *and* lowers the overall cost is kept. Returns
-    /// true if `working` was improved. Edge features slide along their edge
-    /// toward the target rather than moving inward.
-    private static func tryRepair(
-        _ working: inout CircuitDocument, index: Int, baseline: Int, pitch: Double
-    ) -> Bool {
-        guard let info = footprintInfo(working, index),
-              let target = netCentroidTarget(working, index),
-              let myCentroid = pinCentroid(working, index)
-        else { return false }
-        let comp = info.comp
-        let outline = working.physical.boardOutline
-        let placement = working.physical.placements[index]
-        let isConnector = comp.kind == .connector && placement.edgeAnchor != nil
-        let isEdge = isConnector || edgeFeatureKinds.contains(comp.kind)
+    /// Component indices the search is allowed to move. Everything with a
+    /// footprint except screws — screws are user-placed mechanical features and
+    /// stay put (moving one could pull a mount off its intended spot).
+    private static func movableIndices(_ doc: CircuitDocument) -> [Int] {
+        doc.physical.placements.indices.filter { i in
+            guard let c = doc.logic.components.first(where: { $0.id == doc.physical.placements[i].componentId })
+            else { return false }
+            return c.kind != .screw
+        }
+    }
 
-        // The nets that must be re-routed when this component moves.
+    /// Roulette-picks a movable component, weighting toward parts far from the
+    /// board centre (pulling an extreme feature inward is what lets the die
+    /// shrink) and parts displaced from their net centroid (loose wiring).
+    private static func pickComponent(
+        _ doc: CircuitDocument, _ movable: [Int], _ rng: inout SplitMix64
+    ) -> Int {
+        let o = doc.physical.boardOutline
+        let cx = (o.minX + o.maxX) / 2, cy = (o.minY + o.maxY) / 2
+        var weights: [Double] = []
+        var total = 0.0
+        for i in movable {
+            let p = doc.physical.placements[i].position
+            let w = 1.0 + hypot(p.x - cx, p.y - cy) + displacementToNetCentroid(doc, i)
+            weights.append(w); total += w
+        }
+        var pick = rng.unitDouble() * total
+        for (k, w) in weights.enumerated() {
+            pick -= w
+            if pick <= 0 { return movable[k] }
+        }
+        return movable[movable.count - 1]
+    }
+
+    /// Mutates one component's pose in place. Edge features (and connectors)
+    /// slide along their edge; interior parts either rotate (a quarter of the
+    /// time) or translate — half the translations aim a fraction of the way
+    /// toward the net centroid (tightens wiring), half are a random jump whose
+    /// reach scales with `jump` ∈ [0,1] (hot early, cold late). Returns false
+    /// if the result is a no-op (clamped/snapped back to where it started).
+    private static func proposeMove(
+        _ doc: inout CircuitDocument, index: Int, jump: Double, pitch: Double,
+        rng: inout SplitMix64
+    ) -> Bool {
+        guard let info = footprintInfo(doc, index) else { return false }
+        let comp = info.comp
+        let outline = doc.physical.boardOutline
+        let before = doc.physical.placements[index]
+        let isConnector = comp.kind == .connector && before.edgeAnchor != nil
+        let isEdge = isConnector || edgeFeatureKinds.contains(comp.kind)
+        let target = netCentroidTarget(doc, index)
+
+        if isEdge {
+            let edge = isConnector ? before.edgeAnchor!.edge
+                                   : nearestEdge(to: before.position, in: outline)
+            let len = edgeLength(edge, in: outline)
+            let clearance = isConnector ? info.fp.exclusionRect.size.height / 2
+                : max(info.fp.boundingRect.size.width, info.fp.boundingRect.size.height) / 2
+            let curOff = offsetAlongEdge(before.position, edge: edge, outline: outline)
+            // Aim toward the net centroid's projection on the edge, plus jitter.
+            let aim = target.map { offsetAlongEdge($0, edge: edge, outline: outline) } ?? curOff
+            let span = max(pitch, len * 0.25 * (0.2 + jump))
+            let raw = curOff + (aim - curOff) * 0.5 + (rng.unitDouble() * 2 - 1) * span
+            var off = (raw / pitch).rounded() * pitch
+            off = len - clearance >= clearance ? max(clearance, min(len - clearance, off)) : len / 2
+            let inset = isConnector ? 0 : edgeInset(info.fp)
+            placeOnEdge(&doc.physical.placements[index], edge: edge, offset: off, inset: inset,
+                        isConnector: isConnector, outline: outline)
+        } else if !isConnector, comp.kind != .connector, rng.unitDouble() < 0.25 {
+            // Rotate to one of the four orientations (not the current one).
+            let options = Rotation.allCases.filter { $0 != before.rotation }
+            doc.physical.placements[index].rotation = options[rng.below(options.count)]
+        } else {
+            let ext = rotatedExtents(info.fp.boundingRect, before.rotation)
+            let dest: Point
+            if let target, rng.unitDouble() < 0.5, let c = pinCentroid(doc, index) {
+                let frac = 0.3 + 0.7 * rng.unitDouble()
+                dest = Point(x: before.position.x + (target.x - c.x) * frac,
+                             y: before.position.y + (target.y - c.y) * frac)
+            } else {
+                let span = max(pitch, max(outline.size.width, outline.size.height) * 0.3 * (0.1 + jump))
+                dest = Point(x: before.position.x + (rng.unitDouble() * 2 - 1) * span,
+                             y: before.position.y + (rng.unitDouble() * 2 - 1) * span)
+            }
+            doc.physical.placements[index].position = clampInside(
+                dest, ext: ext, outline: outline, pitch: pitch)
+        }
+
+        let after = doc.physical.placements[index]
+        return after.rotation != before.rotation
+            || abs(after.position.x - before.position.x) > 0.01
+            || abs(after.position.y - before.position.y) > 0.01
+    }
+
+    /// Nets to rip up when component `index` moves: just the nets the moved
+    /// component touches. Everything else keeps its existing (often hand-)
+    /// routing as a fixed obstacle, so the move's cost reflects only the moved
+    /// net's change — re-routing neighbours too would replace good hand routes
+    /// with longer auto ones and drown the signal. The negotiated router still
+    /// threads the ripped nets around all the frozen routing.
+    private static func ripUpNets(_ doc: CircuitDocument, index: Int) -> Set<UUID> {
+        let id = doc.physical.placements[index].componentId
         var nets: Set<UUID> = []
-        for net in working.logic.nets where net.pins.contains(where: { $0.componentId == comp.id }) {
+        for net in doc.logic.nets where net.pins.contains(where: { $0.componentId == id }) {
             nets.insert(net.id)
         }
-
-        let baseCost = cost(of: working)
-        var bestDoc: CircuitDocument?
-        var bestCost = baseCost
-        let dxFull = target.x - myCentroid.x, dyFull = target.y - myCentroid.y
-
-        for frac in [1.0, 0.5] {
-            var trial = working
-            if isEdge {
-                let edge = isConnector ? placement.edgeAnchor!.edge
-                                       : nearestEdge(to: placement.position, in: outline)
-                let clearance = isConnector ? info.fp.exclusionRect.size.height / 2
-                    : max(info.fp.boundingRect.size.width, info.fp.boundingRect.size.height) / 2
-                let len = edgeLength(edge, in: outline)
-                let desired = Point(x: placement.position.x + dxFull * frac,
-                                    y: placement.position.y + dyFull * frac)
-                var off = (offsetAlongEdge(desired, edge: edge, outline: outline) / pitch).rounded() * pitch
-                off = len - clearance >= clearance ? max(clearance, min(len - clearance, off)) : len / 2
-                let inset = isConnector ? 0 : edgeInset(info.fp)
-                placeOnEdge(&trial.physical.placements[index], edge: edge, offset: off, inset: inset,
-                            isConnector: isConnector, outline: outline)
-            } else {
-                let ext = rotatedExtents(info.fp.boundingRect, placement.rotation)
-                trial.physical.placements[index].position = clampInside(
-                    Point(x: placement.position.x + dxFull * frac, y: placement.position.y + dyFull * frac),
-                    ext: ext, outline: outline, pitch: pitch)
-            }
-            // Skip if the clamped/snapped result is a no-op.
-            let np = trial.physical.placements[index].position
-            if abs(np.x - placement.position.x) < 0.01, abs(np.y - placement.position.y) < 0.01 { continue }
-
-            reroute(&trial, nets: nets)
-            guard blockingIssueCount(trial) <= baseline else { continue }
-            let c = cost(of: trial)
-            if c < bestCost - 1e-6 { bestCost = c; bestDoc = trial }
-        }
-        if let bestDoc { working = bestDoc; return true }
-        return false
+        return nets
     }
 
     /// Centroid of the foreign pins this component shares nets with — the point
@@ -376,17 +444,16 @@ enum Minimizer {
 
     // MARK: - Re-routing & validity
 
-    /// Re-plans only the given nets (the ones whose moved component touches),
-    /// leaving other routing intact. Used by the local repair and the
-    /// shrink-fit's edge re-anchor.
+    /// Rips up the given nets and re-routes them with the negotiated-congestion
+    /// router, treating every *other* net's route as a fixed obstacle. This is
+    /// the incremental rip-up the search leans on: only the disturbed nets (and
+    /// the congested neighbours the caller folds into `nets`) renegotiate,
+    /// while the rest of the hand/auto routing stays put — keeping DRC near the
+    /// baseline instead of failing a full from-scratch re-route.
     private static func reroute(_ doc: inout CircuitDocument, nets: Set<UUID>) {
         guard !nets.isEmpty else { return }
         doc.physical.routes.removeAll { nets.contains($0.netId) }
-        applyPlan(&doc)
-    }
-
-    private static func applyPlan(_ doc: inout CircuitDocument) {
-        for entry in AutoRouter.plan(doc) {
+        for entry in AutoRouter.planNegotiated(doc, ripUp: nets) {
             if let i = doc.physical.routes.firstIndex(where: { $0.netId == entry.netId }) {
                 doc.physical.routes[i].segments.append(entry.segment)
             } else {
@@ -623,4 +690,31 @@ enum Minimizer {
     }
 
     private static func areaOf(_ r: Rect) -> Double { r.size.width * r.size.height }
+}
+
+/// Small, fast, seedable PRNG (SplitMix64) so a minimise run is reproducible
+/// for a given seed — the determinism the tests pin — while parallel CLI
+/// restarts each get a distinct, independent stream from a distinct seed.
+struct SplitMix64 {
+    private var state: UInt64
+    init(seed: UInt64) { state = seed &+ 0x9E3779B97F4A7C15 }
+
+    mutating func next() -> UInt64 {
+        state = state &+ 0x9E3779B97F4A7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58476D1CE4E5B9
+        z = (z ^ (z >> 27)) &* 0x94D049BB133111EB
+        return z ^ (z >> 31)
+    }
+
+    /// Uniform double in [0, 1) with 53 bits of mantissa.
+    mutating func unitDouble() -> Double {
+        Double(next() >> 11) * (1.0 / 9_007_199_254_740_992.0)
+    }
+
+    /// Uniform integer in [0, n).
+    mutating func below(_ n: Int) -> Int {
+        guard n > 0 else { return 0 }
+        return Int(next() % UInt64(n))
+    }
 }
