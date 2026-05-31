@@ -177,10 +177,20 @@ final class SimulationState {
         // first time, and whenever `reset()` / `rebuild(...)` cleared them.
         var localPressures = workingPressures ?? pressureByNet
         var localTransistors = workingTransistors ?? transistorOpenness
-        // Clamp to a small batch of steps per frame so a hitch in the UI
-        // clock doesn't snowball into a multi-second catch-up burst.
+        // Per-tick fixed-step budget. It scales with `timeScale` so a fast
+        // clock actually advances that much sim-time — we hold `dt` small for
+        // per-step accuracy and buy speed by taking *more* steps, not bigger
+        // ones. The budget is what one 60 Hz frame would need at this speed,
+        // times a 4× slack so ordinary clock jitter is absorbed without
+        // dropping time, and it stays bounded by an absolute ceiling. Hitting
+        // the ceiling drains the backlog so a real stall (e.g. the app paused
+        // by the OS) can't snowball into an unrecoverable catch-up burst — the
+        // sim just runs slower than the requested multiple under that load.
+        let nominalFrame = 1.0 / 60.0
+        let targetSteps = Int((nominalFrame * max(0, params.timeScale) / dt).rounded(.up))
+        let maxSteps = min(2000, max(8, targetSteps * 4))
         var steps = 0
-        while simAccumulator >= dt && steps < 8 {
+        while simAccumulator >= dt && steps < maxSteps {
             SimulationEngine.step(
                 network: network, params: params,
                 pressures: &localPressures,
@@ -190,7 +200,7 @@ final class SimulationState {
             simAccumulator -= dt
             steps += 1
         }
-        if steps == 8 {
+        if steps == maxSteps {
             // Drop the rest of the backlog instead of catching up forever.
             simAccumulator = 0
         }

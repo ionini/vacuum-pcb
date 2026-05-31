@@ -81,12 +81,12 @@ struct SimulateView: View {
             HStack(spacing: 4) {
                 Image(systemName: "gauge.with.dots.needle.50percent")
                     .foregroundStyle(.secondary)
-                Slider(value: $state.params.timeScale, in: 0.1...5.0)
+                Slider(value: $state.params.timeScale, in: 0.1...20.0)
                     .frame(width: 100)
                 Text(String(format: "×%.1f", state.params.timeScale))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
-                    .frame(width: 32, alignment: .leading)
+                    .frame(width: 40, alignment: .leading)
             }
         }
 
