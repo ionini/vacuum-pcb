@@ -71,6 +71,29 @@ Library files may themselves use sub-parts — nesting expands recursively at
 flatten / render time. Reference cycles between files are tolerated at load
 and broken at use site with a red placeholder.
 
+## Versioning your designs (iCloud documents)
+
+The `.vpcb` design files live in iCloud at
+`~/Library/Mobile Documents/iCloud~com~ionini~Vacuum-PCB/Documents` (synced by
+the app), **separate** from this source repo. They're under their own git repo
+that uses a split layout so iCloud never corrupts git internals:
+
+- **Working tree:** the iCloud Documents folder (untouched, still iCloud-synced;
+  only adds a one-line `.git` pointer file + `.gitignore`).
+- **Git directory:** `~/Documents/dev/vacuum-docs` — all volatile git internals
+  (index, locks, packfiles) live here, outside iCloud.
+
+Commit design changes from the iCloud folder with plain git:
+
+```bash
+cd "$HOME/Library/Mobile Documents/iCloud~com~ionini~Vacuum-PCB/Documents"
+git status && git add -A && git commit -m "…"
+```
+
+Caveats: this machine only (the `.git` pointer holds an absolute path), and
+there's no remote yet — it's local history only. `.DS_Store`, `*.icloud`
+placeholders, and `*.zip` exports are gitignored.
+
 ## Build
 
 Standard Xcode project. Open `Vacuum PCB.xcodeproj`, Run.
