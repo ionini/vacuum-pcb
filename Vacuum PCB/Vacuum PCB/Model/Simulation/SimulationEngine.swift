@@ -156,6 +156,22 @@ enum SimulationEngine {
                 rhs[idx] += g * target
             }
 
+            // 4c. Global leak. No real silicone/PCB sandwich seals perfectly,
+            // so every free net gets a faint conductive edge to atmosphere
+            // (the virtual anchor at 1.0). A net sitting at atm sees no flow;
+            // a net the pump is holding at vacuum bleeds back toward atm at a
+            // rate proportional to its vacuum depth, exactly like a resistor
+            // tied to an ATM vent. The pump's finite Q-vs-P budget then has to
+            // keep working to hold the rail down. Skipped entirely at g=0 so
+            // a sealed system reproduces the historical behaviour bit-for-bit.
+            if params.leakConductance > 0 {
+                let g = params.leakConductance
+                for idx in 0..<n {
+                    y[idx * n + idx] += g
+                    rhs[idx] += g * 1.0  // atmosphere
+                }
+            }
+
             // 5. Solve. Dense Gaussian elimination — N is small (number of
             // free nets, typically <30 for hobby designs).
             solve(matrix: &y, rhs: &rhs, n: n, into: &solution)
