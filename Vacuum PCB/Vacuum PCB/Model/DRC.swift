@@ -708,14 +708,14 @@ enum DRC {
         // layer; otherwise the cross-plate bore is one-sided.
         issues.append(contentsOf: viaIssues(
             net: net, segments: segments,
-            pinPositions: Array(pinPositions.values)
+            pinsByLayer: netPinsByLayer
         ))
 
         return issues
     }
 
     private static func viaIssues(
-        net: Net, segments: [Segment], pinPositions: [Point]
+        net: Net, segments: [Segment], pinsByLayer: [Layer: [Point]]
     ) -> [Issue] {
         // Group via waypoints by approximate XY → which layers carry one,
         // and which segments hold them so the sidebar can select the
@@ -739,16 +739,21 @@ enum DRC {
                 }
             }
         }
-        // A `.via` marker that sits on top of a placed pin of the same net is
-        // decorative: the pin already anchors the channel at that XY, and
-        // PlateBuilder skips single-layer via groups so no stray bore is
-        // produced. Suppress those — true mid-route orphans (no pin nearby)
-        // still report.
-        func coincidesWithPin(_ p: Point) -> Bool {
-            pinPositions.contains { abs($0.x - p.x) < eps && abs($0.y - p.y) < eps }
+        // A single-layer ("orphan") via is decorative ONLY when it lands on a
+        // pin *of its own layer*: that pin's bore already anchors the channel
+        // at that XY, and PlateBuilder skips the one-sided bore. A via that
+        // lands on a pin of a DIFFERENT layer is still a real break — the route
+        // on this layer never reaches the pin's layer without a paired via — so
+        // it must report. (This is exactly the `4bit register with bus` case: a
+        // B1 via sitting on the register's B0 input pin.) Matching on the via's
+        // own layer keeps DRC consistent with the ratsnest, which treats a pin
+        // as anchoring only its own layer. True mid-route orphans (no pin on
+        // that layer) report as before.
+        func coincidesWithPinOnLayer(_ p: Point, _ layer: Layer) -> Bool {
+            (pinsByLayer[layer] ?? []).contains { abs($0.x - p.x) < eps && abs($0.y - p.y) < eps }
         }
         return groups
-            .filter { $0.layers.count < 2 && !coincidesWithPin($0.position) }
+            .filter { $0.layers.count < 2 && !coincidesWithPinOnLayer($0.position, $0.layers.first!) }
             .map { Issue(
                 netId: net.id, netLabel: net.label,
                 kind: .orphanVia(position: $0.position, segmentIndex: $0.segmentIndices.first ?? 0)

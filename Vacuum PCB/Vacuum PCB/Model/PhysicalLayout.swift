@@ -244,4 +244,36 @@ struct PhysicalLayout: Codable, Hashable {
         }
         return result
     }
+
+    /// Every XY on `netId` where a route segment carries a `.via` waypoint,
+    /// paired with the set of layers that meet there. A group spanning **two
+    /// or more layers** is a real drilled bore: `PlateBuilder` only cuts a via
+    /// when ≥2 layers coincide, so that's also the only place two layers may
+    /// be treated as electrically joined. A single-layer group is an "orphan"
+    /// via that connects nothing (DRC reports it as `orphanVia`). Grouped per
+    /// net so two nets that happen to share an XY don't look merged. XY matched
+    /// within 0.05 mm — the via-bookkeeping tolerance used across the codebase.
+    ///
+    /// Shared truth for the via-pairing rule that `PlateBuilder` (where it cuts
+    /// bores) and `Ratsnest`/`DRC` (where they judge connectivity) must agree
+    /// on — they diverged once and that's exactly how an orphan via slipped
+    /// past the ratsnest.
+    func viaLayerGroups(netId: UUID) -> [(position: Point, layers: Set<Layer>)] {
+        let eps = 0.05
+        var groups: [(position: Point, layers: Set<Layer>)] = []
+        for route in routes where route.netId == netId {
+            for segment in route.segments {
+                for wp in segment.waypoints where wp.kind == .via {
+                    if let i = groups.firstIndex(where: {
+                        abs($0.position.x - wp.position.x) < eps && abs($0.position.y - wp.position.y) < eps
+                    }) {
+                        groups[i].layers.insert(segment.layer)
+                    } else {
+                        groups.append((position: wp.position, layers: [segment.layer]))
+                    }
+                }
+            }
+        }
+        return groups
+    }
 }

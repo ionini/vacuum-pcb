@@ -492,6 +492,12 @@ USAGE:
       Clear all routes, re-route from scratch, report the DRC breakdown.
       Measures auto-router quality independent of placement.
 
+  vacuum-cli check <file.vpcb>
+      Run DRC + ratsnest on the top-level board: lists every DRC issue and
+      every still-unrouted net. Top-level only (subparts aren't descended into;
+      open a subpart's own file to check it). Validates physical connectivity
+      headlessly.
+
 SIMULATE OPTIONS:
   --steps N            Number of fixed solver steps (default 500).
   --set LABEL=VALUE     Drive an input. VALUE is vac/atm or a number 0…1.
@@ -686,6 +692,18 @@ do {
         if let outPath {
             try result.encoded().write(to: URL(fileURLWithPath: outPath))
             if !json { print("wrote \(outPath)") }
+        }
+
+    case "check":
+        let issues = DRC.check(doc)
+        let rats = Ratsnest.missingEdges(doc)
+        print("DRC issues: \(issues.count)")
+        for issue in issues { print("  \(issue.summary)") }
+        print("Ratsnest — still-unrouted connections: \(rats.count)")
+        for e in rats {
+            print(String(format: "  [%@] (%.2f,%.2f) %@ → (%.2f,%.2f) %@",
+                         e.netLabel, e.a.x, e.a.y, e.layerA.uiLabel,
+                         e.b.x, e.b.y, e.layerB.uiLabel))
         }
 
     default:
