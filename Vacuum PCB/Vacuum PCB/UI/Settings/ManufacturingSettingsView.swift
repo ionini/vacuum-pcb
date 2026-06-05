@@ -84,7 +84,8 @@ struct ManufacturingSettingsView: View {
 
             group("Stencil") {
                 row("Thickness", $draftMfg.stencilThickness)
-                Text("Flat cutting template exported next to the plates. Holes at every cross-silicone via and screw shaft; sized to the silicone sheet so it doubles as a 1:1 cutting guide.")
+                row("Via hole padding", $draftMfg.stencilViaPadding)
+                Text("Flat cutting template exported next to the plates. Holes at every cross-silicone via and screw shaft; sized to the silicone sheet so it doubles as a 1:1 cutting guide. Via hole padding adds to each via hole's diameter (0–2 mm) to compensate for the silicone plug contracting when squished between the plates.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
 
@@ -247,6 +248,7 @@ struct ManufacturingSettingsView: View {
             screwHeadDepth: max(0.1, m.screwHeadDepth),
             screwNutDepth: max(0.1, m.screwNutDepth),
             stencilThickness: max(0.05, m.stencilThickness),
+            stencilViaPadding: max(0.0, min(2.0, m.stencilViaPadding)),
             minWallThickness: max(0.05, m.minWallThickness)
         )
     }

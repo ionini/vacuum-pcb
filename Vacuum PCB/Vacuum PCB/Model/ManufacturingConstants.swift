@@ -144,6 +144,13 @@ struct ManufacturingConstants: Codable, Hashable {
     /// silicone sheet so the stencil reads as a 1:1 cutting template.
     var stencilThickness: Double
 
+    /// Extra diameter added to each cross-silicone via hole in the *stencil*
+    /// only (the plate bores are unaffected). The cut silicone plug contracts
+    /// a little once the plates squeeze it, so oversizing the cutting-template
+    /// hole compensates and the seated plug still clears the via. Default 0
+    /// (hole equals `channelDiameter`); clamp 0…2 mm.
+    var stencilViaPadding: Double
+
     /// Minimum acceptable wall of printed material between a channel and any
     /// nearby feature (the board's outer face, another channel, a via, a
     /// drop bore). Drives the wall-thickness DRC check — anything thinner is
@@ -178,6 +185,7 @@ struct ManufacturingConstants: Codable, Hashable {
         screwHeadDepth: 2.7,
         screwNutDepth: 1.7,
         stencilThickness: 0.2,
+        stencilViaPadding: 0,
         minWallThickness: 0.5
     )
 
@@ -194,7 +202,7 @@ struct ManufacturingConstants: Codable, Hashable {
         case plateCornerFillet
         case ledDimpleDiameter, ledDimpleDepth
         case screwProtrusion, screwDomeBaseDiameter, screwHeadDepth, screwNutDepth
-        case stencilThickness
+        case stencilThickness, stencilViaPadding
         case minWallThickness
     }
 
@@ -209,7 +217,7 @@ struct ManufacturingConstants: Codable, Hashable {
          ledDimpleDiameter: Double, ledDimpleDepth: Double,
          screwProtrusion: Double, screwDomeBaseDiameter: Double,
          screwHeadDepth: Double, screwNutDepth: Double,
-         stencilThickness: Double,
+         stencilThickness: Double, stencilViaPadding: Double,
          minWallThickness: Double) {
         self.plateThickness = plateThickness
         self.channelDiameter = channelDiameter
@@ -235,6 +243,7 @@ struct ManufacturingConstants: Codable, Hashable {
         self.screwHeadDepth = screwHeadDepth
         self.screwNutDepth = screwNutDepth
         self.stencilThickness = stencilThickness
+        self.stencilViaPadding = stencilViaPadding
         self.minWallThickness = minWallThickness
     }
 
@@ -287,6 +296,8 @@ struct ManufacturingConstants: Codable, Hashable {
                                               forKey: .screwNutDepth) ?? 1.7
         stencilThickness = try c.decodeIfPresent(Double.self,
                                                  forKey: .stencilThickness) ?? 0.2
+        stencilViaPadding = try c.decodeIfPresent(Double.self,
+                                                  forKey: .stencilViaPadding) ?? 0
         minWallThickness = try c.decodeIfPresent(Double.self,
                                                  forKey: .minWallThickness) ?? 0.5
     }

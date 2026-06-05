@@ -468,8 +468,12 @@ enum PlateBuilder {
         // two-plate parallelism above already saturates the typical Euclid
         // pass that costs anything.
         var stencilCutters: [(position: Point, diameter: Double)] = []
+        // Oversize the via holes in the cutting template: the cut silicone
+        // plug contracts once the plates squeeze it, so the seated plug needs
+        // a wider hole to still clear the via. Padding adds to the diameter.
+        let stencilViaDiameter = m.channelDiameter + m.stencilViaPadding
         for position in doc.physical.crossSiliconeViaPositions() {
-            stencilCutters.append((position, m.channelDiameter))
+            stencilCutters.append((position, stencilViaDiameter))
         }
         for placement in doc.physical.placements {
             guard let component = componentsById[placement.componentId],
