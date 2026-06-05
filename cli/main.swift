@@ -20,27 +20,17 @@ func loadDocument(_ path: String) throws -> CircuitDocument {
 
 /// Build the flattened pneumatic network for a document.
 func buildNetwork(_ doc: CircuitDocument) -> PneumaticNetwork {
-    let flattened = doc.flattenedForSimulation()
-    return PneumaticNetwork.build(from: flattened.document)
+    Validators.buildNetwork(doc)
 }
 
-/// Seed initial net pressures. Mirrors `SimulationState.initialPressures`:
-/// everything starts at atmosphere (1.0); hard boundaries and pumps prime to
-/// their rail; hard inputs toggled to Vac join the pump manifold.
+/// Seed initial net pressures (delegates to the shared `Validators` core so
+/// the CLI and the in-app Validate panel stay byte-for-byte consistent).
 func seedPressures(
     network: PneumaticNetwork,
     params: SimulationParameters,
     inputs: [UUID: Double]
 ) -> [UUID: Double] {
-    var out: [UUID: Double] = [:]
-    for net in network.nets { out[net.id] = 1.0 }
-    for boundary in network.hardBoundaries { out[boundary.netId] = boundary.value }
-    for pump in network.pumps { out[pump.netId] = params.pumpMaxVacuum }
-    for input in network.inputs where !input.soft {
-        let v = inputs[input.id] ?? 1.0
-        out[input.netId] = v < 0.5 ? params.pumpMaxVacuum : 1.0
-    }
-    return out
+    Validators.seedPressures(network: network, params: params, inputs: inputs)
 }
 
 /// Run a fixed number of solver steps and return the final net pressures plus
@@ -474,135 +464,34 @@ func printJSON(_ obj: Any) {
     print(str)
 }
 
-// MARK: - Mesh validation (headless CAD)
+// MARK: - Validation reporting (compute lives in the shared `Validators`)
 
-/// Build the printed solids and assert each is a valid, watertight,
-/// non-degenerate body — the thing a slicer will actually accept. The plates
-/// are required; the stencil is optional (empty when `stencilThickness == 0`).
-/// Returns true only if every required body stitches watertight with a
-/// positive (right-side-out) volume.
-func validateMesh(_ doc: CircuitDocument, json: Bool) -> Bool {
-    let out = PlateBuilder.build(doc)
-    struct Body { let name: String; let mesh: Mesh; let required: Bool }
-    let bodies = [
-        Body(name: "topPlate", mesh: out.topPlate, required: true),
-        Body(name: "bottomPlate", mesh: out.bottomPlate, required: true),
-        Body(name: "stencil", mesh: out.stencil, required: false),
-    ]
-    var ok = true
-    var report: [[String: Any]] = []
-    for b in bodies {
-        if b.mesh.isEmpty {
-            // Stencil is legitimately empty when the user disabled it.
-            if b.required { ok = false }
-            if json {
-                report.append(["body": b.name, "empty": true, "pass": !b.required])
-            } else {
-                print("  \(b.name): EMPTY" + (b.required ? "  ✗ required body missing" : "  (ok — disabled)"))
-            }
+func reportMesh(_ r: Validators.MeshResult, json: Bool) {
+    if json {
+        printJSON([
+            "pass": r.pass,
+            "bodies": r.bodies.map { b -> [String: Any] in
+                ["body": b.name, "empty": b.empty, "watertight": b.watertight,
+                 "signedVolume": b.signedVolume, "polygons": b.polygons, "pass": b.pass]
+            },
+        ])
+        return
+    }
+    for b in r.bodies {
+        if b.empty {
+            print("  \(b.name): EMPTY" + (b.required ? "  ✗ required body missing" : "  (ok — disabled)"))
             continue
         }
-        // PlateBuilder skips the watertight pass for the live preview; the
-        // export path stitches hairline BSP cracks, so do the same here and
-        // judge the body a slicer would actually receive.
-        let stitched = b.mesh.makeWatertight()
-        let watertight = stitched.isWatertight
-        let vol = stitched.signedVolume
-        let polys = stitched.polygons.count
-        let bb = stitched.bounds
-        let bodyOK = watertight && vol > 0
-        if !bodyOK { ok = false }
-        if json {
-            report.append([
-                "body": b.name, "empty": false, "watertight": watertight,
-                "signedVolume": vol, "polygons": polys, "pass": bodyOK,
-            ])
-        } else {
-            print(String(
-                format: "  %@: %@  watertight=%@  vol=%.1f mm³  polys=%d  bbox=%.1f×%.1f×%.1f mm",
-                bodyOK ? "✓" : "✗", b.name, watertight ? "yes" : "NO", vol, polys,
-                bb.max.x - bb.min.x, bb.max.y - bb.min.y, bb.max.z - bb.min.z))
-            if !watertight { print("     ✗ not watertight after stitching — a slicer will reject this") }
-            if vol <= 0 { print("     ✗ non-positive volume — inside-out or degenerate CSG") }
-        }
+        print(String(format: "  %@: %@  watertight=%@  vol=%.1f mm³  polys=%d  bbox=%.1f×%.1f×%.1f mm",
+                     b.pass ? "✓" : "✗", b.name, b.watertight ? "yes" : "NO",
+                     b.signedVolume, b.polygons, b.size.x, b.size.y, b.size.z))
+        if !b.watertight { print("     ✗ not watertight after stitching — a slicer will reject this") }
+        if b.signedVolume <= 0 { print("     ✗ non-positive volume — inside-out or degenerate CSG") }
     }
-    if json { printJSON(["bodies": report, "pass": ok]) }
-    else { print(ok ? "MESH: PASS" : "MESH: FAIL") }
-    return ok
+    print(r.pass ? "MESH: PASS" : "MESH: FAIL")
 }
 
-// MARK: - Exhaustive logic sweep + convergence
-
-/// Run the solver from a blank (all-atmosphere) state to convergence, or up to
-/// `maxSteps`. "Converged" means the largest per-net pressure change between
-/// two steps fell below `epsilon` — a circuit that never settles is
-/// oscillating / metastable, which is a real defect regardless of logic.
-func simulateToSettle(
-    network: PneumaticNetwork, params: SimulationParameters,
-    inputs: [UUID: Double], maxSteps: Int, epsilon: Double
-) -> (pressures: [UUID: Double], converged: Bool, steps: Int) {
-    var pressures = seedPressures(network: network, params: params, inputs: inputs)
-    var transistors: [UUID: Double] = [:]
-    var steps = 0
-    var converged = false
-    for _ in 0..<max(1, maxSteps) {
-        let prev = pressures
-        SimulationEngine.step(
-            network: network, params: params,
-            pressures: &pressures, inputs: inputs, transistorOpenness: &transistors
-        )
-        steps += 1
-        var maxDelta = 0.0
-        for (netId, v) in pressures { maxDelta = max(maxDelta, abs(v - (prev[netId] ?? v))) }
-        if maxDelta < epsilon { converged = true; break }
-    }
-    return (pressures, converged, steps)
-}
-
-struct SweepRow { let bits: [Int]; let probes: [Double]; let converged: Bool; let steps: Int }
-struct SweepResult {
-    let inputLabels: [String]
-    let probeLabels: [String]
-    let rows: [SweepRow]
-    var allConverged: Bool { rows.allSatisfy(\.converged) }
-}
-
-/// Drive every 0/1 combination of the network's inputs (vac=0 / atm=1), solve
-/// each to convergence, and record the probe levels. Exhaustive: 2^n combos.
-func runSweep(
-    network: PneumaticNetwork, params: SimulationParameters,
-    maxSteps: Int, epsilon: Double, maxCombos: Int
-) -> SweepResult {
-    let ins = network.inputs
-    let n = ins.count
-    let total = 1 << n
-    if total > maxCombos {
-        fail("error: \(n) inputs → \(total) combinations exceeds --max-combos \(maxCombos). "
-            + "Raise --max-combos to brute-force it, or reduce drivable inputs.")
-    }
-    let inputLabels = ins.map { $0.label.isEmpty ? "<unnamed>" : $0.label }
-    let probeLabels = network.probes.map { $0.label.isEmpty ? "<unnamed>" : $0.label }
-    var rows: [SweepRow] = []
-    rows.reserveCapacity(total)
-    for combo in 0..<total {
-        var inputMap: [UUID: Double] = [:]
-        var bits: [Int] = []
-        for (k, inp) in ins.enumerated() {
-            let bit = (combo >> k) & 1
-            bits.append(bit)
-            inputMap[inp.id] = bit == 1 ? 1.0 : 0.0
-        }
-        let r = simulateToSettle(
-            network: network, params: params, inputs: inputMap,
-            maxSteps: maxSteps, epsilon: epsilon
-        )
-        let probeVals = network.probes.map { r.pressures[$0.netId] ?? 1.0 }
-        rows.append(SweepRow(bits: bits, probes: probeVals, converged: r.converged, steps: r.steps))
-    }
-    return SweepResult(inputLabels: inputLabels, probeLabels: probeLabels, rows: rows)
-}
-
-func reportSweep(_ sw: SweepResult, json: Bool) {
+func reportSweep(_ sw: Validators.SweepResult, json: Bool) {
     if json {
         printJSON([
             "inputs": sw.inputLabels, "probes": sw.probeLabels,
@@ -611,6 +500,11 @@ func reportSweep(_ sw: SweepResult, json: Bool) {
             "allConverged": sw.allConverged,
             "rows": sw.rows.map { ["in": $0.bits, "probes": $0.probes, "converged": $0.converged, "steps": $0.steps] },
         ])
+        return
+    }
+    if let tooMany = sw.tooManyCombos {
+        print("Exhaustive sweep skipped: \(tooMany) input combinations exceed --max-combos.")
+        print("SWEEP: FAIL (raise --max-combos to brute-force it)")
         return
     }
     let conv = sw.rows.filter(\.converged).count
@@ -624,7 +518,6 @@ func reportSweep(_ sw: SweepResult, json: Bool) {
             print("      in=[\(r.bits.map(String.init).joined())]  (hit \(r.steps)-step cap)")
         }
     }
-    // Print the truth table compactly (cap to keep the terminal readable).
     let cap = 64
     print("  truth table (probe pressure, 0=vac 1=atm):")
     for (idx, r) in sw.rows.enumerated() {
@@ -637,138 +530,31 @@ func reportSweep(_ sw: SweepResult, json: Bool) {
                           : "SWEEP: FAIL (some combinations never settle)")
 }
 
-// MARK: - Margin sweep (robustness across parameter variation)
-
-/// Re-run the exhaustive sweep across a grid of perturbed simulation
-/// parameters and assert two things hold at every corner: the circuit still
-/// converges, and no probe's logic level (<0.5 vac / ≥0.5 atm) flips versus
-/// nominal. A design that only works at exactly-nominal won't survive real
-/// silicone / print tolerances — this is the "works across ±tol" guarantee.
-func runMargins(
-    network: PneumaticNetwork, base: SimulationParameters,
-    tol: Double, maxSteps: Int, epsilon: Double, maxCombos: Int, json: Bool
-) -> Bool {
-    func level(_ p: Double) -> Int { p < 0.5 ? 0 : 1 }
-    let nominal = runSweep(network: network, params: base, maxSteps: maxSteps, epsilon: epsilon, maxCombos: maxCombos)
-
-    // Key parameters to stress and how to set them. Each is scaled by
-    // (1 ± tol); the corners enumerate every lo/hi combination so parameter
-    // *interactions* are covered, not just one-at-a-time sensitivity.
-    let keys: [(name: String, set: (inout SimulationParameters, Double) -> Void, base: Double)] = [
-        ("resistance", { $0.resistorResistancePerMm = $1 }, base.resistorResistancePerMm),
-        ("flow", { $0.pumpFlowCapacity = $1 }, base.pumpFlowCapacity),
-        ("gateThreshold", { $0.gateThreshold = $1 }, base.gateThreshold),
-        ("leak", { $0.leakConductance = $1 }, base.leakConductance),
-    ]
-    let cornerCount = 1 << keys.count
-    var pass = nominal.allConverged
-    var failures: [String] = []
-    if !nominal.allConverged { failures.append("nominal: some input combinations never settle") }
-
-    for corner in 0..<cornerCount {
-        var p = base
-        var desc: [String] = []
-        for (j, key) in keys.enumerated() {
-            let hi = (corner >> j) & 1 == 1
-            let factor = hi ? (1 + tol) : (1 - tol)
-            key.set(&p, key.base * factor)
-            desc.append("\(key.name)\(hi ? "↑" : "↓")")
-        }
-        let sw = runSweep(network: network, params: p, maxSteps: maxSteps, epsilon: epsilon, maxCombos: maxCombos)
-        var flips = 0
-        for (ri, row) in sw.rows.enumerated() where ri < nominal.rows.count {
-            for (pi, pv) in row.probes.enumerated() where level(pv) != level(nominal.rows[ri].probes[pi]) {
-                flips += 1
-            }
-        }
-        if !json {
-            let line = "  corner \(corner + 1)/\(cornerCount) [\(desc.joined(separator: " "))]: "
-                + (sw.allConverged ? "" : "non-converging ") + "\(flips) bit-flip(s)\n"
-            FileHandle.standardError.write(Data(line.utf8))
-        }
-        if !sw.allConverged { pass = false; failures.append("[\(desc.joined(separator: " "))]: did not converge") }
-        if flips > 0 { pass = false; failures.append("[\(desc.joined(separator: " "))]: \(flips) probe bit-flip(s) vs nominal") }
-    }
-
+func reportMargins(_ r: Validators.MarginResult, json: Bool) {
     if json {
-        printJSON(["tol": tol, "corners": cornerCount, "pass": pass, "failures": failures])
-    } else {
-        print("Margin sweep: ±\(Int(tol * 100))% on \(keys.map(\.name).joined(separator: ", ")) "
-            + "(\(cornerCount) corners × \(nominal.rows.count) input combos)")
-        if failures.isEmpty {
-            print("MARGINS: PASS (logic levels stable + converges across ±\(Int(tol * 100))%)")
-        } else {
-            print("MARGINS: FAIL")
-            for f in failures.prefix(40) { print("  ✗ \(f)") }
-        }
+        printJSON(["tol": r.tol, "corners": r.corners, "pass": r.pass, "failures": r.failures])
+        return
     }
-    return pass
+    print("Margin sweep: ±\(Int(r.tol * 100))% on \(r.keys.joined(separator: ", ")) "
+        + "(\(r.corners) corners × \(r.inputCombos) input combos)")
+    if r.failures.isEmpty {
+        print("MARGINS: PASS (logic levels stable + converges across ±\(Int(r.tol * 100))%)")
+    } else {
+        print("MARGINS: FAIL")
+        for f in r.failures.prefix(40) { print("  ✗ \(f)") }
+    }
 }
 
-// MARK: - Subpart snapshot staleness / self-containment
-
-/// Verify the design is self-contained and (optionally) current:
-///  - every `.subpart` is pinned to a snapshot that's actually embedded
-///    (otherwise flatten/CAD silently falls back to the live parts folder, so
-///    the file no longer fully describes what prints);
-///  - with `--lib DIR`, each top-level subpart's embedded snapshot still
-///    matches the on-disk library file (else it's stale — "Update from
-///    Library").
-/// Internal hash consistency is reported as info only: it legitimately drifts
-/// across schema migrations (a snapshot saved by an older app re-encodes to a
-/// different `contentHash`), so it isn't a hard gate.
-func runStaleness(_ doc: CircuitDocument, libDir: String?, json: Bool) -> Bool {
-    var hardProblems: [String] = []
-    var info: [String] = []
-
-    func walk(_ d: CircuitDocument, _ path: String) {
-        for c in d.logic.components where c.kind == .subpart {
-            let name = "\(path)\(c.label) (\(c.partRef ?? "?"))"
-            guard let h = c.partRefHash else {
-                hardProblems.append("\(name): no snapshot pin — resolves against the live parts folder, not a frozen copy")
-                continue
-            }
-            if d.librarySnapshots[h] == nil {
-                hardProblems.append("\(name): pinned to \(h.prefix(10))… but no matching embedded snapshot — falls back to live library")
-            }
-        }
-        for (key, snap) in d.librarySnapshots {
-            if snap.contentHash() != key {
-                info.append("snapshot \(key.prefix(10))… under \(path.isEmpty ? "<root>" : path) no longer hashes to its key (benign across schema migrations)")
-            }
-            walk(snap, "\(path)\(key.prefix(8))/")
-        }
-    }
-    walk(doc, "")
-
-    var stale: [String] = []
-    if let libDir {
-        for c in doc.logic.components where c.kind == .subpart {
-            guard let fn = c.partRef else { continue }
-            let url = URL(fileURLWithPath: libDir).appendingPathComponent(fn)
-            guard let data = try? Data(contentsOf: url),
-                  let live = try? CircuitDocument.decoded(from: data) else {
-                hardProblems.append("subpart '\(c.label)': library file '\(fn)' not found under \(libDir)")
-                continue
-            }
-            guard let h = c.partRefHash, let pinned = doc.librarySnapshots[h] else { continue }
-            if live.effectiveHash() != pinned.effectiveHash() {
-                stale.append("subpart '\(c.label)' (\(fn)): on-disk library differs from the embedded snapshot — stale (Update from Library)")
-            }
-        }
-    }
-
-    let pass = hardProblems.isEmpty && stale.isEmpty
+func reportStaleness(_ r: Validators.StalenessResult, libDir: String?, json: Bool) {
     if json {
-        printJSON(["pass": pass, "problems": hardProblems, "stale": stale, "info": info])
-    } else {
-        for p in hardProblems { print("  ✗ \(p)") }
-        for s in stale { print("  ✗ \(s)") }
-        for n in info { print("  · \(n)") }
-        if libDir == nil { print("  (pass --lib DIR to also check the embedded snapshots against the on-disk library)") }
-        print(pass ? "STALENESS: PASS (self-contained\(libDir == nil ? "" : " + current"))" : "STALENESS: FAIL")
+        printJSON(["pass": r.pass, "problems": r.hardProblems, "stale": r.stale, "info": r.info])
+        return
     }
-    return pass
+    for p in r.hardProblems { print("  ✗ \(p)") }
+    for s in r.stale { print("  ✗ \(s)") }
+    for n in r.info { print("  · \(n)") }
+    if libDir == nil { print("  (pass --lib DIR to also check the embedded snapshots against the on-disk library)") }
+    print(r.pass ? "STALENESS: PASS (self-contained\(libDir == nil ? "" : " + current"))" : "STALENESS: FAIL")
 }
 
 // MARK: - Argument parsing
@@ -1049,24 +835,35 @@ do {
         }
 
     case "mesh":
-        if !validateMesh(doc, json: json) { exit(1) }
+        let r = Validators.mesh(doc)
+        reportMesh(r, json: json)
+        if !r.pass { exit(1) }
 
     case "sweep":
         let settleCap = max(steps, 20000)
-        let sw = runSweep(network: network, params: params,
-                          maxSteps: settleCap, epsilon: epsilon, maxCombos: maxCombos)
+        let sw = Validators.sweep(network: network, params: params,
+                                  maxSteps: settleCap, epsilon: epsilon, maxCombos: maxCombos)
         reportSweep(sw, json: json)
         if !sw.allConverged { exit(1) }
 
     case "margins":
         let settleCap = max(steps, 20000)
-        if !runMargins(network: network, base: params, tol: tol,
-                       maxSteps: settleCap, epsilon: epsilon, maxCombos: maxCombos, json: json) {
-            exit(1)
+        let prog: (Int, Int, String, Bool, Int) -> Void = { c, total, desc, conv, flips in
+            if !json {
+                let line = "  corner \(c)/\(total) [\(desc)]: "
+                    + (conv ? "" : "non-converging ") + "\(flips) bit-flip(s)\n"
+                FileHandle.standardError.write(Data(line.utf8))
+            }
         }
+        let r = Validators.margins(network: network, base: params, tol: tol,
+                                   maxSteps: settleCap, epsilon: epsilon, maxCombos: maxCombos, progress: prog)
+        reportMargins(r, json: json)
+        if !r.pass { exit(1) }
 
     case "staleness":
-        if !runStaleness(doc, libDir: libDir, json: json) { exit(1) }
+        let r = Validators.staleness(doc, libDir: libDir)
+        reportStaleness(r, libDir: libDir, json: json)
+        if !r.pass { exit(1) }
 
     case "verify":
         // Umbrella: every headless guarantee in one gate. CONNECTIVITY here is
@@ -1075,25 +872,29 @@ do {
         let settleCap = max(steps, 20000)
         var allPass = true
         print("── connectivity (DRC + ratsnest, top-level) ──")
-        let issues = DRC.check(doc)
-        let rats = Ratsnest.missingEdges(doc)
-        print("  DRC issues: \(issues.count), unrouted: \(rats.count)")
-        for issue in issues.prefix(40) { print("    \(issue.summary)") }
-        let connOK = issues.isEmpty && rats.isEmpty
-        allPass = allPass && connOK
-        print("  \(connOK ? "✓ PASS" : "✗ FAIL")")
+        let conn = Validators.connectivity(doc)
+        print("  DRC issues: \(conn.drcIssues.count), unrouted: \(conn.unrouted)")
+        for issue in conn.drcIssues.prefix(40) { print("    \(issue.summary)") }
+        allPass = conn.pass && allPass
+        print("  \(conn.pass ? "✓ PASS" : "✗ FAIL")")
         print("── self-containment (staleness) ──")
-        allPass = runStaleness(doc, libDir: libDir, json: false) && allPass
+        let stale = Validators.staleness(doc, libDir: libDir)
+        reportStaleness(stale, libDir: libDir, json: false)
+        allPass = stale.pass && allPass
         print("── printability (mesh) ──")
-        allPass = validateMesh(doc, json: false) && allPass
+        let meshR = Validators.mesh(doc)
+        reportMesh(meshR, json: false)
+        allPass = meshR.pass && allPass
         print("── logic + convergence (exhaustive sweep) ──")
-        let sw = runSweep(network: network, params: params,
-                          maxSteps: settleCap, epsilon: epsilon, maxCombos: maxCombos)
+        let sw = Validators.sweep(network: network, params: params,
+                                  maxSteps: settleCap, epsilon: epsilon, maxCombos: maxCombos)
         reportSweep(sw, json: false)
         allPass = sw.allConverged && allPass
         print("── robustness (margins ±\(Int(tol * 100))%) ──")
-        allPass = runMargins(network: network, base: params, tol: tol,
-                             maxSteps: settleCap, epsilon: epsilon, maxCombos: maxCombos, json: false) && allPass
+        let marg = Validators.margins(network: network, base: params, tol: tol,
+                                      maxSteps: settleCap, epsilon: epsilon, maxCombos: maxCombos)
+        reportMargins(marg, json: false)
+        allPass = marg.pass && allPass
         print("")
         print(allPass ? "VERIFY: ✅ ALL GREEN" : "VERIFY: ❌ FAILED — see above")
         if !allPass { exit(1) }

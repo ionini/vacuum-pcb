@@ -56,7 +56,7 @@ struct DocumentView: View {
 
     /// Renamed from `Tab` to avoid shadowing SwiftUI's `Tab` value type used
     /// by `TabView { Tab(...) }`.
-    enum ViewTab: Hashable { case schematic, physical, preview, simulate }
+    enum ViewTab: Hashable { case schematic, physical, preview, simulate, validate }
 
     /// Created lazily on first visit to the Simulate tab so users who never
     /// open it don't pay the network-build cost. Re-created from scratch when
@@ -142,12 +142,11 @@ struct DocumentView: View {
             // the cached SimulationState pointing at a stale network, so
             // re-sync on entry.
             if newTab == .simulate { simulationState?.rebuild(from: document.circuit) }
-            // Every tab now has contextual inspector content, so
-            // reveal the pane on every switch. Without it visible the
-            // user loses the schematic palette / parking lot /
-            // manufacturing constants / simulator controls depending on
-            // the tab.
-            showInspector = true
+            // Reveal the inspector on tabs that have contextual content
+            // (schematic palette / parking lot / manufacturing constants /
+            // simulator controls). The self-contained Validate panel has no
+            // inspector, so hide the empty pane there.
+            showInspector = tabHasInspectorContent(newTab)
         }
         .fileExporter(
             isPresented: $showExporter,
@@ -191,6 +190,8 @@ struct DocumentView: View {
             previewView
         case .simulate:
             simulateView
+        case .validate:
+            ValidateView(document: $document)
         }
     }
 
@@ -297,9 +298,9 @@ struct DocumentView: View {
     /// canvas hidden inside.
     private var visibleTabs: [ViewTab] {
         if document.circuit.isAssembly {
-            return [.schematic, .simulate]
+            return [.schematic, .simulate, .validate]
         }
-        return [.schematic, .physical, .preview, .simulate]
+        return [.schematic, .physical, .preview, .simulate, .validate]
     }
 
     private var sidebar: some View {
@@ -376,6 +377,8 @@ struct DocumentView: View {
             Label("3D Preview", systemImage: "cube.transparent")
         case .simulate:
             Label("Simulate", systemImage: "waveform.path")
+        case .validate:
+            Label("Validate", systemImage: "checkmark.seal")
         }
     }
 
@@ -426,12 +429,14 @@ struct DocumentView: View {
             )
         case .schematic:
             SchematicInspector(document: $document, selection: $selection)
+        case .validate:
+            EmptyView()
         }
     }
 
     private func tabHasInspectorContent(_ tab: ViewTab) -> Bool {
-        // Every tab has inspector content now.
-        true
+        // The Validate panel is self-contained; everything else has an inspector.
+        tab != .validate
     }
 
     // MARK: - Toolbar
