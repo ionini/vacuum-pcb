@@ -105,32 +105,43 @@ enum Validators {
     struct SweepResult {
         let inputLabels: [String]
         let probeLabels: [String]
+        /// Inputs pinned (not enumerated), formatted "LABEL=vac/atm".
+        let heldLabels: [String]
         let rows: [SweepRow]
-        /// Non-nil when 2^(#inputs) exceeded the cap — the sweep was skipped.
+        /// Non-nil when 2^(#swept inputs) exceeded the cap — the sweep was skipped.
         let tooManyCombos: Int?
         var allConverged: Bool { tooManyCombos == nil && rows.allSatisfy(\.converged) }
     }
 
     /// Drive every 0/1 combination of the network's inputs (vac=0 / atm=1),
     /// solve each to convergence, and record probe levels. Exhaustive: 2^n.
+    /// Inputs whose label appears in `holds` are *pinned* to that value instead
+    /// of enumerated — e.g. a VAC power rail held at vacuum, so the sweep
+    /// doesn't waste a bit toggling the supply off (a non-operational state
+    /// that can legitimately fail to settle and isn't a real defect).
     static func sweep(
         network: PneumaticNetwork, params: SimulationParameters,
-        maxSteps: Int, epsilon: Double, maxCombos: Int
+        maxSteps: Int, epsilon: Double, maxCombos: Int, holds: [String: Double] = [:]
     ) -> SweepResult {
-        let ins = network.inputs
-        let n = ins.count
+        let swept = network.inputs.filter { holds[$0.label] == nil }
+        let held = network.inputs.filter { holds[$0.label] != nil }
+        let n = swept.count
         let total = 1 << n
-        let inLabels = ins.map { $0.label.isEmpty ? "<unnamed>" : $0.label }
+        let inLabels = swept.map { $0.label.isEmpty ? "<unnamed>" : $0.label }
+        let heldLabels = held.map { "\($0.label)=\(holds[$0.label]! < 0.5 ? "vac" : "atm")" }
         let probeLabels = network.probes.map { $0.label.isEmpty ? "<unnamed>" : $0.label }
         if total > maxCombos {
-            return SweepResult(inputLabels: inLabels, probeLabels: probeLabels, rows: [], tooManyCombos: total)
+            return SweepResult(inputLabels: inLabels, probeLabels: probeLabels,
+                               heldLabels: heldLabels, rows: [], tooManyCombos: total)
         }
+        var heldMap: [UUID: Double] = [:]
+        for inp in held { heldMap[inp.id] = holds[inp.label]! }
         var rows: [SweepRow] = []
         rows.reserveCapacity(total)
         for combo in 0..<total {
-            var inputMap: [UUID: Double] = [:]
+            var inputMap = heldMap
             var bits: [Int] = []
-            for (k, inp) in ins.enumerated() {
+            for (k, inp) in swept.enumerated() {
                 let bit = (combo >> k) & 1
                 bits.append(bit)
                 inputMap[inp.id] = bit == 1 ? 1.0 : 0.0
@@ -141,7 +152,8 @@ enum Validators {
                 converged: r.converged, steps: r.steps
             ))
         }
-        return SweepResult(inputLabels: inLabels, probeLabels: probeLabels, rows: rows, tooManyCombos: nil)
+        return SweepResult(inputLabels: inLabels, probeLabels: probeLabels,
+                           heldLabels: heldLabels, rows: rows, tooManyCombos: nil)
     }
 
     // MARK: - Margin sweep (robustness across parameter variation)
@@ -169,6 +181,7 @@ enum Validators {
     static func margins(
         network: PneumaticNetwork, base: SimulationParameters,
         tol: Double, maxSteps: Int, epsilon: Double, maxCombos: Int,
+        holds: [String: Double] = [:],
         progress: ((_ corner: Int, _ total: Int, _ desc: String, _ converged: Bool, _ flips: Int) -> Void)? = nil
     ) -> MarginResult {
         func level(_ p: Double) -> Int { p < 0.5 ? 0 : 1 }
@@ -179,7 +192,7 @@ enum Validators {
             ("leak", { $0.leakConductance = $1 }, base.leakConductance),
         ]
         let cornerCount = 1 << keys.count
-        let nominal = sweep(network: network, params: base, maxSteps: maxSteps, epsilon: epsilon, maxCombos: maxCombos)
+        let nominal = sweep(network: network, params: base, maxSteps: maxSteps, epsilon: epsilon, maxCombos: maxCombos, holds: holds)
         if let tooMany = nominal.tooManyCombos {
             return MarginResult(tol: tol, corners: cornerCount, inputCombos: 0, keys: keys.map(\.name),
                                 failures: [MarginFailure(label: "nominal", detail: "\(tooMany) input combinations exceed the cap — raise it to brute-force", params: base)])
@@ -194,7 +207,7 @@ enum Validators {
                 key.set(&p, key.base * (hi ? 1 + tol : 1 - tol))
                 desc.append("\(key.name)\(hi ? "↑" : "↓")")
             }
-            let sw = sweep(network: network, params: p, maxSteps: maxSteps, epsilon: epsilon, maxCombos: maxCombos)
+            let sw = sweep(network: network, params: p, maxSteps: maxSteps, epsilon: epsilon, maxCombos: maxCombos, holds: holds)
             var flips = 0
             for (ri, row) in sw.rows.enumerated() where ri < nominal.rows.count {
                 for (pi, pv) in row.probes.enumerated() where level(pv) != level(nominal.rows[ri].probes[pi]) {

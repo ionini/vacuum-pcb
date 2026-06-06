@@ -14,6 +14,35 @@ final class ValidationModel {
     var ranOnce = false
     @ObservationIgnored private var runToken = 0
 
+    /// The design's drivable input labels (for the sweep-inputs controls).
+    var inputLabels: [String] = []
+    /// Inputs pinned during sweep/margins: label → held value (0 vac / 1 atm).
+    /// Absent = swept. Power rails (VAC) default to held-at-vac.
+    var holds: [String: Double] = [:]
+    @ObservationIgnored private var defaultedHolds = false
+
+    /// Recompute the input list from the (flattened) design and reconcile the
+    /// holds: drop pins for inputs that vanished, and — once — default any
+    /// power rail (label contains "VAC") to held-at-vacuum so the sweep doesn't
+    /// toggle the supply off. Cheap (no CSG); fine to call on appear / edit.
+    func refreshInputs(from doc: CircuitDocument) {
+        var seen = Set<String>()
+        var ordered: [String] = []
+        for inp in Validators.buildNetwork(doc).inputs {
+            let l = inp.label.isEmpty ? "<unnamed>" : inp.label
+            if seen.insert(l).inserted { ordered.append(l) }
+        }
+        inputLabels = ordered
+        if !defaultedHolds {
+            for l in ordered where l.uppercased().contains("VAC") { holds[l] = 0.0 }
+            defaultedHolds = true
+        }
+        holds = holds.filter { ordered.contains($0.key) }
+    }
+
+    /// Number of combinations the sweep will run given the current holds.
+    var sweptComboCount: Int { 1 << inputLabels.filter { holds[$0] == nil }.count }
+
     static let titles = [
         "Connectivity (top-level)",
         "Self-containment",
@@ -51,6 +80,7 @@ final class ValidationModel {
         ranOnce = true
         progressText = "Starting…"
         reports = Self.titles.map { Validators.Report(id: $0, title: $0, status: .running, detail: ["…"]) }
+        let holds = self.holds
 
         DispatchQueue.global(qos: .userInitiated).async {
             func post(_ idx: Int, _ r: Validators.Report) {
@@ -75,10 +105,10 @@ final class ValidationModel {
             setProgress("Exhaustive sweep…")
             let net = Validators.buildNetwork(snapshot)
             post(3, Self.sweepReport(Validators.sweep(
-                network: net, params: params, maxSteps: 20000, epsilon: 1e-5, maxCombos: 4096)))
+                network: net, params: params, maxSteps: 20000, epsilon: 1e-5, maxCombos: 4096, holds: holds)))
 
             let marg = Validators.margins(
-                network: net, base: params, tol: 0.2, maxSteps: 20000, epsilon: 1e-5, maxCombos: 4096
+                network: net, base: params, tol: 0.2, maxSteps: 20000, epsilon: 1e-5, maxCombos: 4096, holds: holds
             ) { c, total, _, _, _ in setProgress("Margins corner \(c)/\(total)…") }
             post(4, Self.marginsReport(marg))
 
@@ -131,8 +161,9 @@ final class ValidationModel {
         }
         let conv = sw.rows.filter(\.converged).count
         var d = ["\(conv)/\(sw.rows.count) input combinations converge (no oscillation)."]
+        if !sw.heldLabels.isEmpty { d.append("Holding \(sw.heldLabels.joined(separator: ", ")).") }
         if conv != sw.rows.count {
-            d.append("Non-converging (oscillating / metastable):")
+            d.append("Non-converging (oscillating / metastable) — inputs [\(sw.inputLabels.joined(separator: " "))]:")
             d += sw.rows.filter { !$0.converged }.prefix(8).map { "• [\($0.bits.map(String.init).joined())]" }
         }
         return Report(id: titles[3], title: titles[3], status: sw.allConverged ? .pass : .fail, detail: d)
@@ -165,6 +196,7 @@ struct ValidateView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 header
+                inputsCard
                 ForEach(model.reports) { reportCard($0) }
                 footnote
             }
@@ -172,6 +204,60 @@ struct ValidateView: View {
             .frame(maxWidth: 760, alignment: .leading)
             .frame(maxWidth: .infinity)
         }
+        .onAppear { model.refreshInputs(from: document.circuit) }
+        .onChange(of: document.circuit) { _, new in model.refreshInputs(from: new) }
+    }
+
+    /// Per-input "Sweep / Hold Vac / Hold Atm" controls. Held inputs are pinned
+    /// (not enumerated) in the sweep AND the margin corners — e.g. hold the VAC
+    /// rail so the exhaustive sweep doesn't toggle the supply off.
+    @ViewBuilder private var inputsCard: some View {
+        if !model.inputLabels.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Sweep inputs").font(.headline)
+                    Spacer()
+                    Text("2^\(model.inputLabels.count - model.holds.count) = \(model.sweptComboCount) combinations")
+                        .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                }
+                ForEach(model.inputLabels, id: \.self) { label in
+                    HStack(spacing: 10) {
+                        Text(label).font(.callout).frame(width: 110, alignment: .leading)
+                        Picker("", selection: mode(label)) {
+                            Text("Sweep").tag(0)
+                            Text("Hold Vac").tag(1)
+                            Text("Hold Atm").tag(2)
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .disabled(model.isRunning)
+                    }
+                }
+                Text("Held inputs are fixed across every combination and every margin corner. Power rails (VAC) default to Hold Vac so the sweep never powers the board off.")
+                    .font(.caption2).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+        }
+    }
+
+    /// 0 = Sweep, 1 = Hold Vac, 2 = Hold Atm.
+    private func mode(_ label: String) -> Binding<Int> {
+        Binding(
+            get: {
+                guard let v = model.holds[label] else { return 0 }
+                return v < 0.5 ? 1 : 2
+            },
+            set: { newValue in
+                switch newValue {
+                case 1: model.holds[label] = 0.0
+                case 2: model.holds[label] = 1.0
+                default: model.holds[label] = nil
+                }
+            }
+        )
     }
 
     private var header: some View {

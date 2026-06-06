@@ -510,6 +510,7 @@ func reportSweep(_ sw: Validators.SweepResult, json: Bool) {
     let conv = sw.rows.filter(\.converged).count
     print("Exhaustive sweep: \(sw.rows.count) input combinations")
     print("  inputs:  \(sw.inputLabels.joined(separator: " "))")
+    if !sw.heldLabels.isEmpty { print("  held:    \(sw.heldLabels.joined(separator: " "))") }
     print("  probes:  \(sw.probeLabels.joined(separator: " "))")
     print("  converged: \(conv)/\(sw.rows.count)")
     if conv != sw.rows.count {
@@ -647,6 +648,10 @@ VALIDATION OPTIONS (sweep / margins / staleness / verify):
                         Raise to brute-force a design with many inputs.
   --tol F               Margin fraction for `margins`/`verify` (default 0.2).
   --lib DIR             Parts folder, for `staleness`/`verify` drift checks.
+  --hold LABEL=VALUE    Pin an input (vac/atm) instead of sweeping it, for
+                        `sweep`/`margins`/`verify`. Repeatable. Use it to hold a
+                        power rail, e.g. --hold J1.VAC=vac, so the sweep doesn't
+                        toggle the supply off (a non-operational state).
 """
 
 func fail(_ message: String) -> Never {
@@ -689,6 +694,7 @@ var params = SimulationParameters.defaults
 var libDir: String?
 var tol = 0.2
 var maxCombos = 4096
+var holds: [String: Double] = [:]
 
 var i = 0
 while i < args.count {
@@ -760,6 +766,14 @@ while i < args.count {
         i += 1
         guard i < args.count, let n = Int(args[i]), n >= 1 else { fail("error: --max-combos needs a positive integer") }
         maxCombos = n
+    case "--hold":
+        i += 1
+        guard i < args.count else { fail("error: --hold needs LABEL=VALUE") }
+        let parts = args[i].split(separator: "=", maxSplits: 1)
+        guard parts.count == 2, let value = parseDrive(String(parts[1])) else {
+            fail("error: --hold expects LABEL=vac/atm (e.g. --hold J1.VAC=vac)")
+        }
+        holds[String(parts[0])] = value
     default:
         fail("error: unknown option \(arg)\n\n\(usage)")
     }
@@ -845,7 +859,7 @@ do {
     case "sweep":
         let settleCap = max(steps, 20000)
         let sw = Validators.sweep(network: network, params: params,
-                                  maxSteps: settleCap, epsilon: epsilon, maxCombos: maxCombos)
+                                  maxSteps: settleCap, epsilon: epsilon, maxCombos: maxCombos, holds: holds)
         reportSweep(sw, json: json)
         if !sw.allConverged { exit(1) }
 
@@ -859,7 +873,8 @@ do {
             }
         }
         let r = Validators.margins(network: network, base: params, tol: tol,
-                                   maxSteps: settleCap, epsilon: epsilon, maxCombos: maxCombos, progress: prog)
+                                   maxSteps: settleCap, epsilon: epsilon, maxCombos: maxCombos,
+                                   holds: holds, progress: prog)
         reportMargins(r, json: json)
         if !r.pass { exit(1) }
 
@@ -890,12 +905,12 @@ do {
         allPass = meshR.pass && allPass
         print("── logic + convergence (exhaustive sweep) ──")
         let sw = Validators.sweep(network: network, params: params,
-                                  maxSteps: settleCap, epsilon: epsilon, maxCombos: maxCombos)
+                                  maxSteps: settleCap, epsilon: epsilon, maxCombos: maxCombos, holds: holds)
         reportSweep(sw, json: false)
         allPass = sw.allConverged && allPass
         print("── robustness (margins ±\(Int(tol * 100))%) ──")
         let marg = Validators.margins(network: network, base: params, tol: tol,
-                                      maxSteps: settleCap, epsilon: epsilon, maxCombos: maxCombos)
+                                      maxSteps: settleCap, epsilon: epsilon, maxCombos: maxCombos, holds: holds)
         reportMargins(marg, json: false)
         allPass = marg.pass && allPass
         print("")
