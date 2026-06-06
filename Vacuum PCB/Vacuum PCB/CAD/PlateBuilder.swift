@@ -193,7 +193,7 @@ enum PlateBuilder {
                     topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ,
                     topThickness: topThickness, bottomThickness: bottomThickness,
                     outerOvershoot: m.screwProtrusion > 0
-                        ? m.screwProtrusion + ScrewGeometry.domeCeilingMargin + 0.5
+                        ? m.screwProtrusion + 0.5
                         : 0
                 )
                 appendCutter(viewHole, plate: oppositePlate,
@@ -424,11 +424,11 @@ enum PlateBuilder {
         // adds an outer layer of parallelism so the second core isn't idle
         // while the first plate runs a `.subtracting`.
         // Volcano domes push the head / hex cavity cylinders past the plate
-        // slab by `screwProtrusion + domeCeilingMargin`. Widen the preview
-        // clip's outer overshoot to match so the cavities show all the way
-        // through the dome.
+        // slab by `screwProtrusion`. Widen the preview clip's outer
+        // overshoot to match so the cavities show all the way through the
+        // dome.
         let screwOvershoot = m.screwProtrusion > 0
-            ? m.screwProtrusion + ScrewGeometry.domeCeilingMargin + 0.5
+            ? m.screwProtrusion + 0.5
             : 0
         let clipOvershoot = max(1, screwOvershoot)
 

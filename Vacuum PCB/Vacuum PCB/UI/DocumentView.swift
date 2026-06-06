@@ -31,6 +31,11 @@ struct DocumentView: View {
     @State private var showExporter = false
     @State private var buildToken = 0
     @State private var previewMode: PreviewDisplayMode = .both
+    /// Survives the Preview tab being switched away and back: `detail` is a
+    /// `switch`, so leaving Preview tears `Scene3DView` (and the camera living
+    /// inside its SCNView) down. Holding the pose here lets the rebuilt view
+    /// replay the user's orbit / zoom instead of snapping to the iso default.
+    @State private var cameraStore = Scene3DCameraStore()
     /// Set whenever the document mutates; cleared after a successful build.
     /// We don't rebuild eagerly any more — CSG is expensive and the user is
     /// almost never on the 3D Preview tab while editing.
@@ -261,7 +266,8 @@ struct DocumentView: View {
                     bottomFeatures: built.bottomFeatures,
                     stencil: built.stencil,
                     boardOutline: document.circuit.physical.boardOutline,
-                    displayMode: previewMode
+                    displayMode: previewMode,
+                    cameraStore: cameraStore
                 )
                 previewModePicker
                 if isBuilding {

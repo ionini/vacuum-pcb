@@ -18,6 +18,24 @@ enum PreviewDisplayMode: String, CaseIterable, Hashable {
     }
 }
 
+/// A saved camera point of view — the orbit angle and orthographic zoom the
+/// user left the 3D preview at.
+struct Scene3DCameraPose {
+    var transform: SCNMatrix4
+    var orthographicScale: CGFloat
+}
+
+/// Reference holder so a `Scene3DCameraPose` survives `Scene3DView` being torn
+/// down and rebuilt. Owned by `DocumentView` (which outlives the per-tab views,
+/// unlike the SCNView): the view writes the latest pose here when it's
+/// dismantled on a tab switch and reads it back on the next build, so returning
+/// to the Preview tab keeps the angle the user left it at rather than snapping
+/// to the default iso view.
+final class Scene3DCameraStore {
+    var pose: Scene3DCameraPose?
+    init() {}
+}
+
 /// SceneKit-backed 3D preview of the two plates.
 ///
 /// Built once with `makePlatformView`; `updatePlatformView` only swaps
@@ -36,6 +54,10 @@ struct Scene3DView {
     var stencil: Mesh
     var boardOutline: Rect
     var displayMode: PreviewDisplayMode
+    /// Outlives this view (lives in `DocumentView`) so orbit / zoom can be
+    /// replayed after a tab switch tears the SCNView down. `nil` falls back to
+    /// the default iso framing — fine for previews / tests.
+    var cameraStore: Scene3DCameraStore? = nil
 
     final class Coordinator {
         let scene = SCNScene()
@@ -48,6 +70,10 @@ struct Scene3DView {
         let camera = SCNCamera()
         let cameraNode = SCNNode()
         var lastOutline: Rect?
+        /// Captured from `Scene3DView` in `makeSCNView` so the static
+        /// `dismantle…` hook (which only gets the coordinator) can save the
+        /// pose on teardown.
+        var cameraStore: Scene3DCameraStore?
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -96,7 +122,35 @@ struct Scene3DView {
         applyFraming(coordinator: c, animated: false)
         configureCameraController(view.defaultCameraController, target: SCNVector3Zero)
 
+        // Replay the orbit / zoom from a previous visit to the Preview tab, if
+        // any. `applyFraming` above already recentred `modelRoot` for the
+        // current board, and the orbit pivot is pinned to the centroid
+        // (origin), so a pose saved against a differently-sized board still
+        // points at the model.
+        c.cameraStore = cameraStore
+        if let pose = cameraStore?.pose {
+            c.cameraNode.transform = pose.transform
+            c.camera.orthographicScale = pose.orthographicScale
+        }
+
         return view
+    }
+
+    /// Snapshot the live orbit / zoom into the store so it survives the SCNView
+    /// being torn down on a tab switch.
+    ///
+    /// Reads the *presentation* transform off `view.pointOfView`, not the model
+    /// node's `transform`. With `allowsCameraControl`, SceneKit's camera
+    /// controller drives the on-screen camera through the presentation layer,
+    /// leaving the model node frozen at whatever `applyFraming` last set (the
+    /// iso angle). Reading the model node would therefore capture — and replay
+    /// — a pose identical to the default, which is exactly "no persistence".
+    fileprivate static func capturePose(view: SCNView, coordinator c: Coordinator) {
+        guard let store = c.cameraStore, let pov = view.pointOfView else { return }
+        store.pose = Scene3DCameraPose(
+            transform: pov.presentation.transform,
+            orthographicScale: (pov.camera ?? c.camera).orthographicScale
+        )
     }
 
     fileprivate func refresh(view: SCNView, coordinator c: Coordinator) {
@@ -231,10 +285,12 @@ struct Scene3DView {
 extension Scene3DView: NSViewRepresentable {
     func makeNSView(context: Context) -> SCNView { makeSCNView(coordinator: context.coordinator) }
     func updateNSView(_ view: SCNView, context: Context) { refresh(view: view, coordinator: context.coordinator) }
+    static func dismantleNSView(_ view: SCNView, coordinator: Coordinator) { capturePose(view: view, coordinator: coordinator) }
 }
 #elseif canImport(UIKit)
 extension Scene3DView: UIViewRepresentable {
     func makeUIView(context: Context) -> SCNView { makeSCNView(coordinator: context.coordinator) }
     func updateUIView(_ view: SCNView, context: Context) { refresh(view: view, coordinator: context.coordinator) }
+    static func dismantleUIView(_ view: SCNView, coordinator: Coordinator) { capturePose(view: view, coordinator: coordinator) }
 }
 #endif
