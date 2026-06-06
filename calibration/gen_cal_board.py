@@ -19,20 +19,13 @@ import json
 
 LEN = {"S": 12, "M": 20, "L": 34}  # printable channel length per resistor body
 
-# R1 chain per cell (Inv1's pull-to-vacuum resistor). K (longest chain) = 6.
-CELLS = [
-    ["S"],                          # 12 mm
-    ["M"],                          # 20 mm
-    ["L"],                          # 34 mm
-    ["L", "M"],                     # 54 mm
-    ["L", "L"],                     # 68 mm
-    ["L", "L", "M"],                # 88 mm
-    ["L", "L", "L"],                # 102 mm
-    ["L", "L", "L", "M"],           # 122 mm
-    ["L", "L", "L", "L"],           # 136 mm
-    ["L", "L", "L", "L", "L"],      # 170 mm
-    ["L", "L", "L", "L", "L", "L"], # 204 mm
-]
+# Small first board: sweep R1 chain length by number of resistors in series.
+# CHAIN_SIZE is the per-body size — S=12, M=20, L=34 mm of channel each.
+# S keeps totals in ~36-72 mm, across where Inv1 starts losing Inv2; L would
+# put every cell at 102-204 mm, all deep in the fail region (they read alike).
+CHAIN_SIZE = "S"
+CHAIN_COUNTS = [3, 4, 5, 6]
+CELLS = [[CHAIN_SIZE] * n for n in CHAIN_COUNTS]
 R2_SIZE = "M"  # Inv2's load resistor — fixed across every cell
 
 _cc = itertools.count(1)
@@ -104,7 +97,7 @@ doc = {
     "schematic": {"positions": positions},
 }
 
-out_path = "double_inverter_cal_k6.vpcb"
+out_path = f"double_inverter_cal_3to6{CHAIN_SIZE}.vpcb"
 with open(out_path, "w") as f:
     json.dump(doc, f, indent=2)
 

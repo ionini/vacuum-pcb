@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="654" height="462" font-family="sans-serif">
+<text x="120" y="28" font-size="18" font-weight="bold">4-bit register read-back margin</text>
+<text x="120" y="48" font-size="12" fill="#555">green = latches reliably &#183; red = loses its stored bits</text>
+<text x="120" y="448" font-size="13" font-weight="bold">leak (sealing &#8594; leakier)</text>
+<text x="22" y="231" font-size="13" font-weight="bold" transform="rotate(-90 22 231)">R/mm (weaker pull &#8594;)</text>
+<text x="162" y="62" font-size="12" text-anchor="middle">0.005</text>
+<text x="246" y="62" font-size="12" text-anchor="middle">0.0125</text>
+<text x="330" y="62" font-size="12" text-anchor="middle">0.025</text>
+<text x="414" y="62" font-size="12" text-anchor="middle">0.05</text>
+<text x="498" y="62" font-size="12" text-anchor="middle">0.1</text>
+<text x="582" y="62" font-size="12" text-anchor="middle">0.2</text>
+<text x="110" y="97" font-size="12" text-anchor="end">0.05</text>
+<rect x="120" y="70" width="84" height="46" fill="rgb(42,159,87)" stroke="white"/>
+<text x="162" y="97" font-size="12" text-anchor="middle" fill="black">0.86</text>
+<rect x="204" y="70" width="84" height="46" fill="rgb(45,160,89)" stroke="white"/>
+<text x="246" y="97" font-size="12" text-anchor="middle" fill="black">0.86</text>
+<rect x="288" y="70" width="84" height="46" fill="rgb(50,162,91)" stroke="white"/>
+<text x="330" y="97" font-size="12" text-anchor="middle" fill="black">0.85</text>
+<rect x="372" y="70" width="84" height="46" fill="rgb(58,166,95)" stroke="white"/>
+<text x="414" y="97" font-size="12" text-anchor="middle" fill="black">0.83</text>
+<rect x="456" y="70" width="84" height="46" fill="rgb(223,89,69)" stroke="white"/>
+<text x="498" y="97" font-size="12" text-anchor="middle" fill="white">0.00</text>
+<rect x="540" y="70" width="84" height="46" fill="rgb(222,88,68)" stroke="white"/>
+<text x="582" y="97" font-size="12" text-anchor="middle" fill="white">-0.00</text>
+<text x="110" y="143" font-size="12" text-anchor="end">0.075</text>
+<rect x="120" y="116" width="84" height="46" fill="rgb(37,157,85)" stroke="white"/>
+<text x="162" y="143" font-size="12" text-anchor="middle" fill="black">0.87</text>
+<rect x="204" y="116" width="84" height="46" fill="rgb(40,158,87)" stroke="white"/>
+<text x="246" y="143" font-size="12" text-anchor="middle" fill="black">0.87</text>
+<rect x="288" y="116" width="84" height="46" fill="rgb(45,160,89)" stroke="white"/>
+<text x="330" y="143" font-size="12" text-anchor="middle" fill="black">0.86</text>
+<rect x="372" y="116" width="84" height="46" fill="rgb(54,164,93)" stroke="white"/>
+<text x="414" y="143" font-size="12" text-anchor="middle" fill="black">0.84</text>
+<rect x="456" y="116" width="84" height="46" fill="rgb(222,89,69)" stroke="white"/>
+<text x="498" y="143" font-size="12" text-anchor="middle" fill="white">-0.00</text>
+<rect x="540" y="116" width="84" height="46" fill="rgb(223,89,69)" stroke="white"/>
+<text x="582" y="143" font-size="12" text-anchor="middle" fill="white">0.00</text>
+<text x="110" y="189" font-size="12" text-anchor="end">0.1</text>
+<rect x="120" y="162" width="84" height="46" fill="rgb(35,156,84)" stroke="white"/>
+<text x="162" y="189" font-size="12" text-anchor="middle" fill="black">0.88</text>
+<rect x="204" y="162" width="84" height="46" fill="rgb(38,157,85)" stroke="white"/>
+<text x="246" y="189" font-size="12" text-anchor="middle" fill="black">0.87</text>
+<rect x="288" y="162" width="84" height="46" fill="rgb(42,159,88)" stroke="white"/>
+<text x="330" y="189" font-size="12" text-anchor="middle" fill="black">0.86</text>
+<rect x="372" y="162" width="84" height="46" fill="rgb(53,164,93)" stroke="white"/>
+<text x="414" y="189" font-size="12" text-anchor="middle" fill="black">0.84</text>
+<rect x="456" y="162" width="84" height="46" fill="rgb(222,89,69)" stroke="white"/>
+<text x="498" y="189" font-size="12" text-anchor="middle" fill="white">-0.00</text>
+<rect x="540" y="162" width="84" height="46" fill="rgb(223,89,69)" stroke="white"/>
+<text x="582" y="189" font-size="12" text-anchor="middle" fill="white">0.00</text>
+<text x="110" y="235" font-size="12" text-anchor="end">0.15</text>
+<rect x="120" y="208" width="84" height="46" fill="rgb(32,155,83)" stroke="white"/>
+<text x="162" y="235" font-size="12" text-anchor="middle" fill="black">0.88</text>
+<rect x="204" y="208" width="84" height="46" fill="rgb(35,156,84)" stroke="white"/>
+<text x="246" y="235" font-size="12" text-anchor="middle" fill="black">0.88</text>
+<rect x="288" y="208" width="84" height="46" fill="rgb(40,158,86)" stroke="white"/>
+<text x="330" y="235" font-size="12" text-anchor="middle" fill="black">0.87</text>
+<rect x="372" y="208" width="84" height="46" fill="rgb(222,89,69)" stroke="white"/>
+<text x="414" y="235" font-size="12" text-anchor="middle" fill="white">-0.00</text>
+<rect x="456" y="208" width="84" height="46" fill="rgb(223,90,69)" stroke="white"/>
+<text x="498" y="235" font-size="12" text-anchor="middle" fill="white">0.00</text>
+<rect x="540" y="208" width="84" height="46" fill="rgb(223,89,69)" stroke="white"/>
+<text x="582" y="235" font-size="12" text-anchor="middle" fill="white">0.00</text>
+<text x="110" y="281" font-size="12" text-anchor="end">0.2</text>
+<rect x="120" y="254" width="84" height="46" fill="rgb(31,154,82)" stroke="white"/>
+<text x="162" y="281" font-size="12" text-anchor="middle" fill="black">0.89</text>
+<rect x="204" y="254" width="84" height="46" fill="rgb(34,155,84)" stroke="white"/>
+<text x="246" y="281" font-size="12" text-anchor="middle" fill="black">0.88</text>
+<rect x="288" y="254" width="84" height="46" fill="rgb(39,158,86)" stroke="white"/>
+<text x="330" y="281" font-size="12" text-anchor="middle" fill="black">0.87</text>
+<rect x="372" y="254" width="84" height="46" fill="rgb(222,89,69)" stroke="white"/>
+<text x="414" y="281" font-size="12" text-anchor="middle" fill="white">-0.00</text>
+<rect x="456" y="254" width="84" height="46" fill="rgb(223,90,69)" stroke="white"/>
+<text x="498" y="281" font-size="12" text-anchor="middle" fill="white">0.00</text>
+<rect x="540" y="254" width="84" height="46" fill="rgb(223,89,69)" stroke="white"/>
+<text x="582" y="281" font-size="12" text-anchor="middle" fill="white">0.00</text>
+<text x="110" y="327" font-size="12" text-anchor="end">0.3</text>
+<rect x="120" y="300" width="84" height="46" fill="rgb(30,153,82)" stroke="white"/>
+<text x="162" y="327" font-size="12" text-anchor="middle" fill="black">0.89</text>
+<rect x="204" y="300" width="84" height="46" fill="rgb(33,155,83)" stroke="white"/>
+<text x="246" y="327" font-size="12" text-anchor="middle" fill="black">0.88</text>
+<rect x="288" y="300" width="84" height="46" fill="rgb(222,89,69)" stroke="white"/>
+<text x="330" y="327" font-size="12" text-anchor="middle" fill="white">-0.00</text>
+<rect x="372" y="300" width="84" height="46" fill="rgb(223,91,70)" stroke="white"/>
+<text x="414" y="327" font-size="12" text-anchor="middle" fill="white">0.00</text>
+<rect x="456" y="300" width="84" height="46" fill="rgb(223,89,69)" stroke="white"/>
+<text x="498" y="327" font-size="12" text-anchor="middle" fill="white">0.00</text>
+<rect x="540" y="300" width="84" height="46" fill="rgb(223,89,69)" stroke="white"/>
+<text x="582" y="327" font-size="12" text-anchor="middle" fill="white">0.00</text>
+<text x="110" y="373" font-size="12" text-anchor="end">0.4</text>
+<rect x="120" y="346" width="84" height="46" fill="rgb(29,153,81)" stroke="white"/>
+<text x="162" y="373" font-size="12" text-anchor="middle" fill="black">0.89</text>
+<rect x="204" y="346" width="84" height="46" fill="rgb(32,155,83)" stroke="white"/>
+<text x="246" y="373" font-size="12" text-anchor="middle" fill="black">0.89</text>
+<rect x="288" y="346" width="84" height="46" fill="rgb(222,89,69)" stroke="white"/>
+<text x="330" y="373" font-size="12" text-anchor="middle" fill="white">-0.00</text>
+<rect x="372" y="346" width="84" height="46" fill="rgb(223,91,70)" stroke="white"/>
+<text x="414" y="373" font-size="12" text-anchor="middle" fill="white">0.00</text>
+<rect x="456" y="346" width="84" height="46" fill="rgb(223,89,69)" stroke="white"/>
+<text x="498" y="373" font-size="12" text-anchor="middle" fill="white">0.00</text>
+<rect x="540" y="346" width="84" height="46" fill="rgb(223,89,69)" stroke="white"/>
+<text x="582" y="373" font-size="12" text-anchor="middle" fill="white">0.00</text>
+<rect x="288" y="208" width="84" height="46" fill="none" stroke="#1133cc" stroke-width="3"/>
+<text x="292" y="249" font-size="11" fill="#1133cc" font-weight="bold">default</text>
+</svg>

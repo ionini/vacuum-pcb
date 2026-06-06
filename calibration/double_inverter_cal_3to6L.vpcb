@@ -1,0 +1,2292 @@
+{
+  "librarySnapshots" : {
+
+  },
+  "logic" : {
+    "components" : [
+      {
+        "id" : "00000000-0000-0000-0000-000000000001",
+        "kind" : "vacuumSource",
+        "label" : "VAC"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000002",
+        "kind" : "atmVent",
+        "label" : "VENT"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000003",
+        "kind" : "port",
+        "label" : "IN",
+        "portDirection" : "input"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000004",
+        "kind" : "transistor",
+        "label" : "Q1_1"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000005",
+        "kind" : "resistor",
+        "label" : "R1_1_1",
+        "resistorSize" : "L"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000006",
+        "kind" : "resistor",
+        "label" : "R1_1_2",
+        "resistorSize" : "L"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000007",
+        "kind" : "resistor",
+        "label" : "R1_1_3",
+        "resistorSize" : "L"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000008",
+        "kind" : "transistor",
+        "label" : "Q2_1"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000009",
+        "kind" : "resistor",
+        "label" : "R2_1",
+        "resistorSize" : "M"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000010",
+        "kind" : "port",
+        "label" : "OUT_1",
+        "portDirection" : "output"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000011",
+        "kind" : "transistor",
+        "label" : "Q1_2"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000012",
+        "kind" : "resistor",
+        "label" : "R1_2_1",
+        "resistorSize" : "L"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000013",
+        "kind" : "resistor",
+        "label" : "R1_2_2",
+        "resistorSize" : "L"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000014",
+        "kind" : "resistor",
+        "label" : "R1_2_3",
+        "resistorSize" : "L"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000015",
+        "kind" : "resistor",
+        "label" : "R1_2_4",
+        "resistorSize" : "L"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000016",
+        "kind" : "transistor",
+        "label" : "Q2_2"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000017",
+        "kind" : "resistor",
+        "label" : "R2_2",
+        "resistorSize" : "M"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000018",
+        "kind" : "port",
+        "label" : "OUT_2",
+        "portDirection" : "output"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000019",
+        "kind" : "transistor",
+        "label" : "Q1_3"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000020",
+        "kind" : "resistor",
+        "label" : "R1_3_1",
+        "resistorSize" : "L"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000021",
+        "kind" : "resistor",
+        "label" : "R1_3_2",
+        "resistorSize" : "L"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000022",
+        "kind" : "resistor",
+        "label" : "R1_3_3",
+        "resistorSize" : "L"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000023",
+        "kind" : "resistor",
+        "label" : "R1_3_4",
+        "resistorSize" : "L"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000024",
+        "kind" : "resistor",
+        "label" : "R1_3_5",
+        "resistorSize" : "L"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000025",
+        "kind" : "transistor",
+        "label" : "Q2_3"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000026",
+        "kind" : "resistor",
+        "label" : "R2_3",
+        "resistorSize" : "M"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000027",
+        "kind" : "port",
+        "label" : "OUT_3",
+        "portDirection" : "output"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000028",
+        "kind" : "transistor",
+        "label" : "Q1_4"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000029",
+        "kind" : "resistor",
+        "label" : "R1_4_1",
+        "resistorSize" : "L"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000030",
+        "kind" : "resistor",
+        "label" : "R1_4_2",
+        "resistorSize" : "L"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000031",
+        "kind" : "resistor",
+        "label" : "R1_4_3",
+        "resistorSize" : "L"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000032",
+        "kind" : "resistor",
+        "label" : "R1_4_4",
+        "resistorSize" : "L"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000033",
+        "kind" : "resistor",
+        "label" : "R1_4_5",
+        "resistorSize" : "L"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000034",
+        "kind" : "resistor",
+        "label" : "R1_4_6",
+        "resistorSize" : "L"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000035",
+        "kind" : "transistor",
+        "label" : "Q2_4"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000036",
+        "kind" : "resistor",
+        "label" : "R2_4",
+        "resistorSize" : "M"
+      },
+      {
+        "id" : "00000000-0000-0000-0000-000000000037",
+        "kind" : "port",
+        "label" : "OUT_4",
+        "portDirection" : "output"
+      },
+      {
+        "id" : "2E1CB3F4-31C1-4217-8A6C-5FAD06ED5B0F",
+        "kind" : "atmVent",
+        "label" : "VENT1"
+      }
+    ],
+    "nets" : [
+      {
+        "id" : "00000000-0000-0000-0001-000000000001",
+        "label" : "MID_1",
+        "pins" : [
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000004",
+            "pinKey" : "b"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000005",
+            "pinKey" : "1"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000008",
+            "pinKey" : "gate"
+          }
+        ]
+      },
+      {
+        "id" : "00000000-0000-0000-0001-000000000002",
+        "label" : "N_1_1",
+        "pins" : [
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000005",
+            "pinKey" : "2"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000006",
+            "pinKey" : "1"
+          }
+        ]
+      },
+      {
+        "id" : "00000000-0000-0000-0001-000000000003",
+        "label" : "N_1_2",
+        "pins" : [
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000006",
+            "pinKey" : "2"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000007",
+            "pinKey" : "1"
+          }
+        ]
+      },
+      {
+        "id" : "00000000-0000-0000-0001-000000000004",
+        "label" : "OUT_1",
+        "pins" : [
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000008",
+            "pinKey" : "b"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000009",
+            "pinKey" : "1"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000010",
+            "pinKey" : "p"
+          }
+        ]
+      },
+      {
+        "id" : "00000000-0000-0000-0001-000000000005",
+        "label" : "MID_2",
+        "pins" : [
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000011",
+            "pinKey" : "b"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000012",
+            "pinKey" : "1"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000016",
+            "pinKey" : "gate"
+          }
+        ]
+      },
+      {
+        "id" : "00000000-0000-0000-0001-000000000006",
+        "label" : "N_2_1",
+        "pins" : [
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000012",
+            "pinKey" : "2"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000013",
+            "pinKey" : "1"
+          }
+        ]
+      },
+      {
+        "id" : "00000000-0000-0000-0001-000000000007",
+        "label" : "N_2_2",
+        "pins" : [
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000013",
+            "pinKey" : "2"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000014",
+            "pinKey" : "1"
+          }
+        ]
+      },
+      {
+        "id" : "00000000-0000-0000-0001-000000000008",
+        "label" : "N_2_3",
+        "pins" : [
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000014",
+            "pinKey" : "2"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000015",
+            "pinKey" : "1"
+          }
+        ]
+      },
+      {
+        "id" : "00000000-0000-0000-0001-000000000009",
+        "label" : "OUT_2",
+        "pins" : [
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000016",
+            "pinKey" : "b"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000017",
+            "pinKey" : "1"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000018",
+            "pinKey" : "p"
+          }
+        ]
+      },
+      {
+        "id" : "00000000-0000-0000-0001-000000000010",
+        "label" : "MID_3",
+        "pins" : [
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000019",
+            "pinKey" : "b"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000020",
+            "pinKey" : "1"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000025",
+            "pinKey" : "gate"
+          }
+        ]
+      },
+      {
+        "id" : "00000000-0000-0000-0001-000000000011",
+        "label" : "N_3_1",
+        "pins" : [
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000020",
+            "pinKey" : "2"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000021",
+            "pinKey" : "1"
+          }
+        ]
+      },
+      {
+        "id" : "00000000-0000-0000-0001-000000000012",
+        "label" : "N_3_2",
+        "pins" : [
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000021",
+            "pinKey" : "2"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000022",
+            "pinKey" : "1"
+          }
+        ]
+      },
+      {
+        "id" : "00000000-0000-0000-0001-000000000013",
+        "label" : "N_3_3",
+        "pins" : [
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000022",
+            "pinKey" : "2"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000023",
+            "pinKey" : "1"
+          }
+        ]
+      },
+      {
+        "id" : "00000000-0000-0000-0001-000000000014",
+        "label" : "N_3_4",
+        "pins" : [
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000023",
+            "pinKey" : "2"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000024",
+            "pinKey" : "1"
+          }
+        ]
+      },
+      {
+        "id" : "00000000-0000-0000-0001-000000000015",
+        "label" : "OUT_3",
+        "pins" : [
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000025",
+            "pinKey" : "b"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000026",
+            "pinKey" : "1"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000027",
+            "pinKey" : "p"
+          }
+        ]
+      },
+      {
+        "id" : "00000000-0000-0000-0001-000000000016",
+        "label" : "MID_4",
+        "pins" : [
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000028",
+            "pinKey" : "b"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000029",
+            "pinKey" : "1"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000035",
+            "pinKey" : "gate"
+          }
+        ]
+      },
+      {
+        "id" : "00000000-0000-0000-0001-000000000017",
+        "label" : "N_4_1",
+        "pins" : [
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000029",
+            "pinKey" : "2"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000030",
+            "pinKey" : "1"
+          }
+        ]
+      },
+      {
+        "id" : "00000000-0000-0000-0001-000000000018",
+        "label" : "N_4_2",
+        "pins" : [
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000030",
+            "pinKey" : "2"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000031",
+            "pinKey" : "1"
+          }
+        ]
+      },
+      {
+        "id" : "00000000-0000-0000-0001-000000000019",
+        "label" : "N_4_3",
+        "pins" : [
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000031",
+            "pinKey" : "2"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000032",
+            "pinKey" : "1"
+          }
+        ]
+      },
+      {
+        "id" : "00000000-0000-0000-0001-000000000020",
+        "label" : "N_4_4",
+        "pins" : [
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000032",
+            "pinKey" : "2"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000033",
+            "pinKey" : "1"
+          }
+        ]
+      },
+      {
+        "id" : "00000000-0000-0000-0001-000000000021",
+        "label" : "N_4_5",
+        "pins" : [
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000033",
+            "pinKey" : "2"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000034",
+            "pinKey" : "1"
+          }
+        ]
+      },
+      {
+        "id" : "00000000-0000-0000-0001-000000000022",
+        "label" : "OUT_4",
+        "pins" : [
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000035",
+            "pinKey" : "b"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000036",
+            "pinKey" : "1"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000037",
+            "pinKey" : "p"
+          }
+        ]
+      },
+      {
+        "id" : "00000000-0000-0000-0001-000000000023",
+        "label" : "IN",
+        "pins" : [
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000003",
+            "pinKey" : "p"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000004",
+            "pinKey" : "gate"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000011",
+            "pinKey" : "gate"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000019",
+            "pinKey" : "gate"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000028",
+            "pinKey" : "gate"
+          }
+        ]
+      },
+      {
+        "id" : "00000000-0000-0000-0001-000000000024",
+        "label" : "VENT",
+        "pins" : [
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000004",
+            "pinKey" : "a"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000011",
+            "pinKey" : "a"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000019",
+            "pinKey" : "a"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000028",
+            "pinKey" : "a"
+          },
+          {
+            "componentId" : "2E1CB3F4-31C1-4217-8A6C-5FAD06ED5B0F",
+            "pinKey" : "p"
+          }
+        ]
+      },
+      {
+        "id" : "00000000-0000-0000-0001-000000000025",
+        "label" : "VAC",
+        "pins" : [
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000001",
+            "pinKey" : "p"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000007",
+            "pinKey" : "2"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000009",
+            "pinKey" : "2"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000015",
+            "pinKey" : "2"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000017",
+            "pinKey" : "2"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000024",
+            "pinKey" : "2"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000026",
+            "pinKey" : "2"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000034",
+            "pinKey" : "2"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000036",
+            "pinKey" : "2"
+          }
+        ]
+      },
+      {
+        "id" : "4A4C7E94-B62E-4941-B9A0-C9375143B76F",
+        "label" : "n1",
+        "pins" : [
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000002",
+            "pinKey" : "p"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000008",
+            "pinKey" : "a"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000016",
+            "pinKey" : "a"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000025",
+            "pinKey" : "a"
+          },
+          {
+            "componentId" : "00000000-0000-0000-0000-000000000035",
+            "pinKey" : "a"
+          }
+        ]
+      }
+    ]
+  },
+  "manufacturing" : {
+    "channelDiameter" : 1.5,
+    "dimpleDepth" : 1,
+    "dimpleDiameter" : 5,
+    "dimpleSphereOffset" : 1,
+    "gridPitch" : 1,
+    "interLayerWall" : 0.5,
+    "ledDimpleDepth" : 1,
+    "ledDimpleDiameter" : 6,
+    "minChannelSpacing" : 1.5,
+    "minWallThickness" : 0.5,
+    "padsDiameter" : 4,
+    "padsFilletRadius" : 0.5,
+    "padsOffset" : 1.25,
+    "padsSeparation" : 1,
+    "plateCornerFillet" : 2,
+    "plateThickness" : 5,
+    "portBoreDiameter" : 1.6,
+    "portBoreTaperDegrees" : 1,
+    "resistorChannelDiameter" : 0.5,
+    "screwDomeBaseDiameter" : 8.1,
+    "screwHeadDepth" : 2.7,
+    "screwNutDepth" : 1.7,
+    "screwProtrusion" : 0,
+    "siliconeThickness" : 0.5,
+    "stencilThickness" : 0.2,
+    "stencilViaPadding" : 0
+  },
+  "physical" : {
+    "boardOutline" : {
+      "origin" : {
+        "x" : -3,
+        "y" : 38
+      },
+      "size" : {
+        "height" : 125,
+        "width" : 255
+      }
+    },
+    "bottomLayers" : 1,
+    "placements" : [
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000001",
+        "depth" : 0,
+        "layer" : "top",
+        "position" : {
+          "x" : 68,
+          "y" : 55
+        },
+        "rotation" : "r270"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000002",
+        "depth" : 0,
+        "layer" : "top",
+        "position" : {
+          "x" : 140,
+          "y" : 74
+        },
+        "rotation" : "r0"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000003",
+        "depth" : 0,
+        "layer" : "bottom",
+        "position" : {
+          "x" : 1,
+          "y" : 71
+        },
+        "rotation" : "r180"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000004",
+        "depth" : 0,
+        "layer" : "bottom",
+        "position" : {
+          "x" : 9,
+          "y" : 71
+        },
+        "rotation" : "r270"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000005",
+        "depth" : 0,
+        "layer" : "top",
+        "position" : {
+          "x" : 20,
+          "y" : 69
+        },
+        "rotation" : "r0"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000006",
+        "depth" : 0,
+        "layer" : "top",
+        "position" : {
+          "x" : 33,
+          "y" : 69
+        },
+        "rotation" : "r0"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000007",
+        "depth" : 0,
+        "layer" : "top",
+        "position" : {
+          "x" : 46,
+          "y" : 69
+        },
+        "rotation" : "r0"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000008",
+        "depth" : 0,
+        "layer" : "bottom",
+        "position" : {
+          "x" : 107,
+          "y" : 73
+        },
+        "rotation" : "r270"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000009",
+        "depth" : 0,
+        "layer" : "top",
+        "position" : {
+          "x" : 109,
+          "y" : 66
+        },
+        "rotation" : "r180"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000010",
+        "depth" : 0,
+        "layer" : "top",
+        "position" : {
+          "x" : 115,
+          "y" : 66
+        },
+        "rotation" : "r0"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000011",
+        "depth" : 0,
+        "layer" : "bottom",
+        "position" : {
+          "x" : 8,
+          "y" : 82
+        },
+        "rotation" : "r270"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000012",
+        "depth" : 0,
+        "layer" : "top",
+        "position" : {
+          "x" : 18,
+          "y" : 80
+        },
+        "rotation" : "r0"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000013",
+        "depth" : 0,
+        "layer" : "top",
+        "position" : {
+          "x" : 32,
+          "y" : 80
+        },
+        "rotation" : "r0"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000014",
+        "depth" : 0,
+        "layer" : "top",
+        "position" : {
+          "x" : 45,
+          "y" : 80
+        },
+        "rotation" : "r0"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000015",
+        "depth" : 0,
+        "layer" : "top",
+        "position" : {
+          "x" : 58,
+          "y" : 80
+        },
+        "rotation" : "r0"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000016",
+        "depth" : 0,
+        "layer" : "bottom",
+        "position" : {
+          "x" : 108,
+          "y" : 82
+        },
+        "rotation" : "r270"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000017",
+        "depth" : 0,
+        "layer" : "top",
+        "position" : {
+          "x" : 105,
+          "y" : 78
+        },
+        "rotation" : "r180"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000018",
+        "depth" : 0,
+        "layer" : "top",
+        "position" : {
+          "x" : 140,
+          "y" : 79
+        },
+        "rotation" : "r0"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000019",
+        "depth" : 0,
+        "layer" : "bottom",
+        "position" : {
+          "x" : 8,
+          "y" : 128
+        },
+        "rotation" : "r90"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000020",
+        "depth" : 0,
+        "layer" : "top",
+        "position" : {
+          "x" : 26,
+          "y" : 129
+        },
+        "rotation" : "r0"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000021",
+        "depth" : 0,
+        "layer" : "top",
+        "position" : {
+          "x" : 51,
+          "y" : 129
+        },
+        "rotation" : "r0"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000022",
+        "depth" : 0,
+        "layer" : "top",
+        "position" : {
+          "x" : 77,
+          "y" : 129
+        },
+        "rotation" : "r0"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000023",
+        "depth" : 0,
+        "layer" : "top",
+        "position" : {
+          "x" : 102,
+          "y" : 129
+        },
+        "rotation" : "r0"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000024",
+        "depth" : 0,
+        "layer" : "top",
+        "position" : {
+          "x" : 128,
+          "y" : 129
+        },
+        "rotation" : "r0"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000025",
+        "depth" : 0,
+        "layer" : "bottom",
+        "position" : {
+          "x" : 192,
+          "y" : 129
+        },
+        "rotation" : "r0"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000026",
+        "depth" : 0,
+        "layer" : "top",
+        "position" : {
+          "x" : 220,
+          "y" : 129
+        },
+        "rotation" : "r0"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000027",
+        "depth" : 0,
+        "layer" : "top",
+        "position" : {
+          "x" : 249,
+          "y" : 129
+        },
+        "rotation" : "r0"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000028",
+        "depth" : 0,
+        "layer" : "bottom",
+        "position" : {
+          "x" : 7,
+          "y" : 157
+        },
+        "rotation" : "r90"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000029",
+        "depth" : 0,
+        "layer" : "top",
+        "position" : {
+          "x" : 26,
+          "y" : 158
+        },
+        "rotation" : "r0"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000030",
+        "depth" : 0,
+        "layer" : "top",
+        "position" : {
+          "x" : 51,
+          "y" : 158
+        },
+        "rotation" : "r0"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000031",
+        "depth" : 0,
+        "layer" : "top",
+        "position" : {
+          "x" : 77,
+          "y" : 158
+        },
+        "rotation" : "r0"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000032",
+        "depth" : 0,
+        "layer" : "top",
+        "position" : {
+          "x" : 102,
+          "y" : 158
+        },
+        "rotation" : "r0"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000033",
+        "depth" : 0,
+        "layer" : "top",
+        "position" : {
+          "x" : 128,
+          "y" : 158
+        },
+        "rotation" : "r0"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000034",
+        "depth" : 0,
+        "layer" : "top",
+        "position" : {
+          "x" : 153,
+          "y" : 158
+        },
+        "rotation" : "r0"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000035",
+        "depth" : 0,
+        "layer" : "bottom",
+        "position" : {
+          "x" : 192,
+          "y" : 158
+        },
+        "rotation" : "r0"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000036",
+        "depth" : 0,
+        "layer" : "top",
+        "position" : {
+          "x" : 220,
+          "y" : 158
+        },
+        "rotation" : "r0"
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000037",
+        "depth" : 0,
+        "layer" : "top",
+        "position" : {
+          "x" : 249,
+          "y" : 158
+        },
+        "rotation" : "r0"
+      },
+      {
+        "componentId" : "2E1CB3F4-31C1-4217-8A6C-5FAD06ED5B0F",
+        "depth" : 0,
+        "layer" : "top",
+        "position" : {
+          "x" : -1,
+          "y" : 85
+        },
+        "rotation" : "r180"
+      }
+    ],
+    "routes" : [
+      {
+        "netId" : "00000000-0000-0000-0001-000000000001",
+        "segments" : [
+          {
+            "layer" : {
+              "depth" : 0,
+              "plate" : "top"
+            },
+            "waypoints" : [
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 14,
+                  "y" : 69
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 14,
+                  "y" : 73
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 88,
+                  "y" : 73
+                }
+              },
+              {
+                "kind" : "via",
+                "position" : {
+                  "x" : 88,
+                  "y" : 73
+                }
+              }
+            ]
+          },
+          {
+            "layer" : {
+              "depth" : 0,
+              "plate" : "bottom"
+            },
+            "waypoints" : [
+              {
+                "kind" : "via",
+                "position" : {
+                  "x" : 88,
+                  "y" : 73
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 107,
+                  "y" : 73
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 107,
+                  "y" : 73
+                }
+              }
+            ]
+          },
+          {
+            "layer" : {
+              "depth" : 0,
+              "plate" : "top"
+            },
+            "waypoints" : [
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 14,
+                  "y" : 69
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 9,
+                  "y" : 69.25
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "netId" : "00000000-0000-0000-0001-000000000023",
+        "segments" : [
+          {
+            "layer" : {
+              "depth" : 0,
+              "plate" : "bottom"
+            },
+            "waypoints" : [
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 1,
+                  "y" : 71
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 9,
+                  "y" : 71
+                }
+              }
+            ]
+          },
+          {
+            "layer" : {
+              "depth" : 0,
+              "plate" : "bottom"
+            },
+            "waypoints" : [
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 1,
+                  "y" : 71
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 1,
+                  "y" : 82
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 8,
+                  "y" : 82
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "netId" : "00000000-0000-0000-0001-000000000004",
+        "segments" : [
+          {
+            "layer" : {
+              "depth" : 0,
+              "plate" : "top"
+            },
+            "waypoints" : [
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 107,
+                  "y" : 71.25
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 115,
+                  "y" : 69.25
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 115,
+                  "y" : 66
+                }
+              }
+            ]
+          },
+          {
+            "layer" : {
+              "depth" : 0,
+              "plate" : "top"
+            },
+            "waypoints" : [
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 115,
+                  "y" : 66
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 115,
+                  "y" : 66
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "netId" : "00000000-0000-0000-0001-000000000025",
+        "segments" : [
+          {
+            "layer" : {
+              "depth" : 0,
+              "plate" : "top"
+            },
+            "waypoints" : [
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 103,
+                  "y" : 66
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 68,
+                  "y" : 66
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 68,
+                  "y" : 55
+                }
+              }
+            ]
+          },
+          {
+            "layer" : {
+              "depth" : 0,
+              "plate" : "top"
+            },
+            "waypoints" : [
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 52,
+                  "y" : 69
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 68,
+                  "y" : 69
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 68,
+                  "y" : 55
+                }
+              }
+            ]
+          },
+          {
+            "layer" : {
+              "depth" : 0,
+              "plate" : "top"
+            },
+            "waypoints" : [
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 64,
+                  "y" : 80
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 67,
+                  "y" : 80
+                }
+              },
+              {
+                "kind" : "via",
+                "position" : {
+                  "x" : 67,
+                  "y" : 80
+                }
+              }
+            ]
+          },
+          {
+            "layer" : {
+              "depth" : 1,
+              "plate" : "top"
+            },
+            "waypoints" : [
+              {
+                "kind" : "via",
+                "position" : {
+                  "x" : 67,
+                  "y" : 80
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 62,
+                  "y" : 62
+                }
+              },
+              {
+                "kind" : "via",
+                "position" : {
+                  "x" : 63,
+                  "y" : 58
+                }
+              }
+            ]
+          },
+          {
+            "layer" : {
+              "depth" : 0,
+              "plate" : "top"
+            },
+            "waypoints" : [
+              {
+                "kind" : "via",
+                "position" : {
+                  "x" : 63,
+                  "y" : 58
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 68,
+                  "y" : 55
+                }
+              }
+            ]
+          },
+          {
+            "layer" : {
+              "depth" : 0,
+              "plate" : "top"
+            },
+            "waypoints" : [
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 99,
+                  "y" : 78
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 97,
+                  "y" : 78
+                }
+              },
+              {
+                "kind" : "via",
+                "position" : {
+                  "x" : 97,
+                  "y" : 78
+                }
+              }
+            ]
+          },
+          {
+            "layer" : {
+              "depth" : 1,
+              "plate" : "top"
+            },
+            "waypoints" : [
+              {
+                "kind" : "via",
+                "position" : {
+                  "x" : 97,
+                  "y" : 78
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 73,
+                  "y" : 78
+                }
+              },
+              {
+                "kind" : "via",
+                "position" : {
+                  "x" : 73,
+                  "y" : 58
+                }
+              }
+            ]
+          },
+          {
+            "layer" : {
+              "depth" : 0,
+              "plate" : "top"
+            },
+            "waypoints" : [
+              {
+                "kind" : "via",
+                "position" : {
+                  "x" : 73,
+                  "y" : 58
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 68,
+                  "y" : 58
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 68,
+                  "y" : 55
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "netId" : "00000000-0000-0000-0001-000000000024",
+        "segments" : [
+          {
+            "layer" : {
+              "depth" : 0,
+              "plate" : "top"
+            },
+            "waypoints" : [
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 9,
+                  "y" : 72.25
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 9,
+                  "y" : 76
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : -1,
+                  "y" : 76
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : -1,
+                  "y" : 81
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : -1,
+                  "y" : 85
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "netId" : "4A4C7E94-B62E-4941-B9A0-C9375143B76F",
+        "segments" : [
+          {
+            "layer" : {
+              "depth" : 0,
+              "plate" : "top"
+            },
+            "waypoints" : [
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 107,
+                  "y" : 74.25
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 140,
+                  "y" : 74.25
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 140,
+                  "y" : 74
+                }
+              }
+            ]
+          },
+          {
+            "layer" : {
+              "depth" : 0,
+              "plate" : "top"
+            },
+            "waypoints" : [
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 108,
+                  "y" : 83.25
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 114,
+                  "y" : 83.25
+                }
+              },
+              {
+                "kind" : "via",
+                "position" : {
+                  "x" : 114,
+                  "y" : 83
+                }
+              }
+            ]
+          },
+          {
+            "layer" : {
+              "depth" : 1,
+              "plate" : "top"
+            },
+            "waypoints" : [
+              {
+                "kind" : "via",
+                "position" : {
+                  "x" : 114,
+                  "y" : 83
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 114,
+                  "y" : 74
+                }
+              },
+              {
+                "kind" : "via",
+                "position" : {
+                  "x" : 117,
+                  "y" : 74
+                }
+              }
+            ]
+          },
+          {
+            "layer" : {
+              "depth" : 0,
+              "plate" : "top"
+            },
+            "waypoints" : [
+              {
+                "kind" : "via",
+                "position" : {
+                  "x" : 117,
+                  "y" : 74
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 140,
+                  "y" : 74
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "netId" : "00000000-0000-0000-0001-000000000005",
+        "segments" : [
+          {
+            "layer" : {
+              "depth" : 0,
+              "plate" : "top"
+            },
+            "waypoints" : [
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 8,
+                  "y" : 80.75
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 12,
+                  "y" : 80.75
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 12,
+                  "y" : 80
+                }
+              }
+            ]
+          },
+          {
+            "layer" : {
+              "depth" : 0,
+              "plate" : "bottom"
+            },
+            "waypoints" : [
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 108,
+                  "y" : 82
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 96,
+                  "y" : 82
+                }
+              },
+              {
+                "kind" : "via",
+                "position" : {
+                  "x" : 96,
+                  "y" : 82
+                }
+              }
+            ]
+          },
+          {
+            "layer" : {
+              "depth" : 0,
+              "plate" : "top"
+            },
+            "waypoints" : [
+              {
+                "kind" : "via",
+                "position" : {
+                  "x" : 96,
+                  "y" : 82
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 72,
+                  "y" : 82
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 72,
+                  "y" : 84
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 12,
+                  "y" : 84
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 12,
+                  "y" : 80
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "netId" : "00000000-0000-0000-0001-000000000006",
+        "segments" : [
+          {
+            "layer" : {
+              "depth" : 0,
+              "plate" : "top"
+            },
+            "waypoints" : [
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 24,
+                  "y" : 80
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 26,
+                  "y" : 80
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "netId" : "00000000-0000-0000-0001-000000000007",
+        "segments" : [
+          {
+            "layer" : {
+              "depth" : 0,
+              "plate" : "top"
+            },
+            "waypoints" : [
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 38,
+                  "y" : 80
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 39,
+                  "y" : 80
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "netId" : "00000000-0000-0000-0001-000000000008",
+        "segments" : [
+          {
+            "layer" : {
+              "depth" : 0,
+              "plate" : "top"
+            },
+            "waypoints" : [
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 51,
+                  "y" : 80
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 52,
+                  "y" : 80
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "netId" : "00000000-0000-0000-0001-000000000003",
+        "segments" : [
+          {
+            "layer" : {
+              "depth" : 0,
+              "plate" : "top"
+            },
+            "waypoints" : [
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 40,
+                  "y" : 69
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 39,
+                  "y" : 69
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "netId" : "00000000-0000-0000-0001-000000000002",
+        "segments" : [
+          {
+            "layer" : {
+              "depth" : 0,
+              "plate" : "top"
+            },
+            "waypoints" : [
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 27,
+                  "y" : 69
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 26,
+                  "y" : 69
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "netId" : "00000000-0000-0000-0001-000000000009",
+        "segments" : [
+          {
+            "layer" : {
+              "depth" : 0,
+              "plate" : "top"
+            },
+            "waypoints" : [
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 108,
+                  "y" : 80.75
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 118,
+                  "y" : 80.75
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 119,
+                  "y" : 79
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 140,
+                  "y" : 79
+                }
+              }
+            ]
+          },
+          {
+            "layer" : {
+              "depth" : 0,
+              "plate" : "top"
+            },
+            "waypoints" : [
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 140,
+                  "y" : 79
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 111,
+                  "y" : 79
+                }
+              },
+              {
+                "kind" : "point",
+                "position" : {
+                  "x" : 111,
+                  "y" : 78
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "topLayers" : 2
+  },
+  "schemaVersion" : 7,
+  "schematic" : {
+    "positions" : [
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000001",
+        "position" : {
+          "x" : 100,
+          "y" : 30
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000002",
+        "position" : {
+          "x" : 438.56041361340755,
+          "y" : 17.858979517266448
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000003",
+        "position" : {
+          "x" : 540,
+          "y" : 30
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000004",
+        "position" : {
+          "x" : 100,
+          "y" : 120
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000005",
+        "position" : {
+          "x" : 180,
+          "y" : 120
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000006",
+        "position" : {
+          "x" : 260,
+          "y" : 120
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000007",
+        "position" : {
+          "x" : 340,
+          "y" : 120
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000008",
+        "position" : {
+          "x" : 700,
+          "y" : 120
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000009",
+        "position" : {
+          "x" : 790,
+          "y" : 120
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000010",
+        "position" : {
+          "x" : 880,
+          "y" : 120
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000011",
+        "position" : {
+          "x" : 100,
+          "y" : 210
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000012",
+        "position" : {
+          "x" : 180,
+          "y" : 210
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000013",
+        "position" : {
+          "x" : 260,
+          "y" : 210
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000014",
+        "position" : {
+          "x" : 340,
+          "y" : 210
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000015",
+        "position" : {
+          "x" : 420,
+          "y" : 210
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000016",
+        "position" : {
+          "x" : 700,
+          "y" : 210
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000017",
+        "position" : {
+          "x" : 790,
+          "y" : 210
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000018",
+        "position" : {
+          "x" : 880,
+          "y" : 210
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000019",
+        "position" : {
+          "x" : 100,
+          "y" : 300
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000020",
+        "position" : {
+          "x" : 180,
+          "y" : 300
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000021",
+        "position" : {
+          "x" : 260,
+          "y" : 300
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000022",
+        "position" : {
+          "x" : 340,
+          "y" : 300
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000023",
+        "position" : {
+          "x" : 420,
+          "y" : 300
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000024",
+        "position" : {
+          "x" : 500,
+          "y" : 300
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000025",
+        "position" : {
+          "x" : 700,
+          "y" : 300
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000026",
+        "position" : {
+          "x" : 790,
+          "y" : 300
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000027",
+        "position" : {
+          "x" : 880,
+          "y" : 300
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000028",
+        "position" : {
+          "x" : 100,
+          "y" : 390
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000029",
+        "position" : {
+          "x" : 180,
+          "y" : 390
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000030",
+        "position" : {
+          "x" : 260,
+          "y" : 390
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000031",
+        "position" : {
+          "x" : 340,
+          "y" : 390
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000032",
+        "position" : {
+          "x" : 420,
+          "y" : 390
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000033",
+        "position" : {
+          "x" : 500,
+          "y" : 390
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000034",
+        "position" : {
+          "x" : 580,
+          "y" : 390
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000035",
+        "position" : {
+          "x" : 700,
+          "y" : 390
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000036",
+        "position" : {
+          "x" : 790,
+          "y" : 390
+        }
+      },
+      {
+        "componentId" : "00000000-0000-0000-0000-000000000037",
+        "position" : {
+          "x" : 880,
+          "y" : 390
+        }
+      },
+      {
+        "componentId" : "2E1CB3F4-31C1-4217-8A6C-5FAD06ED5B0F",
+        "position" : {
+          "x" : 316.8336664807987,
+          "y" : 14.012786161394946
+        }
+      }
+    ]
+  }
+}
