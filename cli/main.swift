@@ -161,9 +161,10 @@ func applyParamOverride(_ params: inout SimulationParameters, name: String, valu
     case "busdrive", "busdriveconductance": params.busDriveConductance = value
     case "droop", "pumpdroopexponent": params.pumpDroopExponent = value
     case "leak", "leakconductance": params.leakConductance = value
+    case "internalleak", "internalleakconductance": params.internalLeakConductance = value
     case "dt", "dtseconds": params.dtSeconds = value
     default:
-        fail("error: unknown --param '\(name)'. Known: resistance, flow, pumpMax, onConductance, offConductance, gateThreshold, gateHysteresis, capacitance, busDrive, droop, leak, dt.")
+        fail("error: unknown --param '\(name)'. Known: resistance, flow, pumpMax, onConductance, offConductance, gateThreshold, gateHysteresis, capacitance, busDrive, droop, leak, internalLeak, dt.")
     }
 }
 
@@ -456,8 +457,25 @@ func reportReroute(_ before: CircuitDocument, _ after: CircuitDocument, json: Bo
     for issue in a.prefix(40) { print("    • \(issue.summary)") }
 }
 
+/// Replace non-finite Doubles/Floats (NaN, ±Inf) with null so the JSON writer
+/// can't abort. The solver legitimately emits NaN at near-singular operating
+/// points (e.g. very low leak combined with low resistance); `JSONSerialization`
+/// throws an *uncatchable* ObjC exception on those (so `try?` doesn't help) —
+/// we have to scrub them before handing the object over.
+func jsonSanitized(_ obj: Any) -> Any {
+    switch obj {
+    case let d as Double: return d.isFinite ? d : NSNull()
+    case let f as Float:  return f.isFinite ? f : NSNull()
+    case let a as [Any]:  return a.map(jsonSanitized)
+    case let m as [String: Any]: return m.mapValues(jsonSanitized)
+    default: return obj
+    }
+}
+
 func printJSON(_ obj: Any) {
-    guard let data = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]),
+    let safe = jsonSanitized(obj)
+    guard JSONSerialization.isValidJSONObject(safe),
+          let data = try? JSONSerialization.data(withJSONObject: safe, options: [.prettyPrinted, .sortedKeys]),
           let str = String(data: data, encoding: .utf8) else {
         print("{}")
         return
@@ -630,7 +648,7 @@ SIMULATE OPTIONS:
   --param NAME=VALUE    Override a simulation parameter. Repeatable. Names:
                         resistance, flow, pumpMax, onConductance,
                         offConductance, gateThreshold, gateHysteresis,
-                        capacitance, busDrive, droop, leak, dt.
+                        capacitance, busDrive, droop, leak, internalLeak, dt.
                         e.g. --param resistance=0.15 --param flow=30
   --json                Machine-readable output.
 

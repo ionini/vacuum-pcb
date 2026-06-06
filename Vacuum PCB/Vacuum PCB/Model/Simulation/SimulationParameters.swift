@@ -87,6 +87,15 @@ struct SimulationParameters: Equatable {
     /// pump without overwhelming it.
     var leakConductance: Double
 
+    /// Channel-to-channel leak scale (net→net, vs `leakConductance` which is
+    /// net→atmosphere). Models an imperfectly-printed plate where neighbouring
+    /// channels bleed into each other through the thin wall between them — same
+    /// plate, any depth (T0↔T1 through the inter-layer wall), not across the
+    /// silicone gap. Per-net-pair conductance = this × a geometric weight
+    /// (parallel run ÷ wall gap) from the routed layout, so a tightly-packed
+    /// board leaks more than a loose one at the same setting. 0 = sealed.
+    var internalLeakConductance: Double
+
     // Defaults are sized for crisp digital-style swings on the canonical
     // NMOS inverter while still letting an unloaded net equalize back to
     // atmosphere in a couple of seconds. We want G_off ≪ G_resistor ≪
@@ -118,7 +127,8 @@ struct SimulationParameters: Equatable {
         pumpFlowCapacity: 30.0,
         busDriveConductance: 5.0,
         pumpDroopExponent: -0.14,
-        leakConductance: 0.025
+        leakConductance: 0.025,
+        internalLeakConductance: 0.0
     )
 
     /// Smooth-step blend between `transistorOffConductance` (gate at atm) and

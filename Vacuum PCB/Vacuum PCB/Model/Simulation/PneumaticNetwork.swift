@@ -44,6 +44,16 @@ struct PneumaticNetwork {
         let pathLengthMm: Double
     }
 
+    /// Weak net↔net edge between two routed channels that run close together
+    /// inside one printed plate (a leaky wall). `weight` is a geometric factor
+    /// (Σ parallel run length ÷ wall gap over close segment pairs); the solver
+    /// multiplies it by `SimulationParameters.internalLeakConductance`.
+    struct InterChannelLeak {
+        let net1: UUID
+        let net2: UUID
+        let weight: Double
+    }
+
     /// Hard boundary: a net forced to a known constant pressure (ATM vent).
     /// Inputs are intentionally NOT here — their value depends on user
     /// controls, so the engine reads them from `SimulationState` directly.
@@ -107,6 +117,9 @@ struct PneumaticNetwork {
     let probes: [Probe]
     let transistors: [TransistorEdge]
     let resistors: [ResistorEdge]
+    /// Channel-to-channel leak paths (see `InterChannelLeak`), computed from the
+    /// routed layout; scaled by `SimulationParameters.internalLeakConductance`.
+    let interChannelLeaks: [InterChannelLeak]
 
     /// Deterministic per-pin UUID for a connector pin. The SimulationState
     /// reuses Input/Probe ids as the key in its toggle-state dictionary —
@@ -250,7 +263,8 @@ struct PneumaticNetwork {
             inputs: inputs,
             probes: probes,
             transistors: transistors,
-            resistors: resistors
+            resistors: resistors,
+            interChannelLeaks: InternalLeakGeometry.leaks(in: doc)
         )
     }
 
@@ -297,5 +311,97 @@ struct PneumaticNetwork {
             out[route.netId, default: 0] += length * SimulationParameters.defaults.channelCapacitancePerMm
         }
         return out
+    }
+}
+
+/// Geometry for channel-to-channel ("internal") leak: which routed channels run
+/// close enough — within a single printed plate — to bleed into each other
+/// through the wall between them. Same plate only (top = all its depths, bottom
+/// = all its depths); opposite plates are separated by the silicone sheet, a
+/// different path we don't model here. Two channels leak more the longer they
+/// run alongside each other and the thinner the wall (in-plane gap for the same
+/// depth, the inter-layer wall for adjacent depths).
+enum InternalLeakGeometry {
+    private struct Edge { let netId: UUID; let plate: Plate; let depth: Int; let a: Point; let b: Point }
+
+    private struct Pair: Hashable {
+        let a: UUID, b: UUID
+        init(_ x: UUID, _ y: UUID) {
+            if x.uuidString < y.uuidString { a = x; b = y } else { a = y; b = x }
+        }
+    }
+
+    /// Net↔net leak weights (Σ run-length ÷ wall gap over close, same-plate,
+    /// cross-net segment pairs). Final conductance = weight × the param knob.
+    static func leaks(in doc: CircuitDocument) -> [PneumaticNetwork.InterChannelLeak] {
+        let m = doc.manufacturing
+        let depthPitch = m.channelDiameter + m.interLayerWall   // vertical step per depth
+        let window = max(m.minChannelSpacing, depthPitch) * 3   // ignore far-apart channels
+        let minGap = max(m.minWallThickness, 0.05)              // floor: touching ≠ infinite
+
+        var edges: [Edge] = []
+        for route in doc.physical.routes {
+            for seg in route.segments {
+                let pts = seg.waypoints
+                guard pts.count >= 2 else { continue }
+                for i in 0..<(pts.count - 1) {
+                    let a = pts[i].position, b = pts[i + 1].position
+                    if a.x == b.x && a.y == b.y { continue }    // skip via stubs / zero-length
+                    edges.append(Edge(netId: route.netId, plate: seg.layer.plate,
+                                      depth: seg.layer.depth, a: a, b: b))
+                }
+            }
+        }
+
+        var weights: [Pair: Double] = [:]
+        for i in 0..<edges.count {
+            for j in (i + 1)..<edges.count {
+                let e = edges[i], f = edges[j]
+                if e.netId == f.netId { continue }
+                if e.plate != f.plate { continue }              // same printed plate only
+                let dxy = segmentDistance(e.a, e.b, f.a, f.b)
+                let dz = Double(abs(e.depth - f.depth)) * depthPitch
+                let gap = (dxy * dxy + dz * dz).squareRoot()
+                guard gap < window else { continue }
+                let run = min(length(e.a, e.b), length(f.a, f.b))   // ~ parallel overlap
+                weights[Pair(e.netId, f.netId), default: 0] += run / max(gap, minGap)
+            }
+        }
+        // Normalise so the strongest leak path = 1.0. `internalLeakConductance`
+        // then reads as "conductance of the worst channel-to-channel leak" in
+        // solver units (a resistor edge is ≈0.2, transistor-on = 5), giving a
+        // playable 0…1 knob. Relative weights still rank which channels leak
+        // most, and a board with more near-max neighbours scrambles sooner.
+        guard let maxW = weights.values.max(), maxW > 0 else { return [] }
+        return weights.map {
+            PneumaticNetwork.InterChannelLeak(net1: $0.key.a, net2: $0.key.b,
+                                              weight: $0.value / maxW)
+        }
+    }
+
+    private static func length(_ a: Point, _ b: Point) -> Double {
+        ((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y)).squareRoot()
+    }
+
+    private static func segmentDistance(_ a: Point, _ b: Point, _ c: Point, _ d: Point) -> Double {
+        if segmentsIntersect(a, b, c, d) { return 0 }
+        return min(min(pointSeg(a, c, d), pointSeg(b, c, d)),
+                   min(pointSeg(c, a, b), pointSeg(d, a, b)))
+    }
+
+    private static func pointSeg(_ p: Point, _ a: Point, _ b: Point) -> Double {
+        let dx = b.x - a.x, dy = b.y - a.y
+        let lenSq = dx * dx + dy * dy
+        guard lenSq > 0 else { return length(p, a) }
+        let t = max(0, min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq))
+        return length(p, Point(x: a.x + t * dx, y: a.y + t * dy))
+    }
+
+    private static func segmentsIntersect(_ a: Point, _ b: Point, _ c: Point, _ d: Point) -> Bool {
+        func ccw(_ p: Point, _ q: Point, _ r: Point) -> Double {
+            (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x)
+        }
+        return (ccw(a, b, c) > 0) != (ccw(a, b, d) > 0)
+            && (ccw(c, d, a) > 0) != (ccw(c, d, b) > 0)
     }
 }

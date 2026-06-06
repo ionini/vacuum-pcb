@@ -80,6 +80,17 @@ struct SimulateControlsView: View {
                 range: 0.0...1.0,
                 format: "%.3f"
             )
+            tuningSlider(
+                label: "Int leak",
+                help: "Channel-to-channel leak: neighbouring channels in the " +
+                      "same printed plate bleed into each other through the " +
+                      "wall between them — worse the tighter they're packed. " +
+                      "Models an imperfectly-fused print (T0↔T1 and same-depth " +
+                      "neighbours). 0 = sealed.",
+                value: $state.params.internalLeakConductance,
+                range: 0.0...1.0,
+                format: "%.3f"
+            )
             pumpTuning
         }
     }

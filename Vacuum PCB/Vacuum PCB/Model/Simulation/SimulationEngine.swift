@@ -172,6 +172,20 @@ enum SimulationEngine {
                 }
             }
 
+            // 4d. Channel-to-channel ("internal") leak. Neighbouring channels
+            // inside one printed plate bleed into each other through the thin
+            // wall between them — a net↔net edge, unlike the net→atm leak
+            // above. Each pair's geometric weight (run length ÷ wall gap,
+            // precomputed from the layout) is scaled by the user's knob.
+            // Skipped at g=0 so a perfectly-printed board is unchanged.
+            if params.internalLeakConductance > 0 {
+                for leak in network.interChannelLeaks {
+                    let g = leak.weight * params.internalLeakConductance
+                    stamp(&y, &rhs, n: n, freeIndex: freeIndex, anchored: anchored,
+                          net1: leak.net1, net2: leak.net2, g: g)
+                }
+            }
+
             // 5. Solve. Dense Gaussian elimination — N is small (number of
             // free nets, typically <30 for hobby designs).
             solve(matrix: &y, rhs: &rhs, n: n, into: &solution)
