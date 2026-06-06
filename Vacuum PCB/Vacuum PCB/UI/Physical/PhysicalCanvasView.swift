@@ -573,6 +573,7 @@ struct PhysicalCanvasView: View {
                         component: component,
                         placement: placement,
                         parentManufacturing: manufacturing,
+                        rootManufacturing: manufacturing,
                         transform: transform,
                         visible: visible,
                         isSelected: selection.contains(placement: placement.componentId)

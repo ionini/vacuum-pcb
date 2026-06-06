@@ -18,6 +18,12 @@ struct SubpartExpandedView: View {
     let component: Component
     let placement: Placement
     let parentManufacturing: ManufacturingConstants
+    /// The top-level board's constants, threaded **unchanged** through every
+    /// recursion level. The exported stencil flattens to these, so every via
+    /// hole — however deeply nested — is cut at the root channel diameter +
+    /// via padding. `parentManufacturing` becomes the intermediate part's at
+    /// depth, which would size deep holes wrong (and ignore the root padding).
+    let rootManufacturing: ManufacturingConstants
     let transform: CanvasTransform
     let visible: LayerVisibility
     let isSelected: Bool
@@ -205,6 +211,7 @@ struct SubpartExpandedView: View {
                             component: internalComponent,
                             placement: effective,
                             parentManufacturing: part.document.manufacturing,
+                            rootManufacturing: rootManufacturing,
                             transform: transform,
                             visible: visible,
                             isSelected: false,
@@ -282,10 +289,13 @@ struct SubpartExpandedView: View {
     /// only kind that actually pierces the silicone — and draws each as a
     /// channel-sized ring at its transformed parent-world position.
     private func siliconeSheetVias(part: PartsLibrary.Part) -> some View {
-        let radius = max(
-            4,
-            part.document.manufacturing.channelDiameter / 2 * transform.ptsPerMm
-        )
+        // The exported stencil flattens to the *root* board's constants, so a
+        // subpart via's cut hole is the root channel diameter + via padding —
+        // not the subpart's own, and not an intermediate level's. Using the
+        // root here keeps the Sheet view 1:1 with the stencil at any depth and
+        // makes the top-level padding grow these holes too.
+        let holeDiameter = rootManufacturing.channelDiameter + rootManufacturing.stencilViaPadding
+        let radius = max(4, holeDiameter / 2 * transform.ptsPerMm)
         return Canvas { ctx, _ in
             for position in crossSiliconeViaPositions(in: part) {
                 let center = transform.toScreen(transformWorld(position))

@@ -238,7 +238,11 @@ struct SiliconeSheetViasOverlay: View {
 
     var body: some View {
         Canvas { ctx, _ in
-            let radius = max(4, manufacturing.channelDiameter / 2 * transform.ptsPerMm)
+            // The cut hole equals the stencil cutter: channel diameter plus the
+            // via-hole padding that compensates for silicone shrink. Drawing it
+            // here keeps the Sheet view 1:1 with the exported stencil.
+            let holeDiameter = manufacturing.channelDiameter + manufacturing.stencilViaPadding
+            let radius = max(4, holeDiameter / 2 * transform.ptsPerMm)
             for position in document.physical.crossSiliconeViaPositions() {
                 let center = transform.toScreen(position)
                 let rect = CGRect(
