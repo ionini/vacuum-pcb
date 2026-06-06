@@ -307,6 +307,13 @@ struct PhysicalInspector: View {
                         layerStepper(label: "Bottom plate", plate: .bottom)
                     }
                     Divider()
+                    // Manufacturing constants that shape the 2D layout —
+                    // footprints, routing/DRC, snap grid, LED size, via-hole
+                    // padding. Mirrors the 3D Preview inspector's editor,
+                    // scoped to the physically-relevant subset (same draft +
+                    // Apply behaviour, so route endpoints migrate on commit).
+                    ManufacturingSettingsView(document: $document, scope: .physical)
+                    Divider()
                     // Parking lot used to be the leading column of the
                     // Physical tab; it lives here in the inspector now so
                     // the canvas can claim the full detail area.

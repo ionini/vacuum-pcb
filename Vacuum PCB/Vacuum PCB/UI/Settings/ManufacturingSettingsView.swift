@@ -15,7 +15,15 @@ import SwiftUI
 /// tab (or hitting Export) rebuilds the CSG against the new values. Revert
 /// throws the draft away and re-syncs from the document.
 struct ManufacturingSettingsView: View {
+    /// `.full` (3D Preview inspector) shows every constant. `.physical`
+    /// (Physical inspector) mirrors only the constants that shape the 2D
+    /// layout — footprints, routing/DRC, the snap grid, LED size, via-hole
+    /// padding — and drops the purely-3D ones (plate/dome/screw geometry) and
+    /// the board size (the Physical inspector already edits that live).
+    enum Scope { case full, physical }
+
     @Binding var document: VPCBDocument
+    var scope: Scope = .full
 
     @State private var draftMfg: ManufacturingConstants = .defaults
     @State private var draftBoard: Size = Size(width: 50, height: 30)
@@ -25,18 +33,20 @@ struct ManufacturingSettingsView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Manufacturing").font(.title3).bold()
 
-            group("Board") {
-                row("Width", $draftBoard.width)
-                row("Height", $draftBoard.height)
-            }
+            if scope == .full {
+                group("Board") {
+                    row("Width", $draftBoard.width)
+                    row("Height", $draftBoard.height)
+                }
 
-            group("Plates") {
-                row("Plate thickness (single-layer)", $draftMfg.plateThickness)
-                row("Silicone thickness", $draftMfg.siliconeThickness)
-                row("Inter-layer wall", $draftMfg.interLayerWall)
-                row("Corner fillet radius", $draftMfg.plateCornerFillet)
-                Text("Multi-layer plates: plate thickness above is the depth-0 plate height. Each extra channel layer adds channelDiameter + inter-layer wall to that plate's height. Corner fillet rounds the four vertical edges of each plate (viewed from above) — softens the print so the printer doesn't have to resolve a perfect 90° corner. Runs full plate height; silicone-facing faces stay rectangular. Set 0 for square corners.")
-                    .font(.caption2).foregroundStyle(.secondary)
+                group("Plates") {
+                    row("Plate thickness (single-layer)", $draftMfg.plateThickness)
+                    row("Silicone thickness", $draftMfg.siliconeThickness)
+                    row("Inter-layer wall", $draftMfg.interLayerWall)
+                    row("Corner fillet radius", $draftMfg.plateCornerFillet)
+                    Text("Multi-layer plates: plate thickness above is the depth-0 plate height. Each extra channel layer adds channelDiameter + inter-layer wall to that plate's height. Corner fillet rounds the four vertical edges of each plate (viewed from above) — softens the print so the printer doesn't have to resolve a perfect 90° corner. Runs full plate height; silicone-facing faces stay rectangular. Set 0 for square corners.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
             }
 
             group("Channels") {
@@ -50,6 +60,9 @@ struct ManufacturingSettingsView: View {
                     .font(.caption2).foregroundStyle(.secondary)
             }
 
+            // Gate dome diameter sizes the transistor body drawn on the 2D
+            // canvas and the pin-snap tolerance (like the LED diameter), so it
+            // belongs in the physical mirror; sphere offset rides along.
             group("Transistor gate") {
                 row("Dome diameter", $draftMfg.dimpleDiameter)
                 row("Dome sphere offset", $draftMfg.dimpleSphereOffset)
@@ -73,19 +86,23 @@ struct ManufacturingSettingsView: View {
                     .font(.caption2).foregroundStyle(.secondary)
             }
 
-            group("Screws") {
-                row("Head depth", $draftMfg.screwHeadDepth)
-                row("Nut depth", $draftMfg.screwNutDepth)
-                row("Head/nut protrusion", $draftMfg.screwProtrusion)
-                row("Volcano base diameter", $draftMfg.screwDomeBaseDiameter)
-                Text("Head and nut depths size the countersink and hex pocket to whatever fastener you're using (defaults match an M2-class screw). Protrusion is how far the head and nut stick past their plate's outer face — 0 keeps both flush. Positive values reduce the inlay and rise a Mt-Fuji-shaped volcano around the protruding portion so the head/nut is still held by printed material on the sides; the cavity stays open at the top so a driver can still reach the fastener. Volcano base diameter sets how wide the dome is at its base; the flat plateau on top always sits 0.75 mm outside the cavity, so widening the base only widens the slope. Volcano fields are ignored when protrusion is 0.")
-                    .font(.caption2).foregroundStyle(.secondary)
+            if scope == .full {
+                group("Screws") {
+                    row("Head depth", $draftMfg.screwHeadDepth)
+                    row("Nut depth", $draftMfg.screwNutDepth)
+                    row("Head/nut protrusion", $draftMfg.screwProtrusion)
+                    row("Volcano base diameter", $draftMfg.screwDomeBaseDiameter)
+                    Text("Head and nut depths size the countersink and hex pocket to whatever fastener you're using (defaults match an M2-class screw). Protrusion is how far the head and nut stick past their plate's outer face — 0 keeps both flush. Positive values reduce the inlay and rise a Mt-Fuji-shaped volcano around the protruding portion so the head/nut is still held by printed material on the sides; the cavity stays open at the top so a driver can still reach the fastener. Volcano base diameter sets how wide the dome is at its base; the flat plateau on top always sits 0.75 mm outside the cavity, so widening the base only widens the slope. Volcano fields are ignored when protrusion is 0.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
             }
 
             group("Stencil") {
-                row("Thickness", $draftMfg.stencilThickness)
+                if scope == .full { row("Thickness", $draftMfg.stencilThickness) }
                 row("Via hole padding", $draftMfg.stencilViaPadding)
-                Text("Flat cutting template exported next to the plates. Holes at every cross-silicone via and screw shaft; sized to the silicone sheet so it doubles as a 1:1 cutting guide. Via hole padding adds to each via hole's diameter (0–2 mm) to compensate for the silicone plug contracting when squished between the plates.")
+                Text(scope == .full
+                     ? "Flat cutting template exported next to the plates. Holes at every cross-silicone via and screw shaft; sized to the silicone sheet so it doubles as a 1:1 cutting guide. Via hole padding adds to each via hole's diameter (0–2 mm) to compensate for the silicone plug contracting when squished between the plates."
+                     : "Via hole padding adds to each cross-silicone via hole's diameter in the stencil (0–2 mm) to compensate for the silicone plug contracting when squished between the plates.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
 
