@@ -71,8 +71,11 @@ struct ManufacturingConstants: Codable, Hashable {
     /// pipeline; lives here so it travels with the document.
     var gridPitch: Double
 
-    /// Minimum allowed center-to-center distance between parallel channels.
-    /// Consumed by DRC (iter 4), not by the CAD pipeline.
+    /// Preferred centre-to-centre distance between parallel channels, used by
+    /// the auto-router as a keep-out halo and by the simulation as a
+    /// channel-proximity window. *Not* a DRC limit — the physical constraint
+    /// is wall thickness (`minWallThickness`), which DRC enforces directly and
+    /// diameter-aware; this stays a routing comfort spacing.
     var minChannelSpacing: Double
 
     /// Bore diameter for the serpentine inside a resistor footprint. Smaller
@@ -153,12 +156,13 @@ struct ManufacturingConstants: Codable, Hashable {
     var stencilViaPadding: Double
 
     /// Minimum acceptable wall of printed material between a channel and any
-    /// nearby feature (the board's outer face, another channel, a via, a
-    /// drop bore). Drives the wall-thickness DRC check — anything thinner is
-    /// at risk of breaking through during print or under fluid pressure.
-    /// Distinct from `minChannelSpacing`: that one is centre-to-centre
-    /// between two channels on the same layer; this is wall-thickness, so
-    /// it deducts the participating feature radii from the centre distance.
+    /// nearby feature (the board's outer face, another channel on the same or
+    /// an adjacent layer, a via, a drop bore). Drives every DRC wall check —
+    /// including the same-layer different-net channel case (`channelClearance`)
+    /// — anything thinner is at risk of breaking through during print or under
+    /// fluid pressure. Always edge-to-edge: the participating feature radii are
+    /// deducted from the centre distance, so it is diameter-aware, unlike the
+    /// router's centre-to-centre `minChannelSpacing`.
     var minWallThickness: Double
 
     /// Whether routing channels are printed with a flat floor (squared lower
