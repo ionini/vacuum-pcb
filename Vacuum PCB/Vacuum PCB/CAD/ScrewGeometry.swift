@@ -26,11 +26,6 @@ enum ScrewGeometry {
     /// taper inward Mt-Fuji-style as the volcano rises. Must stay
     /// strictly positive so the cavity cylinder leaves a visible rim.
     static let domeRimMargin: Double = 0.75
-    /// Vertical clearance between the protruding fastener's outer face and
-    /// the flat plateau on top of the volcano. The cavity cylinder extends
-    /// through this clearance so the head / nut stays accessible — the
-    /// dome supports the fastener laterally, not from above.
-    static let domeCeilingMargin: Double = 1.5
 
     struct CSG {
         var topCutters: [Mesh] = []
@@ -48,10 +43,11 @@ enum ScrewGeometry {
     /// `protrusion` is the distance the head's outer face (and the nut's
     /// outer face) stick past the plate's outer surface. 0 keeps the
     /// legacy geometry — head flush with its plate's outer surface, nut
-    /// flush with the opposite plate's. Positive values reduce the inlay
-    /// and rise a spherical-cap "volcano" around the protruding portion;
-    /// the cavity cylinder continues through the dome so the screwdriver /
-    /// hex driver still reaches the fastener.
+    /// flush with the opposite plate's. A positive value reduces the inlay
+    /// and rises a volcano of the *same* height around the protruding
+    /// portion: the head / nut top ends up flush with the volcano's flat
+    /// plateau, and the cavity's open crater lets the driver still reach
+    /// the fastener.
     ///
     /// `headSide` chooses which plate hosts the countersink (and which
     /// hosts the hex-nut pocket on the opposite plate). `.top` is the
@@ -71,7 +67,11 @@ enum ScrewGeometry {
         let topFace = topInnerZ + topThickness
         let bottomFace = bottomInnerZ - bottomThickness
         let prot = max(0, protrusion)
-        let domeHeight = prot > 0 ? prot + domeCeilingMargin : 0
+        // The volcano rises by exactly `prot`, so its flat plateau ends up
+        // flush with the fastener's protruding outer face; the open crater
+        // (the cavity cylinder, carved later) keeps the head / nut reachable
+        // from straight above. `prot == 0` builds no dome at all (flush).
+        let domeHeight = prot
 
         let hexSide = headSide.opposite
         // Outer face Z of the head's / nut's host plate, plus the unit Z
@@ -84,9 +84,9 @@ enum ScrewGeometry {
         let hexOut: Double = (hexSide == .top) ? 1 : -1
 
         // Head cavity: cylinder of length `headDepth`. With `prot` > 0 it
-        // shifts outward so the head's outer surface sits `prot` past
-        // `headFace`; the cylinder continues through the volcano dome
-        // beyond that so the head stays reachable.
+        // shifts outward so the head's outer face sits `prot` past
+        // `headFace` — flush with the volcano plateau (also `prot` tall) —
+        // while the open crater keeps the head reachable.
         let headInner = headFace - headOut * (headDepth - prot)
         let headOuter = headFace + headOut * domeHeight
         let countersinkZLo = min(headInner, headOuter) - eps

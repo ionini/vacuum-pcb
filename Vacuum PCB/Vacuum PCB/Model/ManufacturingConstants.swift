@@ -113,8 +113,9 @@ struct ManufacturingConstants: Codable, Hashable {
     /// the plate's outer face. 0 keeps the legacy behaviour — the head sits
     /// flush with the top plate's outer surface and the nut flush with the
     /// bottom plate's. Positive values reduce the inlay and rise a volcano-
-    /// shaped dome around the protruding portion so the head/nut is still
-    /// laterally captured by print material.
+    /// shaped dome of the *same* height around the protruding portion, so
+    /// the head/nut stays laterally captured by print material and its top
+    /// sits flush with the dome's plateau.
     var screwProtrusion: Double
 
     /// Outer diameter of the volcano dome at its base (where it meets the
@@ -180,10 +181,10 @@ struct ManufacturingConstants: Codable, Hashable {
         plateCornerFillet: 2,
         ledDimpleDiameter: 6.0,
         ledDimpleDepth: 1.0,
-        screwProtrusion: 0,
+        screwProtrusion: 1.5,
         screwDomeBaseDiameter: 8.1,
-        screwHeadDepth: 2.7,
-        screwNutDepth: 1.7,
+        screwHeadDepth: 1.5,
+        screwNutDepth: 1.5,
         stencilThickness: 0.2,
         stencilViaPadding: 0,
         minWallThickness: 0.5
