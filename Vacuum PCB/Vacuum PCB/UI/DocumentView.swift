@@ -64,6 +64,11 @@ struct DocumentView: View {
     /// per the v1 scope, simulation state isn't persisted.
     @State private var simulationState: SimulationState?
 
+    /// Validation results live here (not in `ValidateView`) so they persist
+    /// across tab switches; `validationModel.invalidate()` clears them when the
+    /// design changes.
+    @State private var validationModel = ValidationModel()
+
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebar
@@ -104,6 +109,11 @@ struct DocumentView: View {
         }
         .onChange(of: document.circuit) { _, _ in
             previewDirty = true
+            // Editing the design invalidates any prior validation run; the
+            // panel resets to "Not run yet". Tab switches don't touch the
+            // circuit, so results survive those (the whole point of hoisting
+            // the model up here rather than keeping it in ValidateView).
+            validationModel.invalidate()
             // When the user is already on the 3D Preview tab, rebuild
             // immediately so settings-panel "Apply" feels responsive. On
             // other tabs we defer until they switch back. `rebuild()`
@@ -191,8 +201,20 @@ struct DocumentView: View {
         case .simulate:
             simulateView
         case .validate:
-            ValidateView(document: $document)
+            ValidateView(model: validationModel, document: $document, onOpenInSimulate: openInSimulate)
         }
+    }
+
+    /// Jump to the Simulate tab with a specific parameter set applied — used by
+    /// the Validate panel to reopen a failing margin corner so the user can
+    /// watch it interactively. Reuses the existing simulator if present (so
+    /// their input toggles survive); otherwise spins one up.
+    private func openInSimulate(_ params: SimulationParameters) {
+        if simulationState == nil {
+            simulationState = SimulationState(document: document.circuit)
+        }
+        simulationState?.params = params
+        selectedTab = .simulate
     }
 
     @ViewBuilder private var simulateView: some View {

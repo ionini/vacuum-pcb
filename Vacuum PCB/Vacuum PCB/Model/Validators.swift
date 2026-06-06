@@ -146,12 +146,20 @@ enum Validators {
 
     // MARK: - Margin sweep (robustness across parameter variation)
 
+    /// One failing parameter corner, carrying the exact `SimulationParameters`
+    /// that produced it so a caller can reopen that operating point (e.g. the
+    /// Validate panel's "Open in Simulate" button).
+    struct MarginFailure {
+        let label: String
+        let detail: String
+        let params: SimulationParameters
+    }
     struct MarginResult {
         let tol: Double
         let corners: Int
         let inputCombos: Int
         let keys: [String]
-        let failures: [String]
+        let failures: [MarginFailure]
         var pass: Bool { failures.isEmpty }
     }
 
@@ -174,10 +182,10 @@ enum Validators {
         let nominal = sweep(network: network, params: base, maxSteps: maxSteps, epsilon: epsilon, maxCombos: maxCombos)
         if let tooMany = nominal.tooManyCombos {
             return MarginResult(tol: tol, corners: cornerCount, inputCombos: 0, keys: keys.map(\.name),
-                                failures: ["\(tooMany) input combinations exceed the cap — raise it to brute-force"])
+                                failures: [MarginFailure(label: "nominal", detail: "\(tooMany) input combinations exceed the cap — raise it to brute-force", params: base)])
         }
-        var failures: [String] = []
-        if !nominal.allConverged { failures.append("nominal: some input combinations never settle") }
+        var failures: [MarginFailure] = []
+        if !nominal.allConverged { failures.append(MarginFailure(label: "nominal", detail: "some input combinations never settle", params: base)) }
         for corner in 0..<cornerCount {
             var p = base
             var desc: [String] = []
@@ -194,8 +202,9 @@ enum Validators {
                 }
             }
             progress?(corner + 1, cornerCount, desc.joined(separator: " "), sw.allConverged, flips)
-            if !sw.allConverged { failures.append("[\(desc.joined(separator: " "))]: did not converge") }
-            if flips > 0 { failures.append("[\(desc.joined(separator: " "))]: \(flips) probe bit-flip(s) vs nominal") }
+            let label = desc.joined(separator: " ")
+            if !sw.allConverged { failures.append(MarginFailure(label: label, detail: "did not converge", params: p)) }
+            if flips > 0 { failures.append(MarginFailure(label: label, detail: "\(flips) probe bit-flip(s) vs nominal", params: p)) }
         }
         return MarginResult(tol: tol, corners: cornerCount, inputCombos: nominal.rows.count, keys: keys.map(\.name), failures: failures)
     }
@@ -267,6 +276,14 @@ enum Validators {
 
     // MARK: - UI-facing report
 
+    /// An actionable parameter set attached to a report (e.g. reopen a failing
+    /// margin corner in the Simulate tab). Surface-agnostic; the CLI ignores it.
+    struct ReportAction: Identifiable {
+        let id = UUID()
+        let label: String
+        let params: SimulationParameters
+    }
+
     /// A single gate's outcome, surface-agnostic. The Validate panel renders a
     /// list of these; the CLI prints its own format.
     struct Report: Identifiable {
@@ -275,5 +292,6 @@ enum Validators {
         var title: String
         var status: Status
         var detail: [String]
+        var actions: [ReportAction] = []
     }
 }

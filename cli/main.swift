@@ -532,7 +532,10 @@ func reportSweep(_ sw: Validators.SweepResult, json: Bool) {
 
 func reportMargins(_ r: Validators.MarginResult, json: Bool) {
     if json {
-        printJSON(["tol": r.tol, "corners": r.corners, "pass": r.pass, "failures": r.failures])
+        printJSON([
+            "tol": r.tol, "corners": r.corners, "pass": r.pass,
+            "failures": r.failures.map { ["corner": $0.label, "detail": $0.detail] },
+        ])
         return
     }
     print("Margin sweep: ±\(Int(r.tol * 100))% on \(r.keys.joined(separator: ", ")) "
@@ -541,7 +544,7 @@ func reportMargins(_ r: Validators.MarginResult, json: Bool) {
         print("MARGINS: PASS (logic levels stable + converges across ±\(Int(r.tol * 100))%)")
     } else {
         print("MARGINS: FAIL")
-        for f in r.failures.prefix(40) { print("  ✗ \(f)") }
+        for f in r.failures.prefix(40) { print("  ✗ [\(f.label)]: \(f.detail)") }
     }
 }
 
