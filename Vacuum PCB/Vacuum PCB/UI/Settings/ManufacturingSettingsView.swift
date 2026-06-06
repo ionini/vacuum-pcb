@@ -54,7 +54,7 @@ struct ManufacturingSettingsView: View {
                 row("Resistor bore diameter", $draftMfg.resistorChannelDiameter)
                 row("Port bore diameter", $draftMfg.portBoreDiameter)
                 row("Port bore taper (°)", $draftMfg.portBoreTaperDegrees)
-                row("Min channel spacing (DRC)", $draftMfg.minChannelSpacing)
+                row("Min channel spacing (routing)", $draftMfg.minChannelSpacing)
                 row("Min wall thickness (DRC)", $draftMfg.minWallThickness)
                 Text("Port bore diameter is the narrow (route-side) end. The bore tapers outward at the given draft angle so it widens toward the board edge — 0° gives a straight cylinder.")
                     .font(.caption2).foregroundStyle(.secondary)

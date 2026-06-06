@@ -33,8 +33,8 @@ enum ScrewNeighbor: String, Hashable {
 /// The schematic owns the netlist; the physical layout is a projection that
 /// must realise it. Per-net we check that pins are joined by routed segments
 /// (union-find on waypoints, same logic the CAD pipeline relies on), and we
-/// cross-check pairs of route segments on each layer to make sure foreign
-/// nets aren't within `manufacturing.minChannelSpacing` of each other.
+/// cross-check pairs of route segments on each layer to make sure the printed
+/// wall between foreign nets stays at least `manufacturing.minWallThickness`.
 ///
 /// What we *don't* check yet (deferred to a fuller iter-4 DRC):
 /// - routes crossing foreign component exclusion zones
@@ -80,16 +80,18 @@ enum DRC {
             /// inside the issue's net that carries this orphan via, so the
             /// sidebar can select it on click.
             case orphanVia(position: Point, segmentIndex: Int)
-            /// Two route segments belonging to different nets pass within
-            /// `manufacturing.minChannelSpacing` of each other on the same
-            /// plate. `selfSegmentIndex` is into the issue's net; the other
-            /// pair (`otherNetId`, `otherSegmentIndex`) identifies the
-            /// foreign segment so we can highlight both on click.
+            /// Two route segments belonging to different nets leave a printed
+            /// wall thinner than `manufacturing.minWallThickness` between them
+            /// on the same plate. `wall` is that edge-to-edge thickness (centre
+            /// distance minus both channel radii), clamped at 0.
+            /// `selfSegmentIndex` is into the issue's net; the other pair
+            /// (`otherNetId`, `otherSegmentIndex`) identifies the foreign
+            /// segment so we can highlight both on click.
             case channelClearance(
                 otherNetId: UUID,
                 otherNetLabel: String,
                 layer: Layer,
-                gap: Double,
+                wall: Double,
                 selfSegmentIndex: Int,
                 otherSegmentIndex: Int
             )
@@ -177,10 +179,10 @@ enum DRC {
                 return "\(netLabel): pin \(p.pinKey) unreached by routing"
             case .orphanVia(let p, _):
                 return "\(netLabel): unpaired via at (\(String(format: "%.1f", p.x)), \(String(format: "%.1f", p.y)))"
-            case .channelClearance(_, let other, let layer, let gap, _, _):
+            case .channelClearance(_, let other, let layer, let wall, _, _):
                 let where_ = layer.uiLabel
-                let gapTxt = gap < 0.01 ? "crossing" : "\(String(format: "%.2f", gap)) mm gap"
-                return "\(netLabel) ↔ \(other) on \(where_): \(gapTxt)"
+                let wallTxt = wall < 0.01 ? "touching" : "\(String(format: "%.2f", wall)) mm wall"
+                return "\(netLabel) ↔ \(other) on \(where_): \(wallTxt)"
             case .crossNetMerge(_, let other, let layer, let p):
                 return "\(netLabel) ↔ \(other) merge on \(layer.uiLabel)"
                     + " near (\(String(format: "%.1f", p.x)), \(String(format: "%.1f", p.y)))"
@@ -932,12 +934,22 @@ enum DRC {
     }
 
     /// Walks every pair of route polyline edges; if two edges on the same
-    /// layer belong to different nets and pass within `minChannelSpacing`,
-    /// emit one issue per (net-pair, layer) — we don't need to spam the
-    /// sidebar with every offending segment, the user just needs to know
+    /// plate-layer belong to different nets and the printed wall between them
+    /// — centre distance minus both channel radii — is thinner than
+    /// `minWallThickness`, emit one issue per (net-pair, layer). We don't spam
+    /// the sidebar with every offending segment; the user just needs to know
     /// "those two nets clash on top, look at the canvas".
+    ///
+    /// Diameter-aware on purpose: the reported number is the actual wall, not
+    /// the centre-to-centre distance, so it lines up with `thinWall` (which
+    /// defers the same-layer different-net case to here) instead of leaving a
+    /// `channelDiameter`-thick blind spot. `minChannelSpacing` stays the
+    /// auto-router's centre-to-centre keep-out — the *physical* limit is the
+    /// wall, and that's what DRC enforces.
     private static func clearanceIssues(in doc: CircuitDocument) -> [Issue] {
-        let threshold = doc.manufacturing.minChannelSpacing
+        let threshold = doc.manufacturing.minWallThickness
+        guard threshold > 0 else { return [] }
+        let channelRadius = doc.manufacturing.channelDiameter / 2
         let edges = collectRouteEdges(in: doc)
         guard edges.count >= 2 else { return [] }
 
@@ -958,13 +970,14 @@ enum DRC {
                 let key = PairKey(a.netId, b.netId, a.layer)
                 if reported.contains(key) { continue }
                 let d = segmentDistance(a.a, a.b, b.a, b.b)
-                guard d < threshold else { continue }
+                let wall = d - 2 * channelRadius
+                guard wall < threshold else { continue }
                 reported.insert(key)
                 issues.append(Issue(
                     netId: a.netId, netLabel: a.netLabel,
                     kind: .channelClearance(
                         otherNetId: b.netId, otherNetLabel: b.netLabel,
-                        layer: a.layer, gap: d,
+                        layer: a.layer, wall: max(0, wall),
                         selfSegmentIndex: a.segmentIndex,
                         otherSegmentIndex: b.segmentIndex
                     )
@@ -1140,10 +1153,11 @@ enum DRC {
     /// Walks every channel polyline edge and flags places where the printed
     /// wall between the channel and a nearby feature (outer face, another
     /// channel, a vertical bore) is thinner than `minWallThickness`.
-    /// Different from `channelClearance` and `crossNetMerge`: those measure
-    /// centre-to-centre on same-layer pairs; this one measures wall
-    /// thickness (centre distance minus participating radii) and adds the
-    /// outer-face and bore cases the others don't cover.
+    /// Shares the wall-thickness model with `channelClearance` (which owns the
+    /// same-layer different-net channel case) but covers what that one can't:
+    /// the outer face, vertical bores, and cross-layer channel pairs whose 3D
+    /// wall is thin. `crossNetMerge` is the orthogonal electrical check —
+    /// centre distance under `channelDiameter`, i.e. the tubes actually overlap.
     ///
     /// Dedup is per `(netId, segmentIndex, neighbor)` so a long parallel
     /// run reports one issue per neighbor category rather than per edge.
@@ -1316,8 +1330,8 @@ enum DRC {
                 // run as close as the print resolution allows).
                 if other.netId == edge.netId { continue }
                 // Same-layer different-net pairs are surfaced by the existing
-                // `channelClearance` issue using `minChannelSpacing`; don't
-                // double-report.
+                // `channelClearance` issue (same wall-vs-`minWallThickness`
+                // test); don't double-report.
                 if other.layer == edge.layer { continue }
                 let dxy = segmentDistance(edge.a, edge.b, other.a, other.b)
                 let depthDelta = abs(edge.layer.depth - other.layer.depth)
