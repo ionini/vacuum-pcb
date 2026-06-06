@@ -211,7 +211,7 @@ enum SimulatorExporter {
                     waypoints: positions,
                     radius: m.channelDiameter / 2,
                     midZ: midZ,
-                    flatBottom: true,
+                    flatBottom: m.flatBottomChannels,
                     flipFloor: segment.layer.plate == .bottom
                 ))
                 for wp in segment.waypoints where wp.kind == .via {

@@ -58,6 +58,15 @@ struct ManufacturingSettingsView: View {
                 row("Min wall thickness (DRC)", $draftMfg.minWallThickness)
                 Text("Port bore diameter is the narrow (route-side) end. The bore tapers outward at the given draft angle so it widens toward the board edge — 0° gives a straight cylinder.")
                     .font(.caption2).foregroundStyle(.secondary)
+                // Purely a 3D/print property (no effect on the 2D layout/DRC), so
+                // it lives in the full (3D Preview) inspector only, like the
+                // stencil thickness and plate/screw geometry.
+                if scope == .full {
+                    Toggle("Flat-bottom channels", isOn: $draftMfg.flatBottomChannels)
+                        .font(.caption)
+                    Text("Squares off the lower half of each routing channel (flat floor, arched top) for more void volume; the arch faces each plate's outer face so both plates stay printable. Off = round bores. Resistor bores are always round.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
             }
 
             // Gate dome diameter sizes the transistor body drawn on the 2D
@@ -266,7 +275,8 @@ struct ManufacturingSettingsView: View {
             screwNutDepth: max(0.1, m.screwNutDepth),
             stencilThickness: max(0.05, m.stencilThickness),
             stencilViaPadding: max(0.0, min(2.0, m.stencilViaPadding)),
-            minWallThickness: max(0.05, m.minWallThickness)
+            minWallThickness: max(0.05, m.minWallThickness),
+            flatBottomChannels: m.flatBottomChannels
         )
     }
 

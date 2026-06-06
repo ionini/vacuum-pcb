@@ -101,7 +101,7 @@ enum PlateBuilder {
                     waypoints: positions,
                     radius: m.channelDiameter / 2,
                     midZ: midZ,
-                    flatBottom: true,
+                    flatBottom: m.flatBottomChannels,
                     flipFloor: segment.layer.plate == .bottom
                 )
                 appendCutter(channel, plate: segment.layer.plate,

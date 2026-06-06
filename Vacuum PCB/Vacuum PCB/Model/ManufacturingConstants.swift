@@ -161,6 +161,14 @@ struct ManufacturingConstants: Codable, Hashable {
     /// it deducts the participating feature radii from the centre distance.
     var minWallThickness: Double
 
+    /// Whether routing channels are printed with a flat floor (squared lower
+    /// half) and an arched top instead of a full circular bore. The flat floor
+    /// adds void volume in the bottom corners without changing the channel
+    /// envelope, and the arch stays printable; per-plate orientation (arch toward
+    /// each plate's outer face) is handled in CAD. Resistor serpentines are
+    /// unaffected. Per-board; files saved before this existed default to on.
+    var flatBottomChannels: Bool
+
     static let defaults = ManufacturingConstants(
         plateThickness: 4.0,
         channelDiameter: 1.5,
@@ -187,7 +195,8 @@ struct ManufacturingConstants: Codable, Hashable {
         screwNutDepth: 1.5,
         stencilThickness: 0.2,
         stencilViaPadding: 0,
-        minWallThickness: 0.5
+        minWallThickness: 0.5,
+        flatBottomChannels: true
     )
 
     // Codable hand-rolled so older .vpcb files (written before
@@ -205,6 +214,7 @@ struct ManufacturingConstants: Codable, Hashable {
         case screwProtrusion, screwDomeBaseDiameter, screwHeadDepth, screwNutDepth
         case stencilThickness, stencilViaPadding
         case minWallThickness
+        case flatBottomChannels
     }
 
     init(plateThickness: Double, channelDiameter: Double,
@@ -219,7 +229,7 @@ struct ManufacturingConstants: Codable, Hashable {
          screwProtrusion: Double, screwDomeBaseDiameter: Double,
          screwHeadDepth: Double, screwNutDepth: Double,
          stencilThickness: Double, stencilViaPadding: Double,
-         minWallThickness: Double) {
+         minWallThickness: Double, flatBottomChannels: Bool) {
         self.plateThickness = plateThickness
         self.channelDiameter = channelDiameter
         self.portBoreDiameter = portBoreDiameter
@@ -246,6 +256,7 @@ struct ManufacturingConstants: Codable, Hashable {
         self.stencilThickness = stencilThickness
         self.stencilViaPadding = stencilViaPadding
         self.minWallThickness = minWallThickness
+        self.flatBottomChannels = flatBottomChannels
     }
 
     /// Outer length of the resistor footprint (pin-to-pin distance). Constant
@@ -301,6 +312,8 @@ struct ManufacturingConstants: Codable, Hashable {
                                                   forKey: .stencilViaPadding) ?? 0
         minWallThickness = try c.decodeIfPresent(Double.self,
                                                  forKey: .minWallThickness) ?? 0.5
+        flatBottomChannels = try c.decodeIfPresent(Bool.self,
+                                                   forKey: .flatBottomChannels) ?? true
     }
 
     /// Effective thickness of a plate with `layerCount` channel layers. The
