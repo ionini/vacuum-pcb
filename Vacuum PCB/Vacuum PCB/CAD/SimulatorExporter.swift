@@ -210,7 +210,9 @@ enum SimulatorExporter {
                 fluidParts.append(channelMesh(
                     waypoints: positions,
                     radius: m.channelDiameter / 2,
-                    midZ: midZ
+                    midZ: midZ,
+                    flatBottom: true,
+                    flipFloor: segment.layer.plate == .bottom
                 ))
                 for wp in segment.waypoints where wp.kind == .via {
                     if let idx = viaGroups.firstIndex(where: {
@@ -256,7 +258,12 @@ enum SimulatorExporter {
 
     // MARK: - Geometry helpers (mirror PlateBuilder)
 
-    private static func channelMesh(waypoints: [Point], radius: Double, midZ: Double) -> Mesh {
+    /// Mirrors `PlateBuilder.channelMesh` — including the `flatBottom` floor box —
+    /// so the simulated fluid volume matches the printed void exactly.
+    private static func channelMesh(
+        waypoints: [Point], radius: Double, midZ: Double,
+        flatBottom: Bool = false, flipFloor: Bool = false
+    ) -> Mesh {
         guard waypoints.count >= 2 else { return .empty }
         var parts: [Mesh] = []
         parts.reserveCapacity(2 * waypoints.count)
@@ -275,6 +282,35 @@ enum SimulatorExporter {
                 .rotated(by: Euclid.Rotation.roll(.radians(.pi / 2 - theta)))
                 .translated(by: Vector(cx, cy, midZ))
             parts.append(cyl)
+        }
+        if flatBottom {
+            let overlap = 0.01
+            // Floor half toward the plate's outer face (arch on the print-up side
+            // when printed dimples-down); bottom plate prints flipped, so its floor
+            // sits above the midline. Mirrors PlateBuilder.
+            let floorCenterZ = midZ + (flipFloor ? radius / 2 : -radius / 2)
+            // Flat disc floor at each waypoint (vertical cylinder, half the bore,
+            // capped by the joint sphere's dome) so junctions get a flat floor +
+            // arched top instead of the sphere's rounded bowl.
+            for p in waypoints {
+                parts.append(Mesh.cylinder(radius: radius + 0.005, height: radius + 2 * overlap, slices: 16)
+                    .rotated(by: Euclid.Rotation.pitch(.halfPi))
+                    .translated(by: Vector(p.x, p.y, floorCenterZ)))
+            }
+            // Flat floor along each straight run; the box stops at its waypoints
+            // (extended only by `overlap`) so it doesn't poke past a bend.
+            for i in 0..<(waypoints.count - 1) {
+                let a = waypoints[i], b = waypoints[i + 1]
+                let dx = b.x - a.x, dy = b.y - a.y
+                let len = (dx * dx + dy * dy).squareRoot()
+                guard len > 0 else { continue }
+                let cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2
+                let theta = atan2(dy, dx)
+                let size = Vector(2 * radius + 2 * overlap, len + 2 * overlap, radius + 2 * overlap)
+                parts.append(Mesh.cube(size: size)
+                    .rotated(by: Euclid.Rotation.roll(.radians(.pi / 2 - theta)))
+                    .translated(by: Vector(cx, cy, floorCenterZ)))
+            }
         }
         return Mesh.union(parts)
     }

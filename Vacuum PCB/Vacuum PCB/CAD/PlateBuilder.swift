@@ -100,7 +100,9 @@ enum PlateBuilder {
                 let channel = channelMesh(
                     waypoints: positions,
                     radius: m.channelDiameter / 2,
-                    midZ: midZ
+                    midZ: midZ,
+                    flatBottom: true,
+                    flipFloor: segment.layer.plate == .bottom
                 )
                 appendCutter(channel, plate: segment.layer.plate,
                              top: &topCutters, bottom: &bottomCutters)
@@ -894,8 +896,19 @@ enum PlateBuilder {
     /// duplicate internal faces that show up as count=4 non-manifold edges along the
     /// channel's tangent lines and make slicers reject the STL. The bump is well
     /// below print resolution so the printed bore diameter is still `radius * 2`.
+    ///
+    /// When `flatBottom` is set, one half of the bore is squared off into a
+    /// flat-floored rectangle while the other half stays a semicircular arch (see
+    /// `floorBox` / `junctionFloorCylinder`). This adds void volume in the floor
+    /// corners without changing the channel envelope or the printable arched
+    /// ceiling. `flipFloor` chooses which half is the floor: the arch must face the
+    /// plate's outer face (the up side when printed dimples-down), so the top plate
+    /// keeps the arch up and the bottom plate — printed flipped — mirrors it. The
+    /// round cylinders + spheres are kept as-is so all branch/T junctions stay
+    /// watertight; the floor pieces are simply unioned on.
     private static func channelMesh(
-        waypoints: [Point], radius: Double, midZ: Double
+        waypoints: [Point], radius: Double, midZ: Double,
+        flatBottom: Bool = false, flipFloor: Bool = false
     ) -> Mesh {
         guard waypoints.count >= 2 else { return Mesh.empty }
 
@@ -933,7 +946,84 @@ enum PlateBuilder {
                 .translated(by: Vector(cx, cy, midZ))
             parts.append(cyl)
         }
+
+        // Square off the lower half so the bore is flat-bottom + arched-top
+        // everywhere. Two pieces: a flat-bottomed vertical cylinder at each
+        // waypoint (gives the junction a flat disc floor under the sphere's dome
+        // instead of the sphere's rounded lower hemisphere), and a flat-floored
+        // box along each straight run. The round cylinder's / sphere's lower half
+        // is inscribed in these, so the union keeps the arched top and squares
+        // only the bottom.
+        if flatBottom {
+            // Which half is the flat floor depends on the plate's print
+            // orientation: the arch faces the outer face (the up side when printed
+            // dimples-down), so the top plate's floor sits below the midline and
+            // the flipped bottom plate's floor sits above it.
+            let floorCenterZ = midZ + (flipFloor ? radius / 2 : -radius / 2)
+            for p in waypoints {
+                parts.append(junctionFloorCylinder(at: p, radius: radius, floorCenterZ: floorCenterZ))
+            }
+            for i in 0..<(waypoints.count - 1) {
+                let a = waypoints[i]
+                let b = waypoints[i + 1]
+                let dx = b.x - a.x
+                let dy = b.y - a.y
+                let len = (dx * dx + dy * dy).squareRoot()
+                guard len > 0 else { continue }
+                let cx = (a.x + b.x) / 2
+                let cy = (a.y + b.y) / 2
+                let theta = atan2(dy, dx)
+                parts.append(floorBox(cx: cx, cy: cy, len: len, theta: theta,
+                                      radius: radius, floorCenterZ: floorCenterZ))
+            }
+        }
+
         return Mesh.union(parts)
+    }
+
+    /// Flat-floored box for one channel segment, occupying the lower half of the
+    /// bore (from the bore floor up to the midline). Same Y-aligned-then-rolled
+    /// convention as the segment cylinders so it lands exactly along the segment.
+    ///
+    /// `overlap` (a hair, well below print resolution) makes the box strictly
+    /// engulf the cylinder in width, depth, and a touch above the midline rather
+    /// than sit tangent to it — the same tangency-avoidance trick as the sphere
+    /// radius bump, so the union has no coplanar/tangent degeneracies. The box
+    /// stops at its waypoints (extended only by `overlap`, not a full `radius`):
+    /// at a bend the two segments' boxes already overlap in an r×r block from
+    /// their widths, so the flat floor stitches watertight there, and the
+    /// `overlap` covers the collinear pass-through case. Extending by a full
+    /// radius instead would poke square corners out past the rounded sphere
+    /// junction (visible "ears" at every bend); stopping at the waypoint lets
+    /// the sphere keep the junction rounded.
+    private static func floorBox(
+        cx: Double, cy: Double, len: Double, theta: Double,
+        radius: Double, floorCenterZ: Double
+    ) -> Mesh {
+        let overlap = 0.01
+        // X = width across channel, Y = length along segment, Z = height. Spans
+        // half the bore, centred at `floorCenterZ`; which half is the flat floor
+        // (toward the plate's outer face) is the caller's choice via `flipFloor`.
+        let size = Vector(2 * radius + 2 * overlap, len + 2 * overlap, radius + 2 * overlap)
+        return Mesh.cube(size: size)
+            .rotated(by: Euclid.Rotation.roll(.radians(.pi / 2 - theta)))
+            .translated(by: Vector(cx, cy, floorCenterZ))
+    }
+
+    /// Vertical cylinder filling the floor half of the bore at a waypoint: gives
+    /// the junction a flat circular floor under the joint sphere's dome, instead
+    /// of the sphere's rounded hemisphere on that side. The radius matches the
+    /// sphere (`radius + 0.005`) so the dome flows straight into the cylinder wall
+    /// and the sphere's near half is absorbed; centred at `floorCenterZ` (same
+    /// z-band as `floorBox`) so the disc floor is coplanar with the straight-run
+    /// floors. Same Y-axis→vertical rotation as the drop bores.
+    private static func junctionFloorCylinder(
+        at p: Point, radius: Double, floorCenterZ: Double
+    ) -> Mesh {
+        let overlap = 0.01
+        return Mesh.cylinder(radius: radius + 0.005, height: radius + 2 * overlap, slices: 16)
+            .rotated(by: Euclid.Rotation.pitch(.halfPi))
+            .translated(by: Vector(p.x, p.y, floorCenterZ))
     }
 
     // MARK: - Drop bores
