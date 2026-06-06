@@ -417,6 +417,7 @@ func drcHistogram(_ issues: [DRC.Issue]) -> [(String, Int)] {
         case .screwClearance(_, let n, _, _): key = "screwClearance(\(n.rawValue))"
         case .viaSpacing: key = "viaSpacing"
         case .viaPad: key = "viaPad"
+        case .stencilHole: key = "stencilHole"
         }
         counts[key, default: 0] += 1
     }
