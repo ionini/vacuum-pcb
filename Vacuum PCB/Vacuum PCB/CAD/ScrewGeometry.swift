@@ -37,6 +37,96 @@ enum ScrewGeometry {
         var bottomAdditions: [Mesh] = []
     }
 
+    /// Raw (un-padded) world-Z bands of the screw's two wide cavities. The
+    /// `inner` end points into the plate interior, the `outer` end toward
+    /// (or past, when protruding) the plate's outer face. Single source of
+    /// truth for the cavity-retraction math: `meshes` builds the CSG cutters
+    /// from these, and `clearanceColumns` builds the DRC's collision profile
+    /// from the same values, so the printed geometry and the design-rule
+    /// check can never disagree about where the wide head / nut actually sit.
+    struct ProfileZ {
+        let headInner: Double
+        let headOuter: Double
+        let hexInner: Double
+        let hexOuter: Double
+    }
+
+    static func profileZ(
+        topInnerZ: Double, topThickness: Double,
+        bottomInnerZ: Double, bottomThickness: Double,
+        protrusion: Double, headDepth: Double, nutDepth: Double,
+        headSide: Plate
+    ) -> ProfileZ {
+        let topFace = topInnerZ + topThickness
+        let bottomFace = bottomInnerZ - bottomThickness
+        let prot = max(0, protrusion)
+        let domeHeight = prot
+        let hexSide = headSide.opposite
+        let headFace = (headSide == .top) ? topFace : bottomFace
+        let hexFace = (hexSide == .top) ? topFace : bottomFace
+        let headOut: Double = (headSide == .top) ? 1 : -1
+        let hexOut: Double = (hexSide == .top) ? 1 : -1
+        return ProfileZ(
+            headInner: headFace - headOut * (headDepth - prot),
+            headOuter: headFace + headOut * domeHeight,
+            hexInner: hexFace - hexOut * (nutDepth - prot),
+            hexOuter: hexFace + hexOut * domeHeight
+        )
+    }
+
+    /// One stacked section of the screw's vertical profile, used by the
+    /// clearance DRC. A screw is *not* a uniform full-height bore: the wide
+    /// head countersink only carves the top `headDepth` of the head-side
+    /// plate, the wide hex pocket only the top `nutDepth` of the opposite
+    /// plate, and the narrow through-shaft connects them everywhere else.
+    /// A nearby channel / via / pad only risks breaking into the section
+    /// whose Z band its own Z overlaps — so the check measures against the
+    /// widest section that actually shares the feature's height, not the
+    /// head unconditionally.
+    struct ClearanceColumn {
+        let plate: Plate
+        /// Worst-case lateral radius of this section. The hex pocket uses its
+        /// circumradius (`acrossFlats / √3`): a channel approaching a corner
+        /// of the hex is the closest the pocket comes to it.
+        let radius: Double
+        let zLo: Double
+        let zHi: Double
+    }
+
+    /// The screw's collision profile: the head countersink (on `headSide`),
+    /// the hex-nut pocket (on the opposite plate), and the through-shaft —
+    /// emitted once per plate it passes through, since it spans both. The
+    /// shaft band is the full plate body, so a channel always overlaps it and
+    /// it sets the baseline wall; the wide cavities only tighten that wall
+    /// where they truly reach in Z.
+    static func clearanceColumns(
+        topInnerZ: Double, topThickness: Double,
+        bottomInnerZ: Double, bottomThickness: Double,
+        protrusion: Double, headDepth: Double, nutDepth: Double,
+        headSide: Plate
+    ) -> [ClearanceColumn] {
+        let z = profileZ(
+            topInnerZ: topInnerZ, topThickness: topThickness,
+            bottomInnerZ: bottomInnerZ, bottomThickness: bottomThickness,
+            protrusion: protrusion, headDepth: headDepth, nutDepth: nutDepth,
+            headSide: headSide
+        )
+        let topFace = topInnerZ + topThickness
+        let bottomFace = bottomInnerZ - bottomThickness
+        return [
+            ClearanceColumn(plate: headSide, radius: headDiameter / 2,
+                            zLo: min(z.headInner, z.headOuter),
+                            zHi: max(z.headInner, z.headOuter)),
+            ClearanceColumn(plate: headSide.opposite, radius: hexAcrossFlats / sqrt(3.0),
+                            zLo: min(z.hexInner, z.hexOuter),
+                            zHi: max(z.hexInner, z.hexOuter)),
+            ClearanceColumn(plate: .top, radius: throughDiameter / 2,
+                            zLo: topInnerZ, zHi: topFace),
+            ClearanceColumn(plate: .bottom, radius: throughDiameter / 2,
+                            zLo: bottomFace, zHi: bottomInnerZ),
+        ]
+    }
+
     /// Builds the cutters and dome additions one screw contributes,
     /// partitioned by plate.
     ///
@@ -74,21 +164,28 @@ enum ScrewGeometry {
         let domeHeight = prot
 
         let hexSide = headSide.opposite
-        // Outer face Z of the head's / nut's host plate, plus the unit Z
-        // direction that points *out* of the assembly through that face
-        // (+1 for the top plate, -1 for the bottom). Using the outward
-        // sign lets the same expressions describe both orientations.
+        // Outer face Z of the head's / nut's host plate. The cavity Z bands
+        // (which encode the outward `prot` shift) come from `profileZ`; the
+        // faces are still needed here to seat the volcano domes.
         let headFace = (headSide == .top) ? topFace : bottomFace
         let hexFace = (hexSide == .top) ? topFace : bottomFace
-        let headOut: Double = (headSide == .top) ? 1 : -1
-        let hexOut: Double = (hexSide == .top) ? 1 : -1
+
+        // Cavity Z bands come from the shared `profileZ` so the clearance DRC
+        // (`clearanceColumns`) measures against the exact same retracted
+        // head / nut the cutters carve here.
+        let bands = profileZ(
+            topInnerZ: topInnerZ, topThickness: topThickness,
+            bottomInnerZ: bottomInnerZ, bottomThickness: bottomThickness,
+            protrusion: protrusion, headDepth: headDepth, nutDepth: nutDepth,
+            headSide: headSide
+        )
 
         // Head cavity: cylinder of length `headDepth`. With `prot` > 0 it
         // shifts outward so the head's outer face sits `prot` past
         // `headFace` — flush with the volcano plateau (also `prot` tall) —
         // while the open crater keeps the head reachable.
-        let headInner = headFace - headOut * (headDepth - prot)
-        let headOuter = headFace + headOut * domeHeight
+        let headInner = bands.headInner
+        let headOuter = bands.headOuter
         let countersinkZLo = min(headInner, headOuter) - eps
         let countersinkZHi = max(headInner, headOuter) + eps
         let countersink = verticalCylinder(
@@ -99,8 +196,8 @@ enum ScrewGeometry {
         ).translated(by: Vector(p.x, p.y, 0))
 
         // Hex pocket: mirror of the head cavity on the opposite plate.
-        let hexInner = hexFace - hexOut * (nutDepth - prot)
-        let hexOuter = hexFace + hexOut * domeHeight
+        let hexInner = bands.hexInner
+        let hexOuter = bands.hexOuter
         let hexZLo = min(hexInner, hexOuter) - eps
         let hexZHi = max(hexInner, hexOuter) + eps
         let hexPrismMesh = hexPrism(

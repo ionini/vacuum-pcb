@@ -449,6 +449,14 @@ enum DRC {
         let layer: Layer
         let netId: UUID?
         let componentId: UUID?
+        /// World-Z extent of the bore (silicone face to its channel midline,
+        /// reaching deeper for a transistor gate / LED dome). The screw
+        /// clearance check uses it to tell which part of the stepped screw —
+        /// the wide head / nut or just the narrow shaft — actually shares the
+        /// bore's height. `viaClearanceIssues` ignores it (its pairs are all
+        /// channel-radius bores at the same depth).
+        let zLo: Double
+        let zHi: Double
     }
 
     /// Collects every via bore (one per via waypoint) and every transistor /
@@ -458,6 +466,9 @@ enum DRC {
     private static func collectBores(in doc: CircuitDocument) -> [Bore] {
         let m = doc.manufacturing
         let channelRadius = m.channelDiameter / 2
+        func faceZ(_ plate: Plate) -> Double {
+            plate == .top ? m.siliconeThickness / 2 : -m.siliconeThickness / 2
+        }
         var pinToNet: [PinRef: UUID] = [:]
         for net in doc.logic.nets {
             for pinRef in net.pins { pinToNet[pinRef] = net.id }
@@ -466,8 +477,14 @@ enum DRC {
         for route in doc.physical.routes {
             for segment in route.segments {
                 for wp in segment.waypoints where wp.kind == .via {
+                    // The via reaches from its channel midline toward the
+                    // silicone face (a cross-silicone via punches through to
+                    // the face; the midline is its outer-most extent).
+                    let face = faceZ(segment.layer.plate)
+                    let mid = m.midZ(for: segment.layer)
                     bores.append(Bore(position: wp.position, radius: channelRadius,
-                                      layer: segment.layer, netId: route.netId, componentId: nil))
+                                      layer: segment.layer, netId: route.netId, componentId: nil,
+                                      zLo: min(face, mid), zHi: max(face, mid)))
                 }
             }
         }
@@ -479,12 +496,26 @@ enum DRC {
                 let fp = comp.footprint(m, snapshots: doc.librarySnapshots)
                 for pin in fp.pins {
                     let ref = PinRef(componentId: placement.componentId, pinKey: pin.key)
+                    let pinLayer = placement.resolvedLayer(of: pin, on: comp)
+                    let face = faceZ(pinLayer.plate)
+                    // Drop bore runs from the silicone face to its channel
+                    // midline; a transistor gate / LED indicator carves a dome
+                    // reaching `cavityDepth` past the face. Matches the reach
+                    // used by `thinWallIssues`.
+                    var reach = abs(m.midZ(for: pinLayer) - face)
+                    if comp.kind == .transistor, pin.key == "gate" {
+                        reach = max(reach, m.dimpleDiameter / 2 + m.dimpleSphereOffset)
+                    } else if comp.kind == .led {
+                        reach = max(reach, m.ledDimpleDiameter / 2 + m.ledDimpleDepth)
+                    }
+                    let zEnd = face + (pinLayer.plate == .top ? reach : -reach)
                     bores.append(Bore(
                         position: placement.worldPosition(of: pin),
                         radius: channelRadius,
-                        layer: placement.resolvedLayer(of: pin, on: comp),
+                        layer: pinLayer,
                         netId: pinToNet[ref],
-                        componentId: placement.componentId
+                        componentId: placement.componentId,
+                        zLo: min(face, zEnd), zHi: max(face, zEnd)
                     ))
                 }
             default:
@@ -495,21 +526,35 @@ enum DRC {
     }
 
     /// Flags screws whose clearance bore would break into a nearby channel,
-    /// via, or transistor/LED pad. A screw is a full-height bore through both
-    /// plates, so the check ignores layers and uses the screw head's
-    /// countersink radius (the widest part). One issue per (screw, neighbor
-    /// kind) so a screw in a crowded area reports at most three times.
+    /// via, or transistor/LED pad. A screw is a *stepped* bore, not a uniform
+    /// column: the wide head countersink only carves the top `screwHeadDepth`
+    /// of the head-side plate, the wide hex pocket only the top
+    /// `screwNutDepth` of the opposite plate, and a narrow through-shaft
+    /// connects them everywhere else (and across the silicone). So the wall
+    /// to a feature is measured against whichever screw section actually
+    /// shares the feature's height — the head only where a channel runs past
+    /// the countersink, the shaft for buried channels and `screwProtrusion`-
+    /// retracted heads. One issue per (screw, neighbor kind) so a screw in a
+    /// crowded area reports at most three times.
     private static func screwClearanceIssues(in doc: CircuitDocument) -> [Issue] {
         let m = doc.manufacturing
         let threshold = m.minWallThickness
         guard threshold > 0 else { return [] }
-        let headRadius = ScrewGeometry.headDiameter / 2
         let channelRadius = m.channelDiameter / 2
 
-        let screws: [(id: UUID, label: String, p: Point)] = doc.physical.placements.compactMap { pl in
+        // Plate Z extents, matching the CAD pipeline (`PlateBuilder`), so the
+        // screw's collision profile lands at the same heights it's printed at.
+        let topInnerZ = m.siliconeThickness / 2
+        let bottomInnerZ = -m.siliconeThickness / 2
+        let topThickness = m.plateThickness(forLayerCount: doc.physical.topLayers)
+        let bottomThickness = m.plateThickness(forLayerCount: doc.physical.bottomLayers)
+
+        // `placement.layer` (a `Plate`) is the head side; the nut sinks into
+        // the opposite plate — same convention the CAD pipeline uses.
+        let screws: [(id: UUID, label: String, p: Point, headSide: Plate)] = doc.physical.placements.compactMap { pl in
             guard let comp = doc.logic.components.first(where: { $0.id == pl.componentId }),
                   comp.kind == .screw else { return nil }
-            return (comp.id, comp.label.isEmpty ? "Screw" : comp.label, pl.position)
+            return (comp.id, comp.label.isEmpty ? "Screw" : comp.label, pl.position, pl.layer)
         }
         guard !screws.isEmpty else { return [] }
 
@@ -519,7 +564,8 @@ enum DRC {
         struct ReportKey: Hashable { let screwId: UUID; let neighbor: ScrewNeighbor }
         var reported: Set<ReportKey> = []
         var issues: [Issue] = []
-        func emit(_ screw: (id: UUID, label: String, p: Point), _ neighbor: ScrewNeighbor, _ gap: Double) {
+        func emit(_ screw: (id: UUID, label: String, p: Point, headSide: Plate),
+                  _ neighbor: ScrewNeighbor, _ gap: Double) {
             let key = ReportKey(screwId: screw.id, neighbor: neighbor)
             if reported.contains(key) { return }
             reported.insert(key)
@@ -530,19 +576,42 @@ enum DRC {
             ))
         }
 
+        // Thinnest printed wall between a screw's profile and a feature on
+        // `plate` that occupies `[fLo, fHi]` in Z, `dxy` away laterally. Each
+        // screw section adds the vertical gap to its band before deducting
+        // radii, so a section the feature doesn't reach in Z can't bind; the
+        // narrow shaft (spanning the whole plate) sets the floor.
+        func minWall(_ columns: [ScrewGeometry.ClearanceColumn], plate: Plate,
+                     dxy: Double, fLo: Double, fHi: Double, featureRadius: Double) -> Double {
+            var best = Double.greatestFiniteMagnitude
+            for col in columns where col.plate == plate {
+                let dz = max(0, max(col.zLo - fHi, fLo - col.zHi))
+                let centre = (dxy * dxy + dz * dz).squareRoot()
+                best = min(best, centre - col.radius - featureRadius)
+            }
+            return best
+        }
+
         for screw in screws {
+            let columns = ScrewGeometry.clearanceColumns(
+                topInnerZ: topInnerZ, topThickness: topThickness,
+                bottomInnerZ: bottomInnerZ, bottomThickness: bottomThickness,
+                protrusion: m.screwProtrusion, headDepth: m.screwHeadDepth,
+                nutDepth: m.screwNutDepth, headSide: screw.headSide
+            )
             for edge in edges {
-                let d = pointSegmentDistance(screw.p, edge.a, edge.b)
-                if d - headRadius - channelRadius < threshold {
-                    emit(screw, .route, d - headRadius - channelRadius)
-                }
+                let dxy = pointSegmentDistance(screw.p, edge.a, edge.b)
+                let cz = m.midZ(for: edge.layer)
+                let wall = minWall(columns, plate: edge.layer.plate,
+                                   dxy: dxy, fLo: cz, fHi: cz, featureRadius: channelRadius)
+                if wall < threshold { emit(screw, .route, wall) }
             }
             for bore in bores {
                 let dx = screw.p.x - bore.position.x, dy = screw.p.y - bore.position.y
-                let wall = (dx * dx + dy * dy).squareRoot() - headRadius - bore.radius
-                if wall < threshold {
-                    emit(screw, bore.componentId == nil ? .via : .pad, wall)
-                }
+                let dxy = (dx * dx + dy * dy).squareRoot()
+                let wall = minWall(columns, plate: bore.layer.plate,
+                                   dxy: dxy, fLo: bore.zLo, fHi: bore.zHi, featureRadius: bore.radius)
+                if wall < threshold { emit(screw, bore.componentId == nil ? .via : .pad, wall) }
             }
         }
         return issues

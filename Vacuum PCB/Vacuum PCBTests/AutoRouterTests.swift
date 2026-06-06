@@ -169,6 +169,66 @@ struct DRCClearanceTests {
         #expect(!hasScrewClearance(DRC.check(screwOnRoute(screwAt: Point(x: 30, y: 28)))))  // 13 mm away
     }
 
+    /// A horizontal channel at `routeLayer` with a screw `offset` mm to its
+    /// side (the perpendicular gap to the segment is exactly `offset`). Knobs
+    /// expose the Z-dependent inputs: the head-side plate, the protrusion
+    /// (which retracts the wide head/nut out of the plate), and the per-plate
+    /// layer counts (which push deeper layers away from the outer-face
+    /// cavities). Default manufacturing: head Ø5.1, hex 4.1 AF, shaft Ø2.2,
+    /// channel Ø1.5, minWall 0.5.
+    private func screwNearRoute(
+        offset: Double, routeLayer: Layer,
+        protrusion: Double = 0, headSide: Plate = .top,
+        topLayers: Int = 1, bottomLayers: Int = 1
+    ) -> CircuitDocument {
+        var doc = CircuitDocument.blank()
+        doc.physical.boardOutline = Rect(origin: .zero, size: Size(width: 60, height: 30))
+        doc.manufacturing.screwProtrusion = protrusion
+        doc.physical.topLayers = topLayers
+        doc.physical.bottomLayers = bottomLayers
+        let vac = Component(kind: .vacuumSource, label: "VAC")
+        let out = Component(kind: .port, label: "OUT", portDirection: .output)
+        let sc = Component(kind: .screw, label: "S1")
+        doc.logic.components = [vac, out, sc]
+        doc.logic.nets = [Net(label: "n1", pins: [
+            PinRef(componentId: vac.id, pinKey: "p"), PinRef(componentId: out.id, pinKey: "p"),
+        ])]
+        let a = Point(x: 10, y: 15), b = Point(x: 50, y: 15)
+        doc.physical.placements = [
+            Placement(componentId: vac.id, position: a, rotation: .r0, layer: .top),
+            Placement(componentId: out.id, position: b, rotation: .r0, layer: .top),
+            Placement(componentId: sc.id, position: Point(x: 30, y: 15 + offset), rotation: .r0, layer: headSide),
+        ]
+        doc.physical.routes = [Route(netId: doc.logic.nets[0].id, segments: [
+            Segment(waypoints: [Waypoint(position: a), Waypoint(position: b)], layer: routeLayer),
+        ])]
+        return doc
+    }
+
+    @Test("Protrusion retracts the head out of the plate, so the shaft — not the wide head — sets the wall")
+    func screwClearanceUsesShaftWhenHeadProtrudes() {
+        let top0 = Layer(plate: .top, depth: 0)
+        // 3.5 mm to the side: the 2.55 mm head countersink (flush, prot 0)
+        // leaves a 0.2 mm wall and trips; once the head rides 3 mm up into a
+        // volcano dome it clears the channel's depth and only the 1.1 mm
+        // shaft remains beside it (1.65 mm wall), so the warning goes away.
+        #expect(hasScrewClearance(DRC.check(screwNearRoute(offset: 3.5, routeLayer: top0, protrusion: 0))))
+        #expect(!hasScrewClearance(DRC.check(screwNearRoute(offset: 3.5, routeLayer: top0, protrusion: 3))))
+    }
+
+    @Test("A buried channel clears the outer-face cavities; the outermost layer at the same offset still trips")
+    func screwClearanceIsDepthAware() {
+        // Two-layer bottom plate, nut pocket sunk from the outer face. At
+        // 3 mm to the side the depth-1 channel (outermost, beside the nut)
+        // trips, while the depth-0 channel (buried near the silicone, far from
+        // the pocket) sees only the narrow shaft and clears — a distinction the
+        // old Z-blind check, which used the head radius for both, couldn't make.
+        let deep = Layer(plate: .bottom, depth: 0)
+        let outer = Layer(plate: .bottom, depth: 1)
+        #expect(hasScrewClearance(DRC.check(screwNearRoute(offset: 3.0, routeLayer: outer, bottomLayers: 2))))
+        #expect(!hasScrewClearance(DRC.check(screwNearRoute(offset: 3.0, routeLayer: deep, bottomLayers: 2))))
+    }
+
     /// Two different-net routes that each drop a `.via` waypoint, the vias a
     /// chosen distance apart on the top plate.
     private func twoVias(_ gap: Double) -> CircuitDocument {
