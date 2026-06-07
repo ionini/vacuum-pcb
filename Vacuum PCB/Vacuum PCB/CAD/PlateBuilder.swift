@@ -805,20 +805,38 @@ enum PlateBuilder {
                 netByPin[pinRef] = net.id
             }
         }
-        // A channel approaching the pad perpendicular to the source-drain axis
-        // would end at the pin XY (distance `padsOffset` from the gate). At the
-        // defaults that puts the cylinder's gate-side wall exactly on the pad
-        // lobe's flat face (`padsSeparation / 2` from the gate), and Euclid's
-        // BSP union leaves a hairline sliver at any tangent surface — see the
-        // sphere-radius bump in `channelMesh` for the same family of glitch.
-        // Pulling the inserted endpoint slightly toward the gate makes the
-        // cylinder pierce past the flat face cleanly. Only apply when the gap
-        // between lobes is wide enough that the overshoot can't graze the
-        // opposite lobe's flat face on the other side.
+        // The routed channel terminates at its pin (the pad anchor). The
+        // channel↔pad fluid path is carried by the drop bore at the pin — which
+        // lands inside the pad cavity by construction — plus the channel's end
+        // sphere overlapping the pad lobe, so the horizontal channel never needs
+        // to reach toward the gate.
+        //
+        // The sole exception is one CSG degeneracy. A channel arriving
+        // perpendicular to the source-drain axis has its gate-side wall on the
+        // plane `dist - channelRadius` from the gate (channel ending at the pin,
+        // so `dist == padsOffset`). When the params land that wall exactly on the
+        // pad lobe's flat face (`padsSeparation / 2` from the gate) the two
+        // coplanar surfaces make Euclid's BSP union leave a hairline sliver — the
+        // same family as the +0.005 sphere bump in `channelMesh`. That's the
+        // case at the defaults, where `padsOffset == padsSeparation/2 +
+        // channelDiameter/2`. We break it by nudging the endpoint toward the gate
+        // so the cylinder pierces past the flat face — but ONLY when the wall
+        // actually reaches the flat face: `dist <= tangentDist` (+ a small band
+        // for near-tangent params). Away from that knife-edge — e.g. a narrower
+        // `channelDiameter` leaves the wall comfortably clear of the flat face —
+        // the channel ends exactly at the pin, with no inward overshoot eating
+        // the pad-separation seal. `canOvershoot` still guards the narrow-lobe
+        // case where the pierce could graze the opposite lobe's flat face.
         let channelRadius = m.channelDiameter / 2
         let safetyMargin = 0.2
         let mergeDistanceFromGate = m.padsSeparation / 2 + channelRadius - safetyMargin
         let canOvershoot = m.padsSeparation > 2 * safetyMargin
+        // Pin→gate distance at which the channel wall is coplanar with the pad
+        // flat face. Only pins whose wall sits within `tangencyBand` of it are
+        // genuinely tangent and get the pierce; everything farther out (wall
+        // clear of the flat face) terminates at the pin.
+        let tangentDist = m.padsSeparation / 2 + channelRadius
+        let tangencyBand = 0.1
         var out: [Layer: [UUID: [Point]]] = [:]
         for placement in doc.physical.placements {
             guard let component = componentsById[placement.componentId],
@@ -834,7 +852,8 @@ enum PlateBuilder {
                 let dy = pinWorld.y - gateWorld.y
                 let dist = (dx * dx + dy * dy).squareRoot()
                 let snapTarget: Point
-                if canOvershoot, dist > mergeDistanceFromGate, dist > 0 {
+                if canOvershoot, dist > mergeDistanceFromGate,
+                   dist <= tangentDist + tangencyBand, dist > 0 {
                     let t = (dist - mergeDistanceFromGate) / dist
                     snapTarget = Point(x: pinWorld.x - dx * t, y: pinWorld.y - dy * t)
                 } else {
