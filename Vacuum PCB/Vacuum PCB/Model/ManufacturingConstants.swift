@@ -175,7 +175,7 @@ struct ManufacturingConstants: Codable, Hashable {
 
     static let defaults = ManufacturingConstants(
         plateThickness: 4.0,
-        channelDiameter: 1.5,
+        channelDiameter: 1.0,
         portBoreDiameter: 1.7,
         portBoreTaperDegrees: 1.0,
         siliconeThickness: 0.1,
@@ -188,7 +188,7 @@ struct ManufacturingConstants: Codable, Hashable {
         padsFilletRadius: 0.5,
         gridPitch: 1.0,
         minChannelSpacing: 1.5,
-        resistorChannelDiameter: 0.5,
+        resistorChannelDiameter: 0.7,
         interLayerWall: 0.5,
         plateCornerFillet: 2,
         ledDimpleDiameter: 6.0,
@@ -197,15 +197,18 @@ struct ManufacturingConstants: Codable, Hashable {
         screwDomeBaseDiameter: 8.1,
         screwHeadDepth: 1.5,
         screwNutDepth: 1.5,
-        stencilThickness: 0.2,
+        stencilThickness: 0.4,
         stencilViaPadding: 0,
         minWallThickness: 0.5,
         flatBottomChannels: true
     )
 
-    // Codable hand-rolled so older .vpcb files (written before
-    // resistorChannelDiameter or interLayerWall existed) still decode — they
-    // get the default for any field they didn't write.
+    // Codable hand-rolled so older .vpcb files (written before a field like
+    // resistorChannelDiameter or interLayerWall existed) still decode. Each
+    // missing field falls back to a fixed legacy value below — deliberately
+    // pinned rather than tied to `.defaults`, so bumping a default never
+    // silently resizes an existing design's channels/stencil when it reopens.
+    // (channelDiameter has no fallback: it's a required key, always present.)
     private enum CodingKeys: String, CodingKey {
         case plateThickness, channelDiameter, portBoreDiameter, portBoreTaperDegrees
         case siliconeThickness
