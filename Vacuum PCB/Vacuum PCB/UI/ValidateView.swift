@@ -83,10 +83,16 @@ final class ValidationModel {
         let holds = self.holds
 
         DispatchQueue.global(qos: .userInitiated).async {
-            func post(_ idx: Int, _ r: Validators.Report) {
+            // The heavy validators are pure compute and run here, off the main
+            // actor (the same off-main GCD pattern as `DocumentView.rebuild()`).
+            // The `*Report` formatters, however, read main-actor state (`titles`
+            // and the result's computed `pass`/`allConverged` flags), so each
+            // one is applied *inside* the main-actor hop rather than off it.
+            func post<T: Sendable>(_ idx: Int, _ value: T,
+                                   _ format: @escaping @MainActor @Sendable (T) -> Validators.Report) {
                 DispatchQueue.main.async {
                     guard token == self.runToken else { return }
-                    self.reports[idx] = r
+                    self.reports[idx] = format(value)
                 }
             }
             func setProgress(_ s: String) {
@@ -94,23 +100,24 @@ final class ValidationModel {
             }
 
             setProgress("Connectivity…")
-            post(0, Self.connectivityReport(Validators.connectivity(snapshot)))
+            post(0, Validators.connectivity(snapshot)) { Self.connectivityReport($0) }
 
             setProgress("Self-containment…")
-            post(1, Self.stalenessReport(Validators.staleness(snapshot, libDir: nil)))
+            post(1, Validators.staleness(snapshot, libDir: nil)) { Self.stalenessReport($0) }
 
             setProgress("Building plates…")
-            post(2, Self.meshReport(Validators.mesh(snapshot)))
+            post(2, Validators.mesh(snapshot)) { Self.meshReport($0) }
 
             setProgress("Exhaustive sweep…")
             let net = Validators.buildNetwork(snapshot)
-            post(3, Self.sweepReport(Validators.sweep(
-                network: net, params: params, maxSteps: 20000, epsilon: 1e-5, maxCombos: 4096, holds: holds)))
+            post(3, Validators.sweep(
+                network: net, params: params, maxSteps: 20000, epsilon: 1e-5, maxCombos: 4096, holds: holds
+            )) { Self.sweepReport($0) }
 
             let marg = Validators.margins(
                 network: net, base: params, tol: 0.2, maxSteps: 20000, epsilon: 1e-5, maxCombos: 4096, holds: holds
             ) { c, total, _, _, _ in setProgress("Margins corner \(c)/\(total)…") }
-            post(4, Self.marginsReport(marg))
+            post(4, marg) { Self.marginsReport($0) }
 
             DispatchQueue.main.async {
                 guard token == self.runToken else { return }
