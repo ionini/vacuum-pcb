@@ -174,8 +174,8 @@ struct ManufacturingConstants: Codable, Hashable {
     var flatBottomChannels: Bool
 
     static let defaults = ManufacturingConstants(
-        plateThickness: 4.0,
-        channelDiameter: 1.0,
+        plateThickness: 3.0,
+        channelDiameter: 1.5,
         portBoreDiameter: 1.7,
         portBoreTaperDegrees: 1.0,
         siliconeThickness: 0.1,
@@ -184,12 +184,12 @@ struct ManufacturingConstants: Codable, Hashable {
         dimpleSphereOffset: 1.0,
         padsDiameter: 4.0,
         padsSeparation: 1.0,
-        padsOffset: 1.25,
+        padsOffset: 1.36,
         padsFilletRadius: 0.5,
         gridPitch: 1.0,
         minChannelSpacing: 1.5,
-        resistorChannelDiameter: 0.7,
-        interLayerWall: 0.5,
+        resistorChannelDiameter: 0.6,
+        interLayerWall: 0.75,
         plateCornerFillet: 2,
         ledDimpleDiameter: 6.0,
         ledDimpleDepth: 1.0,
@@ -197,7 +197,7 @@ struct ManufacturingConstants: Codable, Hashable {
         screwDomeBaseDiameter: 8.1,
         screwHeadDepth: 1.5,
         screwNutDepth: 1.5,
-        stencilThickness: 0.4,
+        stencilThickness: 0.2,
         stencilViaPadding: 0,
         minWallThickness: 0.5,
         flatBottomChannels: true
