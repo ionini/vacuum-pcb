@@ -185,12 +185,16 @@ enum Validators {
         progress: ((_ corner: Int, _ total: Int, _ desc: String, _ converged: Bool, _ flips: Int) -> Void)? = nil
     ) -> MarginResult {
         func level(_ p: Double) -> Int { p < 0.5 ? 0 : 1 }
-        let keys: [(name: String, set: (inout SimulationParameters, Double) -> Void, base: Double)] = [
+        let allKeys: [(name: String, set: (inout SimulationParameters, Double) -> Void, base: Double)] = [
             ("resistance", { $0.resistorResistancePerMm = $1 }, base.resistorResistancePerMm),
             ("flow", { $0.pumpFlowCapacity = $1 }, base.pumpFlowCapacity),
             ("gateThreshold", { $0.gateThreshold = $1 }, base.gateThreshold),
             ("leak", { $0.leakConductance = $1 }, base.leakConductance),
+            ("internalLeak", { $0.internalLeakConductance = $1 }, base.internalLeakConductance),
         ]
+        // ±tol of a zero base is still zero, so a key at 0 (internalLeak by
+        // default) would only duplicate every existing corner — drop it.
+        let keys = allKeys.filter { $0.base != 0 }
         let cornerCount = 1 << keys.count
         let nominal = sweep(network: network, params: base, maxSteps: maxSteps, epsilon: epsilon, maxCombos: maxCombos, holds: holds)
         if let tooMany = nominal.tooManyCombos {
