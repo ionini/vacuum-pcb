@@ -229,8 +229,11 @@ struct DRCClearanceTests {
         #expect(!hasScrewClearance(DRC.check(screwNearRoute(offset: 3.0, routeLayer: deep, bottomLayers: 2))))
     }
 
-    /// Two different-net routes that each drop a `.via` waypoint, the vias a
-    /// chosen distance apart on the top plate.
+    /// Two different-net routes that each drop a real cross-silicone via
+    /// (twin `.via` waypoints on both plates), the vias a chosen distance
+    /// apart. Single-layer via markers wouldn't do: PlateBuilder never drills
+    /// a one-sided via, and the depth-aware clearance check gives its bore a
+    /// degenerate Z band accordingly.
     private func twoVias(_ gap: Double) -> CircuitDocument {
         var doc = CircuitDocument.blank()
         doc.physical.boardOutline = Rect(origin: .zero, size: Size(width: 60, height: 40))
@@ -248,14 +251,19 @@ struct DRCClearanceTests {
             Placement(componentId: b1.id, position: Point(x: 5, y: 30), rotation: .r0, layer: .top),
             Placement(componentId: b2.id, position: Point(x: 25, y: 30), rotation: .r0, layer: .top),
         ]
-        let layer = Layer(plate: .top, depth: 0)
+        let top = Layer(plate: .top, depth: 0)
+        let bottom = Layer(plate: .bottom, depth: 0)
         let viaA = Point(x: 20, y: 20)
         let viaB = Point(x: 20 + gap, y: 20)
         doc.physical.routes = [
-            Route(netId: na.id, segments: [Segment(
-                waypoints: [Waypoint(position: Point(x: 5, y: 10)), Waypoint(position: viaA, kind: .via)], layer: layer)]),
-            Route(netId: nb.id, segments: [Segment(
-                waypoints: [Waypoint(position: Point(x: 5, y: 30)), Waypoint(position: viaB, kind: .via)], layer: layer)]),
+            Route(netId: na.id, segments: [
+                Segment(waypoints: [Waypoint(position: Point(x: 5, y: 10)), Waypoint(position: viaA, kind: .via)], layer: top),
+                Segment(waypoints: [Waypoint(position: viaA, kind: .via), Waypoint(position: Point(x: 10, y: 20))], layer: bottom),
+            ]),
+            Route(netId: nb.id, segments: [
+                Segment(waypoints: [Waypoint(position: Point(x: 5, y: 30)), Waypoint(position: viaB, kind: .via)], layer: top),
+                Segment(waypoints: [Waypoint(position: viaB, kind: .via), Waypoint(position: Point(x: 30, y: 20))], layer: bottom),
+            ]),
         ]
         return doc
     }

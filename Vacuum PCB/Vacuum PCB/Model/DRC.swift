@@ -449,22 +449,32 @@ enum DRC {
         let position: Point
         let radius: Double
         let layer: Layer
+        /// Net this bore belongs to. Same-net pairs are allowed to come
+        /// arbitrarily close — they're going to fuse in CSG anyway, which is
+        /// the whole point of routing. `nil` if the bore can't be attributed
+        /// to a net.
         let netId: UUID?
         let componentId: UUID?
-        /// World-Z extent of the bore (silicone face to its channel midline,
-        /// reaching deeper for a transistor gate / LED dome). The screw
-        /// clearance check uses it to tell which part of the stepped screw —
-        /// the wide head / nut or just the narrow shaft — actually shares the
-        /// bore's height. `viaClearanceIssues` ignores it (its pairs are all
-        /// channel-radius bores at the same depth).
+        /// World-Z extent of the bore — the band of plate height it actually
+        /// occupies. A cross-silicone via spans the silicone face to the
+        /// midlines it connects on this plate; an intra-plate via (T0↔T1 /
+        /// B0↔B1) only spans between its own layer midlines; a pin drop bore
+        /// spans the face to its channel midline; a transistor gate / LED
+        /// dome reaches its cavity depth past the face. The screw check
+        /// measures the vertical gap to its stepped columns against this
+        /// band; `viaClearanceIssues` and `thinWallIssues` use it to skip
+        /// features that don't share plate height.
         let zLo: Double
         let zHi: Double
     }
 
-    /// Collects every via bore (one per via waypoint) and every transistor /
-    /// LED pad bore in the document, on their resolved layers, tagged with the
-    /// net (and component) they belong to so the clearance checks can skip
-    /// same-net pairs that are meant to fuse.
+    /// Collects every via bore and every transistor / LED pad bore in the
+    /// document, on their resolved layers, tagged with the net (and component)
+    /// they belong to so the clearance checks can skip same-net pairs that are
+    /// meant to fuse. Via waypoints are grouped by (net, XY) to learn the full
+    /// layer set each via spans, then emitted as one bore per plate with the
+    /// Z band it occupies there — so an intra-plate via doesn't pretend to
+    /// reach the silicone face.
     private static func collectBores(in doc: CircuitDocument) -> [Bore] {
         let m = doc.manufacturing
         let channelRadius = m.channelDiameter / 2
@@ -476,18 +486,39 @@ enum DRC {
             for pinRef in net.pins { pinToNet[pinRef] = net.id }
         }
         var bores: [Bore] = []
+
+        struct ViaGroup { var position: Point; var layers: Set<Layer>; var netId: UUID }
+        var viaGroups: [ViaGroup] = []
         for route in doc.physical.routes {
             for segment in route.segments {
                 for wp in segment.waypoints where wp.kind == .via {
-                    // The via reaches from its channel midline toward the
-                    // silicone face (a cross-silicone via punches through to
-                    // the face; the midline is its outer-most extent).
-                    let face = faceZ(segment.layer.plate)
-                    let mid = m.midZ(for: segment.layer)
-                    bores.append(Bore(position: wp.position, radius: channelRadius,
-                                      layer: segment.layer, netId: route.netId, componentId: nil,
-                                      zLo: min(face, mid), zHi: max(face, mid)))
+                    if let i = viaGroups.firstIndex(where: {
+                        $0.netId == route.netId
+                            && abs($0.position.x - wp.position.x) < 0.05
+                            && abs($0.position.y - wp.position.y) < 0.05
+                    }) {
+                        viaGroups[i].layers.insert(segment.layer)
+                    } else {
+                        viaGroups.append(ViaGroup(
+                            position: wp.position, layers: [segment.layer], netId: route.netId
+                        ))
+                    }
                 }
+            }
+        }
+        for group in viaGroups {
+            let plates = Set(group.layers.map(\.plate))
+            let crossesSilicone = plates.count >= 2
+            for plate in plates {
+                let plateLayers = group.layers.filter { $0.plate == plate }
+                var zs = plateLayers.map { m.midZ(for: $0) }
+                if crossesSilicone { zs.append(faceZ(plate)) }
+                // Attribute the bore to the plate's innermost layer; only the
+                // plate half matters to the checks, the depth is in [zLo, zHi].
+                let layer = plateLayers.min { $0.depth < $1.depth }!
+                bores.append(Bore(position: group.position, radius: channelRadius,
+                                  layer: layer, netId: group.netId, componentId: nil,
+                                  zLo: zs.min()!, zHi: zs.max()!))
             }
         }
         for placement in doc.physical.placements {
@@ -627,6 +658,13 @@ enum DRC {
     /// `thinWall(.bore)` check only measures *channel edges* against bores;
     /// this adds the bore-against-bore cases it misses. Same-net pairs are
     /// skipped (they're meant to fuse).
+    ///
+    /// Depth-aware: a pair only conflicts when the two bores' Z bands
+    /// genuinely overlap — a T0↔T1 via passes safely beside a shallow
+    /// depth-0 drop bore. Bands that merely *touch* at a shared channel
+    /// midline don't count either: each bore opens into that depth's channel
+    /// there, and the walls around the channels are `thinWall` /
+    /// `channelClearance`'s job.
     private static func viaClearanceIssues(in doc: CircuitDocument) -> [Issue] {
         let m = doc.manufacturing
         let threshold = m.minWallThickness
@@ -640,6 +678,9 @@ enum DRC {
         func dist(_ a: Point, _ b: Point) -> Double {
             ((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y)).squareRoot()
         }
+        func zOverlaps(_ a: Bore, _ b: Bore) -> Bool {
+            min(a.zHi, b.zHi) - max(a.zLo, b.zLo) > 1e-9
+        }
 
         struct PairKey: Hashable {
             let a: UUID; let b: UUID; let plate: Plate
@@ -651,12 +692,13 @@ enum DRC {
         var reported: Set<PairKey> = []
         var issues: [Issue] = []
 
-        // via ↔ via (different nets, same plate)
+        // via ↔ via (different nets, same plate, sharing plate height)
         for i in 0..<vias.count {
             for j in (i + 1)..<vias.count {
                 let a = vias[i], b = vias[j]
                 guard a.layer.plate == b.layer.plate else { continue }
                 guard let an = a.netId, let bn = b.netId, an != bn else { continue }
+                guard zOverlaps(a, b) else { continue }
                 let wall = dist(a.position, b.position) - a.radius - b.radius
                 guard wall < threshold else { continue }
                 let key = PairKey(an, bn, a.layer.plate)
@@ -671,7 +713,7 @@ enum DRC {
             }
         }
 
-        // via ↔ foreign transistor/LED pad (same plate)
+        // via ↔ foreign transistor/LED pad (same plate, sharing plate height)
         let pads = bores.filter { $0.componentId != nil }
         struct VPKey: Hashable { let net: UUID; let comp: UUID; let plate: Plate }
         var reportedVP: Set<VPKey> = []
@@ -679,6 +721,7 @@ enum DRC {
             guard let vn = via.netId else { continue }
             for pad in pads where pad.layer.plate == via.layer.plate {
                 if pad.netId == vn { continue }   // same net: meant to connect
+                guard zOverlaps(via, pad) else { continue }
                 let wall = dist(via.position, pad.position) - via.radius - pad.radius
                 guard wall < threshold else { continue }
                 let key = VPKey(net: vn, comp: pad.componentId!, plate: via.layer.plate)
@@ -779,6 +822,7 @@ enum DRC {
         // (we can't reason about its connectivity yet) and disqualifies the
         // pin from the union-find pass.
         var pinPositions: [PinRef: Point] = [:]
+        var pinLayers: [PinRef: Layer] = [:]
         var netPinsByLayer: [Layer: [Point]] = [:]
         var issues: [Issue] = []
         for pinRef in net.pins {
@@ -792,6 +836,7 @@ enum DRC {
             let world = placement.worldPosition(of: fpPin)
             pinPositions[pinRef] = world
             let layer = placement.resolvedLayer(of: fpPin, on: component)
+            pinLayers[pinRef] = layer
             netPinsByLayer[layer, default: []].append(world)
         }
         guard pinPositions.count >= 2 else { return issues }
@@ -799,7 +844,22 @@ enum DRC {
         let routes = document.physical.routes.filter { $0.netId == net.id }
         let segments = routes.flatMap(\.segments)
         guard !segments.isEmpty else {
-            issues.append(Issue(netId: net.id, netLabel: net.label, kind: .noRouteDrawn))
+            // Pins that all resolve to the same (layer, XY) fuse in CSG —
+            // their drop bores are one void, physically connected with no
+            // channel needed (the port-on-socket pattern). Ratsnest already
+            // maps them to a single node at the same 0.05 mm tolerance, so
+            // emitting `noRouteDrawn` here would be a false positive the
+            // user can't route away.
+            let eps = 0.05
+            let allCoincident = pinPositions.allSatisfy { ref, p in
+                guard let first = pinPositions.first else { return true }
+                return pinLayers[ref] == pinLayers[first.key]
+                    && abs(p.x - first.value.x) < eps
+                    && abs(p.y - first.value.y) < eps
+            }
+            if !allCoincident {
+                issues.append(Issue(netId: net.id, netLabel: net.label, kind: .noRouteDrawn))
+            }
             return issues
         }
 
@@ -1128,28 +1188,6 @@ enum DRC {
 
     // MARK: - Wall thickness
 
-    private struct ThinWallBore {
-        let position: Point
-        let plate: Plate
-        let radius: Double
-        /// World-Z extent of the vertical bore — the band of plate height it
-        /// actually occupies. A channel on a *different* depth of the same
-        /// plate only collides with the bore if its midline Z falls inside
-        /// (or near) this band; without it the check is depth-blind and a
-        /// buried depth-1 channel running over a depth-0 pad / a T0↔B0 via
-        /// trips a phantom "wall < 0.01 mm". A via spans the layers it
-        /// connects; a pin drop bore spans the silicone face to its channel;
-        /// a transistor gate / LED dome reaches `cavityDepth` past the face.
-        let zLo: Double
-        let zHi: Double
-        /// Net this bore belongs to. Channel edges on the same net are
-        /// allowed to come arbitrarily close — they're going to fuse in CSG
-        /// anyway, which is the whole point of routing. `nil` if the bore
-        /// can't be attributed to a net (shouldn't happen in v1 but kept
-        /// optional so a future kind of bore can opt out of net matching).
-        let netId: UUID?
-    }
-
     /// Walks every channel polyline edge and flags places where the printed
     /// wall between the channel and a nearby feature (outer face, another
     /// channel, a vertical bore) is thinner than `minWallThickness`.
@@ -1181,94 +1219,14 @@ enum DRC {
 
         // Bores carry the world-Z band they occupy so the wall check can tell
         // a real same-depth conflict from a buried channel passing safely over
-        // a shallow feature one layer away. Port / vent / vacuum-source bores
-        // enter horizontally and intentionally meet the outer face — skipped,
-        // they'd produce false positives at every port.
-        //
-        // Each bore carries its net id so the wall check can skip same-net
-        // pairs (a transistor's drop bore sitting near another segment of
-        // its own net would otherwise produce a spurious thin-wall warning
-        // — the two volumes are supposed to fuse, not stay separated).
-        func faceZ(_ plate: Plate) -> Double {
-            plate == .top ? m.siliconeThickness / 2 : -m.siliconeThickness / 2
-        }
-        var pinToNet: [PinRef: UUID] = [:]
-        for net in doc.logic.nets {
-            for pinRef in net.pins {
-                pinToNet[pinRef] = net.id
-            }
-        }
-        var bores: [ThinWallBore] = []
-
-        // Vias: group the twin waypoints by XY to learn the full layer set the
-        // via spans, then emit one bore per plate it touches with the Z band it
-        // occupies there. A cross-silicone via reaches the silicone face on
-        // each plate; an intra-plate via (T0↔T1 / B0↔B1) only spans between its
-        // own layer midlines, so it stays clear of features on the other depth.
-        struct ViaGroup { var position: Point; var layers: Set<Layer>; var netId: UUID }
-        var viaGroups: [ViaGroup] = []
-        for route in doc.physical.routes {
-            for segment in route.segments {
-                for wp in segment.waypoints where wp.kind == .via {
-                    if let i = viaGroups.firstIndex(where: {
-                        abs($0.position.x - wp.position.x) < 0.05
-                            && abs($0.position.y - wp.position.y) < 0.05
-                    }) {
-                        viaGroups[i].layers.insert(segment.layer)
-                    } else {
-                        viaGroups.append(ViaGroup(
-                            position: wp.position, layers: [segment.layer], netId: route.netId
-                        ))
-                    }
-                }
-            }
-        }
-        for group in viaGroups {
-            let plates = Set(group.layers.map(\.plate))
-            let crossesSilicone = plates.count >= 2
-            for plate in plates {
-                var zs = group.layers.filter { $0.plate == plate }.map { m.midZ(for: $0) }
-                if crossesSilicone { zs.append(faceZ(plate)) }
-                bores.append(ThinWallBore(
-                    position: group.position, plate: plate, radius: channelRadius,
-                    zLo: zs.min()!, zHi: zs.max()!, netId: group.netId
-                ))
-            }
-        }
-
-        // Transistor / LED pin bores. Each drop bore runs from the silicone
-        // face to its channel midline; a transistor gate / LED indicator also
-        // carves a dome reaching `cavityDepth` past the face (deeper than the
-        // depth-0 channel), so it can legitimately graze a depth-1 feature.
-        for placement in doc.physical.placements {
-            guard let comp = doc.logic.components.first(where: { $0.id == placement.componentId })
-            else { continue }
-            switch comp.kind {
-            case .transistor, .led:
-                let fp = comp.footprint(m, snapshots: doc.librarySnapshots)
-                for pin in fp.pins {
-                    let world = placement.worldPosition(of: pin)
-                    let pinLayer = placement.resolvedLayer(of: pin, on: comp)
-                    let plate = pinLayer.plate
-                    let face = faceZ(plate)
-                    var reach = abs(m.midZ(for: pinLayer) - face)
-                    if comp.kind == .transistor, pin.key == "gate" {
-                        reach = max(reach, m.dimpleDiameter / 2 + m.dimpleSphereOffset)
-                    } else if comp.kind == .led {
-                        reach = max(reach, m.ledDimpleDiameter / 2 + m.ledDimpleDepth)
-                    }
-                    let zEnd = face + (plate == .top ? reach : -reach)
-                    let ref = PinRef(componentId: placement.componentId, pinKey: pin.key)
-                    bores.append(ThinWallBore(
-                        position: world, plate: plate, radius: channelRadius,
-                        zLo: min(face, zEnd), zHi: max(face, zEnd),
-                        netId: pinToNet[ref]
-                    ))
-                }
-            default:
-                break
-            }
-        }
+        // a shallow feature one layer away, and their net id so the check can
+        // skip same-net pairs (a transistor's drop bore sitting near another
+        // segment of its own net would otherwise produce a spurious thin-wall
+        // warning — the two volumes are supposed to fuse, not stay separated).
+        // Port / vent / vacuum-source bores enter horizontally and
+        // intentionally meet the outer face — `collectBores` never emits
+        // them, so they can't produce false positives at every port.
+        let bores = collectBores(in: doc)
 
         struct ReportKey: Hashable {
             let netId: UUID
@@ -1345,7 +1303,7 @@ enum DRC {
             }
 
             // --- Bores ---
-            for bore in bores where bore.plate == edge.layer.plate {
+            for bore in bores where bore.layer.plate == edge.layer.plate {
                 // Bores on this segment's own net are part of the same
                 // electrical node — the route is on its way to connect to
                 // them (or already does, via another segment). Their walls
