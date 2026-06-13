@@ -511,6 +511,51 @@ func reportMesh(_ r: Validators.MeshResult, json: Bool) {
     print(r.pass ? "MESH: PASS" : "MESH: FAIL")
 }
 
+// MARK: - STL export
+
+/// The solids the STL export ships, in the GUI's order, with empty bodies
+/// dropped. Mirrors `STLExportDocument` / DocumentView's Bambu path:
+/// top plate, bottom plate, stencil, mold frame.
+func exportBodies(_ out: PlateBuilder.Output) -> [(name: String, mesh: Mesh)] {
+    [("topPlate", out.topPlate), ("bottomPlate", out.bottomPlate),
+     ("stencil", out.stencil), ("moldFrame", out.moldFrame)]
+        .filter { !$0.1.isEmpty }
+        .map { (name: $0.0, mesh: $0.1) }
+}
+
+/// A body prints cleanly only if it stitched watertight with a positive
+/// (right-side-out) volume — the same judgement `Validators.mesh` applies.
+func bodyPasses(_ m: Mesh) -> Bool { m.isWatertight && m.signedVolume > 0 }
+
+func reportExport(dest: String, bodies: [(name: String, mesh: Mesh)], bytes: Int, json: Bool) {
+    if json {
+        printJSON([
+            "out": dest,
+            "bytes": bytes,
+            "bodies": bodies.map { b -> [String: Any] in
+                let s = b.mesh.bounds
+                return ["body": b.name, "watertight": b.mesh.isWatertight,
+                        "signedVolume": b.mesh.signedVolume, "polygons": b.mesh.polygons.count,
+                        "size": ["x": s.max.x - s.min.x, "y": s.max.y - s.min.y, "z": s.max.z - s.min.z],
+                        "pass": bodyPasses(b.mesh)]
+            },
+        ])
+        return
+    }
+    print("wrote \(dest)  (\(bytes) bytes, \(bodies.count) solid\(bodies.count == 1 ? "" : "s"))")
+    for b in bodies {
+        let bb = b.mesh.bounds
+        print(String(format: "  %@ %@  watertight=%@  vol=%.1f mm³  polys=%d  bbox=%.1f×%.1f×%.1f mm",
+                     bodyPasses(b.mesh) ? "✓" : "✗", b.name,
+                     b.mesh.isWatertight ? "yes" : "NO",
+                     b.mesh.signedVolume, b.mesh.polygons.count,
+                     bb.max.x - bb.min.x, bb.max.y - bb.min.y, bb.max.z - bb.min.z))
+    }
+    if !bodies.allSatisfy({ bodyPasses($0.mesh) }) {
+        print("⚠ one or more solids are not watertight — a slicer may reject this STL (the file was still written)")
+    }
+}
+
 func reportSweep(_ sw: Validators.SweepResult, json: Bool) {
     if json {
         printJSON([
@@ -609,6 +654,14 @@ USAGE:
   vacuum-cli mesh <file.vpcb> [--json]
       Build the printed solids (PlateBuilder) and assert each plate is
       watertight, manifold and non-degenerate — i.e. a slicer will accept it.
+
+  vacuum-cli export <file.vpcb> [--out PATH] [--json]
+      Build the printed solids and write them as a single binary STL — the
+      same bodies (top plate, bottom plate, stencil, mold frame), per-body
+      makeWatertight() and merge the GUI's "Save STL" / Bambu path produces.
+      Defaults to <file>.stl beside the input. Reports each solid's volume
+      and watertightness; exits non-zero (file still written) if any solid is
+      not watertight, since a slicer would reject it.
 
   vacuum-cli sweep <file.vpcb> [--max-combos N] [--param ...] [--json]
       Drive every 0/1 combination of the inputs, solve each to convergence,
@@ -875,6 +928,25 @@ do {
         let r = Validators.mesh(doc)
         reportMesh(r, json: json)
         if !r.pass { exit(1) }
+
+    case "export":
+        let bodies = exportBodies(PlateBuilder.build(doc))
+        if bodies.isEmpty {
+            fail("error: nothing to export — the board produced no printable solids (empty outline?)")
+        }
+        // makeWatertight() stitches the hairline cracks Euclid's BSP CSG leaves
+        // where curved surfaces meet flat ones; the GUI export runs it per-body
+        // before Mesh.merge, and slicers reject non-manifold STLs, so we match
+        // that exactly here.
+        let stitched = bodies.map { (name: $0.name, mesh: $0.mesh.makeWatertight()) }
+        let data = Mesh.merge(stitched.map { $0.mesh }).stlData()
+        let dest = outPath ?? URL(fileURLWithPath: path)
+            .deletingPathExtension().appendingPathExtension("stl").path
+        try data.write(to: URL(fileURLWithPath: dest), options: .atomic)
+        reportExport(dest: dest, bodies: stitched, bytes: data.count, json: json)
+        // Signal scripts that the geometry won't slice cleanly, while still
+        // leaving the file on disk for inspection.
+        if !stitched.allSatisfy({ bodyPasses($0.mesh) }) { exit(1) }
 
     case "sweep":
         let settleCap = max(steps, 20000)
