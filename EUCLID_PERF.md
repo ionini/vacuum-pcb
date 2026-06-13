@@ -10,7 +10,14 @@
   - `upstream` → nicklockwood/Euclid (for pulling future upstream changes)
 - **Xcode wiring:** the Vacuum PCB project uses `XCLocalSwiftPackageReference "../../Euclid"`, so all builds pick up local edits immediately. No GitHub round-trip needed during iteration.
 
-**Onboarding a new machine:** clone the fork to `~/Documents/dev/Euclid` next to `vacuum_pcb`, check out `perf`, and Xcode will resolve the local package on first open.
+**Onboarding / missing local checkout — important:** the build deliberately points at the **local** `../../Euclid` (we keep this config as-is; the package is *not* pinned to a remote revision). So the build will **not** fetch Euclid for you — and the perf wins (`insertingEdgeVertices` → the 2.9× STL export, the tree-reduction `Mesh.merge`, the `batch`-stderr fix, etc.) live **only on the fork's `perf` branch** (pushed to `origin/perf`). If `~/Documents/dev/Euclid` is absent, clone the fork there and check out `perf` **before building**, or you'll silently compile against slower/baseline Euclid:
+
+```sh
+git clone https://github.com/ioni-shape/Euclid.git ~/Documents/dev/Euclid
+cd ~/Documents/dev/Euclid && git checkout perf
+```
+
+Xcode then resolves the local package on first open.
 
 **Sending changes upstream:** push individual commits or cherry-picks to a topic branch on the fork, then `gh pr create --repo nicklockwood/Euclid`.
 
