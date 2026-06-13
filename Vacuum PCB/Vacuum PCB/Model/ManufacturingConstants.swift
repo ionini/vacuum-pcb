@@ -155,6 +155,24 @@ struct ManufacturingConstants: Codable, Hashable {
     /// (hole equals `channelDiameter`); clamp 0…2 mm.
     var stencilViaPadding: Double
 
+    /// Spacing between the board outline and the inner wall of the silicone
+    /// casting frame (the "cookie cutter" you pour the sheet into). Silicone
+    /// poured against a wall climbs a meniscus whose width is set by the
+    /// capillary length (~1.5 mm for silicone), so the outer ring of any cast
+    /// sheet is never flat. This margin keeps the usable part — everything the
+    /// stencil cuts out — inboard of that disturbed ring. Default 2.0 mm
+    /// (capillary-length-safe). Also the radius the pour volume is computed
+    /// against. Clamp ≥ 0.
+    var castingMargin: Double
+
+    /// Wall thickness of the printed silicone casting frame. The frame is an
+    /// open-top/open-bottom ring printed to exactly `siliconeThickness` tall;
+    /// it sits on a glass plate, the silicone is poured inside, and the wall
+    /// height (= sheet thickness) keeps the silicone from climbing past the
+    /// target level. This is just the ring's in-plane wall for print rigidity.
+    /// Default 3.0 mm. Set ≤ 0 to disable the frame (no mold export / preview).
+    var moldWallThickness: Double
+
     /// Minimum acceptable wall of printed material between a channel and any
     /// nearby feature (the board's outer face, another channel on the same or
     /// an adjacent layer, a via, a drop bore). Drives every DRC wall check —
@@ -199,6 +217,8 @@ struct ManufacturingConstants: Codable, Hashable {
         screwNutDepth: 1.5,
         stencilThickness: 0.2,
         stencilViaPadding: 0,
+        castingMargin: 2.0,
+        moldWallThickness: 3.0,
         minWallThickness: 0.5,
         flatBottomChannels: true
     )
@@ -220,6 +240,7 @@ struct ManufacturingConstants: Codable, Hashable {
         case ledDimpleDiameter, ledDimpleDepth
         case screwProtrusion, screwDomeBaseDiameter, screwHeadDepth, screwNutDepth
         case stencilThickness, stencilViaPadding
+        case castingMargin, moldWallThickness
         case minWallThickness
         case flatBottomChannels
     }
@@ -236,6 +257,7 @@ struct ManufacturingConstants: Codable, Hashable {
          screwProtrusion: Double, screwDomeBaseDiameter: Double,
          screwHeadDepth: Double, screwNutDepth: Double,
          stencilThickness: Double, stencilViaPadding: Double,
+         castingMargin: Double = 2.0, moldWallThickness: Double = 3.0,
          minWallThickness: Double, flatBottomChannels: Bool) {
         self.plateThickness = plateThickness
         self.channelDiameter = channelDiameter
@@ -262,6 +284,8 @@ struct ManufacturingConstants: Codable, Hashable {
         self.screwNutDepth = screwNutDepth
         self.stencilThickness = stencilThickness
         self.stencilViaPadding = stencilViaPadding
+        self.castingMargin = castingMargin
+        self.moldWallThickness = moldWallThickness
         self.minWallThickness = minWallThickness
         self.flatBottomChannels = flatBottomChannels
     }
@@ -317,6 +341,10 @@ struct ManufacturingConstants: Codable, Hashable {
                                                  forKey: .stencilThickness) ?? 0.2
         stencilViaPadding = try c.decodeIfPresent(Double.self,
                                                   forKey: .stencilViaPadding) ?? 0
+        castingMargin = try c.decodeIfPresent(Double.self,
+                                              forKey: .castingMargin) ?? 2.0
+        moldWallThickness = try c.decodeIfPresent(Double.self,
+                                                  forKey: .moldWallThickness) ?? 3.0
         minWallThickness = try c.decodeIfPresent(Double.self,
                                                  forKey: .minWallThickness) ?? 0.5
         flatBottomChannels = try c.decodeIfPresent(Bool.self,

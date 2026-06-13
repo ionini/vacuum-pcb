@@ -265,6 +265,7 @@ struct DocumentView: View {
                     topFeatures: built.topFeatures,
                     bottomFeatures: built.bottomFeatures,
                     stencil: built.stencil,
+                    moldFrame: built.moldFrame,
                     boardOutline: document.circuit.physical.boardOutline,
                     displayMode: previewMode,
                     cameraStore: cameraStore
@@ -356,6 +357,18 @@ struct DocumentView: View {
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
                 }
+                // Exact pour volume once built (counts connector protrusions);
+                // a board-only estimate before the first build.
+                let mL = built.map { $0.siliconeVolumeMM3 / 1000 }
+                    ?? Mold.siliconeVolumeML(outline: outline, m: document.circuit.manufacturing)
+                HStack {
+                    Text("Silicone")
+                    Spacer()
+                    Text("\(String(format: "%.2f", mL)) mL")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                .help("Volume of silicone to pour into the casting frame: cavity footprint (board + connector protrusions, grown by the casting margin) × silicone thickness.")
                 if isBuilding {
                     ProgressView("Rebuilding…").controlSize(.small)
                 }
@@ -490,7 +503,9 @@ struct DocumentView: View {
 
     private var stlExport: STLExportDocument? {
         guard let built else { return nil }
-        return STLExportDocument(meshes: [built.topPlate, built.bottomPlate, built.stencil])
+        let meshes = [built.topPlate, built.bottomPlate, built.stencil, built.moldFrame]
+            .filter { !$0.isEmpty }
+        return STLExportDocument(meshes: meshes)
     }
 
     private var stlFilename: String {
@@ -605,11 +620,11 @@ struct DocumentView: View {
         // makeWatertight stitches the hairline cracks Euclid's BSP CSG leaves
         // where curved surfaces meet flat ones; the preview build skips it, so
         // we apply it here on the way to the slicer.
-        let combined = Mesh.merge([
-            built.topPlate.makeWatertight(),
-            built.bottomPlate.makeWatertight(),
-            built.stencil.makeWatertight(),
-        ])
+        let combined = Mesh.merge(
+            [built.topPlate, built.bottomPlate, built.stencil, built.moldFrame]
+                .filter { !$0.isEmpty }
+                .map { $0.makeWatertight() }
+        )
         let data = combined.stlData()
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("\(stlFilename).stl")

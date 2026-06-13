@@ -115,6 +115,15 @@ struct ManufacturingSettingsView: View {
                     .font(.caption2).foregroundStyle(.secondary)
             }
 
+            if scope == .full {
+                group("Mold") {
+                    row("Casting margin", $draftMfg.castingMargin)
+                    row("Wall thickness", $draftMfg.moldWallThickness)
+                    Text("Open frame (\"cookie cutter\") for casting the silicone sheet, printed alongside the plates at exactly the silicone thickness. Casting margin is the gap between the board outline and the frame's inner wall — keep it ≥ ~1.5 mm so the cut part stays inboard of the meniscus the silicone climbs against the wall. The pour volume in the sidebar is computed against this cavity. Wall thickness is the printed rim; set 0 to disable the frame.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+
             group("Editor") {
                 row("Grid pitch", $draftMfg.gridPitch)
                 Text("Grid only affects physical-canvas snapping, not the 3D mesh.")
@@ -275,6 +284,8 @@ struct ManufacturingSettingsView: View {
             screwNutDepth: max(0.1, m.screwNutDepth),
             stencilThickness: max(0.05, m.stencilThickness),
             stencilViaPadding: max(0.0, min(2.0, m.stencilViaPadding)),
+            castingMargin: max(0.0, m.castingMargin),
+            moldWallThickness: max(0.0, m.moldWallThickness),
             minWallThickness: max(0.05, m.minWallThickness),
             flatBottomChannels: m.flatBottomChannels
         )

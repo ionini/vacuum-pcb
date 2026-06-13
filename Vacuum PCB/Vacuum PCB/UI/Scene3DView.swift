@@ -8,12 +8,14 @@ enum PreviewDisplayMode: String, CaseIterable, Hashable {
     case bodyOnly
     case both
     case featuresOnly
+    case mold
 
     var label: String {
         switch self {
         case .bodyOnly:     return "Body"
         case .both:         return "Both"
         case .featuresOnly: return "Channels"
+        case .mold:         return "Mold"
         }
     }
 }
@@ -52,6 +54,7 @@ struct Scene3DView {
     var topFeatures: Mesh
     var bottomFeatures: Mesh
     var stencil: Mesh
+    var moldFrame: Mesh
     var boardOutline: Rect
     var displayMode: PreviewDisplayMode
     /// Outlives this view (lives in `DocumentView`) so orbit / zoom can be
@@ -67,6 +70,7 @@ struct Scene3DView {
         let topFeaturesNode = SCNNode()
         let bottomFeaturesNode = SCNNode()
         let stencilNode = SCNNode()
+        let moldNode = SCNNode()
         let camera = SCNCamera()
         let cameraNode = SCNNode()
         var lastOutline: Rect?
@@ -96,6 +100,7 @@ struct Scene3DView {
         c.modelRoot.addChildNode(c.topFeaturesNode)
         c.modelRoot.addChildNode(c.bottomFeaturesNode)
         c.modelRoot.addChildNode(c.stencilNode)
+        c.modelRoot.addChildNode(c.moldNode)
 
         c.camera.usesOrthographicProjection = true
         c.camera.zNear = 0.01
@@ -174,6 +179,11 @@ struct Scene3DView {
         c.stencilNode.geometry = stencil.isEmpty
             ? nil
             : plateGeometry(for: stencil, color: .systemYellow)
+        // Casting frame reads as a printed body like the plates/stencil; orange
+        // sets it apart from the yellow stencil it surrounds in the Mold view.
+        c.moldNode.geometry = moldFrame.isEmpty
+            ? nil
+            : plateGeometry(for: moldFrame, color: .systemOrange)
     }
 
     private func plateGeometry(for mesh: Mesh, color: PlatformColor) -> SCNGeometry {
@@ -211,12 +221,14 @@ struct Scene3DView {
             c.topFeaturesNode.isHidden = true
             c.bottomFeaturesNode.isHidden = true
             c.stencilNode.isHidden = false
+            c.moldNode.isHidden = true
         case .both:
             c.topNode.isHidden = false
             c.bottomNode.isHidden = false
             c.topFeaturesNode.isHidden = false
             c.bottomFeaturesNode.isHidden = false
             c.stencilNode.isHidden = false
+            c.moldNode.isHidden = true
         case .featuresOnly:
             c.topNode.isHidden = true
             c.bottomNode.isHidden = true
@@ -225,6 +237,16 @@ struct Scene3DView {
             // Channels-only mode hides every printed body so the routing
             // solids read clearly. The stencil is a body, so it goes too.
             c.stencilNode.isHidden = true
+            c.moldNode.isHidden = true
+        case .mold:
+            // Assembly-aid view: just the silicone sheet (stencil) sitting in
+            // its casting frame, so the pour cavity and margin read clearly.
+            c.topNode.isHidden = true
+            c.bottomNode.isHidden = true
+            c.topFeaturesNode.isHidden = true
+            c.bottomFeaturesNode.isHidden = true
+            c.stencilNode.isHidden = false
+            c.moldNode.isHidden = false
         }
     }
 

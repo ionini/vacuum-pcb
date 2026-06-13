@@ -25,6 +25,17 @@ enum PlateBuilder {
         /// screw shaft. Used at assembly as a 1:1 cutting template for the
         /// silicone sheet. Empty when `stencilThickness` is 0.
         let stencil: Mesh
+        /// Open-top/open-bottom rounded-rect frame ("cookie cutter") the
+        /// silicone sheet is cast in — printed `siliconeThickness` tall and
+        /// surrounding the board outline by `castingMargin + moldWallThickness`.
+        /// Empty when `moldWallThickness` is ≤ 0. See `Mold` for the layout.
+        let moldFrame: Mesh
+        /// Volume of silicone to pour into the casting frame, in mm³ — the
+        /// pour cavity's footprint (board outline + `.bottomExtend` connector
+        /// protrusions, each grown by `castingMargin`) × `siliconeThickness`.
+        /// Measured off the cavity solid so overlapping connector tabs are
+        /// counted once. 0 when the frame is disabled.
+        let siliconeVolumeMM3: Double
     }
 
     static func build(_ doc: CircuitDocument) -> Output {
@@ -76,6 +87,10 @@ enum PlateBuilder {
         // protrusion area so the mating side's top plate can clamp against
         // it. Empty when no `.bottomExtend` connector is present.
         var stencilExtensions: [Mesh] = []
+        // World-space outlines of those same `.bottomExtend` protrusions — the
+        // casting frame must wrap the silicone where it extends past the board
+        // edge, so the mold cavity grows to follow each one.
+        var moldExtensionOutlines: [Rect] = []
 
         // Resolve current pin world positions per plate before channels run,
         // so the channel-build loop can extend any segment whose endpoint
@@ -309,6 +324,7 @@ enum PlateBuilder {
                         edgeChamfer: connectorCornerRadius
                     )
                     stencilExtensions.append(stencilSlab)
+                    moldExtensionOutlines.append(protrusionOutline)
                 case .topExtend:
                     topUnclippedAdditions.append(bodySlab)
                 }
@@ -517,6 +533,12 @@ enum PlateBuilder {
             cutters: stencilCutters
         )
 
+        // Silicone casting frame — a ring around the full silicone footprint
+        // (board outline + any `.bottomExtend` connector protrusions), printed
+        // as its own body for pouring the sheet. Independent of the stencil's
+        // holes (the frame is a plain rim) so it's cheap to build alongside it.
+        let mold = buildMold(outline: outline, m: m, extensions: moldExtensionOutlines)
+
         // `makeWatertight()` is intentionally NOT called here. Euclid's BSP
         // CSG can leave hairline cracks where curved surfaces meet flat
         // ones; slicers refuse to print non-manifold STLs, so the export
@@ -527,7 +549,9 @@ enum PlateBuilder {
         return Output(
             topPlate: topOut.plate, bottomPlate: bottomOut.plate,
             topFeatures: topOut.preview, bottomFeatures: bottomOut.preview,
-            stencil: stencil
+            stencil: stencil,
+            moldFrame: mold.frame,
+            siliconeVolumeMM3: mold.volumeMM3
         )
     }
 
@@ -567,6 +591,61 @@ enum PlateBuilder {
                 .translated(by: Vector(c.position.x, c.position.y, 0))
         }
         return slab.subtracting(Mesh.union(cutterMeshes))
+    }
+
+    // MARK: - Mold (silicone casting frame)
+
+    /// Builds the silicone casting frame and the pour volume.
+    ///
+    /// The frame is a rounded ring printed `siliconeThickness` tall and centred
+    /// on the silicone gap (z=0). Its footprint is the board outline plus every
+    /// `.bottomExtend` connector protrusion (`extensions`) — the silhouette the
+    /// silicone actually fills. Each footprint is grown by `castingMargin` for
+    /// the pour cavity and by `castingMargin + moldWallThickness` for the outer
+    /// edge; CSG-unioning the per-footprint slabs merges connector tabs into one
+    /// contiguous rim, then the cavity is subtracted to hollow it out.
+    ///
+    /// `volumeMM3` is measured off the cavity solid (`signedVolume`) so the
+    /// silicone in overlapping board/connector regions is counted once. Returns
+    /// `(.empty, 0)` when the frame is disabled (`moldWallThickness` ≤ 0) or the
+    /// sheet has no thickness.
+    private static func buildMold(
+        outline: Rect, m: ManufacturingConstants, extensions: [Rect]
+    ) -> (frame: Mesh, volumeMM3: Double) {
+        guard m.siliconeThickness > 0, m.moldWallThickness > 0 else { return (.empty, 0) }
+        let margin = max(0, m.castingMargin)
+        let wall = m.moldWallThickness
+        let t = m.siliconeThickness
+        let half = t / 2
+        let eps = 0.1
+
+        // Footprints making up the silicone silhouette. The board carries the
+        // plates' corner fillet; connector tabs start square (the outward offset
+        // rounds them on its own).
+        let footprints: [(rect: Rect, fillet: Double)] =
+            [(outline, m.plateCornerFillet)] + extensions.map { ($0, 0.0) }
+
+        func slabs(inset: Double, thickness: Double, innerZ: Double) -> [Mesh] {
+            footprints.map { fp in
+                let inflated = Mold.inflate(fp.rect, by: inset)
+                let r = Mold.cornerRadius(for: inflated, baseFillet: fp.fillet, inset: inset)
+                return plateBase(outline: inflated, thickness: thickness,
+                                 innerZ: innerZ, side: .top, edgeChamfer: r)
+            }
+        }
+
+        let outerSolid = Mesh.union(slabs(inset: margin + wall, thickness: t, innerZ: -half))
+        // Cavity cutter overshoots in Z so subtracting it doesn't leave coplanar
+        // top/bottom faces (the eps trick `buildStencil` uses for via holes).
+        let cavityCutter = Mesh.union(
+            slabs(inset: margin, thickness: t + 2 * eps, innerZ: -half - eps))
+        let frame = outerSolid.subtracting(cavityCutter)
+
+        // The cutter is the pour cavity grown by eps top and bottom; since it's
+        // prismatic, scaling its volume by t/(t+2·eps) recovers the true
+        // sheet-height pour amount without a second union.
+        let volume = abs(cavityCutter.signedVolume) * t / (t + 2 * eps)
+        return (frame, volume)
     }
 
     /// Per-plate CSG pipeline: union the additive domes onto the base
