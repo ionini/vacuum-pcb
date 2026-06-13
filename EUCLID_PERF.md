@@ -253,6 +253,35 @@ on a single local mutable array. Small win, but free.
 
 - [ ] **Applied.**
 
+### 8. `insertingEdgeVertices` rescans every point for every polygon (export only)
+
+**File:** `Euclid/Sources/Polygon.swift` — `[Polygon].insertingEdgeVertices(with:)`
+
+This is the dominant cost of `Mesh.makeWatertight()`, which the **export** path
+runs (per body) but the 3D preview skips — so it never showed up in the
+preview-rebuild baseline above. Profiling the CLI `export` of the 4-bit
+`register.vpcb` (151k-polygon top plate): 48.2 s total CPU, of which
+`makeWatertight` was **22.1 s (46%)**, almost all in this function.
+
+Original code was `O(polygons × points)`: for every polygon it scanned **all**
+hole-edge points, gated by `bounds.intersects(point)` — which is
+`(min...max).contains(point)`, a *lexicographic* `ClosedRange<Vector>` test
+(9.2 s of self-time alone). Lexicographic containment admits any point sharing
+the polygon's x-range regardless of y/z, so it fired the `O(vertices)`
+`insertEdgePoint` scan on far-away points that could never lie on an edge.
+
+Fix (two-stage prune, exploiting that `points.sorted()` orders by x then y, z):
+1. Binary-search the polygon's x-slab — only visit points whose x can reach it.
+2. Inside the slab, apply a **true 3D AABB test** before `insertEdgePoint`.
+   Points outside the real box are rejected by `insertEdgePoint` anyway, so this
+   is behaviour-preserving (output is byte-identical) but skips the wasted scan.
+
+- [x] **Applied.** `Mesh.makeWatertight()` total **22.1 s → 0.83 s (-96 %)`;
+  `ClosedRange<>.contains` / `insertingEdgeVertices` self-time fell off the
+  profile entirely. Export of `register.vpcb`: **33 s → 11.4 s wall (2.9×)**,
+  48.2 s → 26.7 s CPU. Output verified byte-identical before/after. The
+  remaining cost is now the shared `PlateBuilder.build` CSG (items 4–7).
+
 ---
 
 ## How to record a comparable trace

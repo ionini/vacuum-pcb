@@ -619,11 +619,13 @@ struct DocumentView: View {
         }
         // makeWatertight stitches the hairline cracks Euclid's BSP CSG leaves
         // where curved surfaces meet flat ones; the preview build skips it, so
-        // we apply it here on the way to the slicer.
-        let combined = Mesh.merge(
+        // we apply it here on the way to the slicer. Concatenate the separate
+        // solids' polygons into one multi-solid mesh (Mesh(_:), no CSG) rather
+        // than Mesh.merge, which would boolean-union the concentric plates.
+        let combined = Mesh(
             [built.topPlate, built.bottomPlate, built.stencil, built.moldFrame]
                 .filter { !$0.isEmpty }
-                .map { $0.makeWatertight() }
+                .flatMap { $0.makeWatertight().polygons }
         )
         let data = combined.stlData()
         let url = FileManager.default.temporaryDirectory

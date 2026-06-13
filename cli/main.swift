@@ -935,11 +935,14 @@ do {
             fail("error: nothing to export — the board produced no printable solids (empty outline?)")
         }
         // makeWatertight() stitches the hairline cracks Euclid's BSP CSG leaves
-        // where curved surfaces meet flat ones; the GUI export runs it per-body
-        // before Mesh.merge, and slicers reject non-manifold STLs, so we match
-        // that exactly here.
+        // where curved surfaces meet flat ones; slicers reject non-manifold STLs,
+        // so it runs per body. The bodies are separate printed solids, so we
+        // concatenate their polygons into one multi-solid mesh rather than calling
+        // Mesh.merge — merge does a boolean CSG union whenever bounds overlap
+        // (ours are concentric), which is wasteful and not what a multi-solid STL
+        // wants. Mesh(_:) just stores the polygons (no CSG, no BSP).
         let stitched = bodies.map { (name: $0.name, mesh: $0.mesh.makeWatertight()) }
-        let data = Mesh.merge(stitched.map { $0.mesh }).stlData()
+        let data = Mesh(stitched.flatMap { $0.mesh.polygons }).stlData()
         let dest = outPath ?? URL(fileURLWithPath: path)
             .deletingPathExtension().appendingPathExtension("stl").path
         try data.write(to: URL(fileURLWithPath: dest), options: .atomic)
