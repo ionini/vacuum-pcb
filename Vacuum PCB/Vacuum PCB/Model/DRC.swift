@@ -28,6 +28,17 @@ enum ScrewNeighbor: String, Hashable {
     case pad
 }
 
+/// What an edge-port outlet (`portBoreClearance`) collides with on its way
+/// from the port out to the board edge. The outlet exists only in the 3D /
+/// mold geometry, so neither side of the clash is drawn on the 2D physical
+/// layer — which is exactly why it slips past the routed-channel checks.
+enum PortBoreNeighbor: String, Hashable {
+    /// A foreign net's routed channel on the same plate-layer.
+    case channel
+    /// Another port's edge outlet on the same plate-layer.
+    case outlet
+}
+
 /// Topology checks on the physical projection.
 ///
 /// The schematic owns the netlist; the physical layout is a projection that
@@ -167,6 +178,29 @@ enum DRC {
             /// `minWallThickness` — the thin cutting template would tear there.
             /// Stencil-only: the printed plate's bores are unaffected.
             case stencilHole(position: Point, gap: Double, detail: String)
+            /// An edge-port **outlet** — the bore a port/vacuum/vent drills from
+            /// its placement straight out to the board edge, generated only in
+            /// the 3D / mold geometry — passes within `minWallThickness` of a
+            /// foreign net's channel or another port's outlet on the same
+            /// plate-layer. The 2D physical layer never draws the outlet, so the
+            /// clash is invisible there and slips past `channelClearance`.
+            /// `portComponentId` is the offending port (for canvas selection);
+            /// `neighbor` says what it hit; `otherComponentId` is the other port
+            /// when `neighbor == .outlet` (nil for a channel). `otherLabel` is
+            /// the foreign net's label for a channel, or the other port's label
+            /// for an outlet. `wall` is the edge-to-edge thickness clamped at 0;
+            /// `position` drops the focus ping near the crossing.
+            case portBoreClearance(
+                portComponentId: UUID,
+                portLabel: String,
+                neighbor: PortBoreNeighbor,
+                otherComponentId: UUID?,
+                otherNetId: UUID,
+                otherLabel: String,
+                layer: Layer,
+                wall: Double,
+                position: Point
+            )
         }
 
         var summary: String {
@@ -219,6 +253,10 @@ enum DRC {
             case let .stencilHole(_, gap, detail):
                 let gapTxt = gap < 0.01 ? "holes touch/overlap" : "\(String(format: "%.2f", gap)) mm sheet wall"
                 return "Stencil sheet: \(detail) (\(gapTxt))"
+            case let .portBoreClearance(_, portLabel, neighbor, _, _, otherLabel, layer, wall, _):
+                let what = neighbor == .channel ? "channel \(otherLabel)" : "\(otherLabel) outlet"
+                let wallTxt = wall < 0.01 ? "touching" : "\(String(format: "%.2f", wall)) mm wall"
+                return "\(portLabel) outlet → \(what) on \(layer.uiLabel): \(wallTxt)"
             }
         }
     }
@@ -303,6 +341,18 @@ enum DRC {
             var sel = PhysicalSelection()
             sel.placements = Set(net.pins.map(\.componentId))
             return sel.isEmpty ? nil : sel
+        case let .portBoreClearance(portComponentId, _, neighbor, otherComponentId, otherNetId, _, _, _, _):
+            // The port is the handle to drag/rotate so its outlet steers clear.
+            // Add the other side too: the paired port for an outlet↔outlet
+            // clash, or the foreign net's pins for a channel.
+            var sel = PhysicalSelection()
+            sel.placements.insert(portComponentId)
+            if neighbor == .outlet, let other = otherComponentId {
+                sel.placements.insert(other)
+            } else if let net = document.logic.nets.first(where: { $0.id == otherNetId }) {
+                sel.placements.formUnion(net.pins.map(\.componentId))
+            }
+            return sel.isEmpty ? nil : sel
         }
     }
 
@@ -347,6 +397,8 @@ enum DRC {
         case let .screwClearance(_, _, _, pos):
             // A screw spans both plates; ping on the top depth-0 layer.
             return (pos, Layer(plate: .top, depth: 0))
+        case let .portBoreClearance(_, _, _, _, _, _, layer, _, pos):
+            return (pos, layer)
         case .unplacedPin, .noRouteDrawn, .matingIncompatible, .matingDoubleBooked:
             return nil
         }
@@ -364,6 +416,7 @@ enum DRC {
         issues.append(contentsOf: screwClearanceIssues(in: document))
         issues.append(contentsOf: viaClearanceIssues(in: document))
         issues.append(contentsOf: stencilHoleIssues(in: document))
+        issues.append(contentsOf: portBoreClearanceIssues(in: document))
         return issues
     }
 
@@ -1102,6 +1155,143 @@ enum DRC {
         let d4 = cross(p1, p2, p4)
         return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0))
             && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))
+    }
+
+    // MARK: - Port outlet clearance
+
+    /// An edge-port outlet swept to the board edge — the same straight bore
+    /// `PlateBuilder.portBoreMesh` drills, reduced to its 2D centreline plus a
+    /// radius. We treat it as a constant-radius channel at the bore's *nominal*
+    /// diameter (`portBoreDiameter`), exactly as routed channels are modelled
+    /// at `channelDiameter` — i.e. we ignore the gentle 1° taper. The taper
+    /// only widens the bore toward the open edge, and folding it in (a bounding
+    /// cylinder at the wide-end radius) badly over-reports long sweeps: a 60 mm
+    /// outlet would balloon to a ~4 mm-wide phantom and flag channels a couple
+    /// of millimetres clear. Nominal keeps the check honest and consistent.
+    private struct PortBore {
+        let componentId: UUID
+        let label: String
+        let netId: UUID
+        let netLabel: String
+        let layer: Layer
+        let a: Point          // route end (port placement)
+        let b: Point          // board-edge exit
+        let radius: Double
+    }
+
+    /// Builds the outlet centreline for every port / vacuum / vent placement,
+    /// projecting straight to the board edge along the placement rotation — the
+    /// same edge mapping `portBoreMesh` uses (r0→+X, r180→−X, r90→+Y, r270→−Y),
+    /// minus the 0.5 mm overshoot (it lands outside the board, where it can't
+    /// collide with anything inside).
+    private static func collectPortBores(in doc: CircuitDocument) -> [PortBore] {
+        let m = doc.manufacturing
+        let outline = doc.physical.boardOutline
+        let radius = m.portBoreDiameter / 2
+
+        // A port-like part has a single pneumatic pin, so the net it belongs to
+        // is whichever net references its component id.
+        var netOf: [UUID: (id: UUID, label: String)] = [:]
+        for net in doc.logic.nets {
+            for pin in net.pins where netOf[pin.componentId] == nil {
+                netOf[pin.componentId] = (net.id, net.label)
+            }
+        }
+        let compById = Dictionary(
+            doc.logic.components.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }
+        )
+
+        var out: [PortBore] = []
+        for placement in doc.physical.placements {
+            guard let comp = compById[placement.componentId],
+                  comp.kind == .port || comp.kind == .vacuumSource || comp.kind == .atmVent
+            else { continue }
+            let p = placement.position
+            let b: Point
+            let length: Double
+            switch placement.rotation {
+            case .r0:   b = Point(x: outline.maxX, y: p.y); length = outline.maxX - p.x
+            case .r180: b = Point(x: outline.minX, y: p.y); length = p.x - outline.minX
+            case .r90:  b = Point(x: p.x, y: outline.maxY); length = outline.maxY - p.y
+            case .r270: b = Point(x: p.x, y: outline.minY); length = p.y - outline.minY
+            }
+            guard length > 0 else { continue }
+            let net = netOf[placement.componentId]
+            out.append(PortBore(
+                componentId: placement.componentId,
+                label: comp.label,
+                netId: net?.id ?? placement.componentId,
+                netLabel: net?.label ?? comp.label,
+                layer: Layer(plate: placement.layer, depth: placement.depth),
+                a: p, b: b,
+                radius: radius
+            ))
+        }
+        return out
+    }
+
+    /// Flags port outlets that collide on their run to the board edge — against
+    /// a foreign net's routed channel (e.g. a vacuum tap sailing over a signal
+    /// channel on the 2D layer) or against another port's outlet — on the same
+    /// plate-layer, leaving a printed wall below `minWallThickness`. Same-net
+    /// pairs are skipped: the port's own route attaches at the pin, and same-net
+    /// outlets share fluid anyway. One issue per (offending port, other net,
+    /// layer); the channel pass runs first so a clash that's both a channel and
+    /// that net's outlet reports once, as the channel.
+    private static func portBoreClearanceIssues(in doc: CircuitDocument) -> [Issue] {
+        let threshold = doc.manufacturing.minWallThickness
+        guard threshold > 0 else { return [] }
+        let bores = collectPortBores(in: doc)
+        guard !bores.isEmpty else { return [] }
+        let channelRadius = doc.manufacturing.channelDiameter / 2
+        let routeEdges = collectRouteEdges(in: doc)
+
+        struct PairKey: Hashable { let port: UUID; let other: UUID; let layer: Layer }
+        var reported: Set<PairKey> = []
+        var issues: [Issue] = []
+
+        // Outlet vs foreign routed channels.
+        for bore in bores {
+            for edge in routeEdges where edge.layer == bore.layer && edge.netId != bore.netId {
+                let wall = segmentDistance(bore.a, bore.b, edge.a, edge.b) - (bore.radius + channelRadius)
+                guard wall < threshold,
+                      reported.insert(PairKey(port: bore.componentId, other: edge.netId, layer: bore.layer)).inserted
+                else { continue }
+                issues.append(Issue(
+                    netId: bore.netId, netLabel: bore.netLabel,
+                    kind: .portBoreClearance(
+                        portComponentId: bore.componentId, portLabel: bore.label,
+                        neighbor: .channel, otherComponentId: nil,
+                        otherNetId: edge.netId, otherLabel: edge.netLabel,
+                        layer: bore.layer, wall: max(0, wall),
+                        position: approachPoint(bore.a, bore.b, edge.a, edge.b)
+                    )
+                ))
+            }
+        }
+
+        // Outlet vs other outlets.
+        for i in 0..<bores.count {
+            for j in (i + 1)..<bores.count {
+                let a = bores[i], b = bores[j]
+                guard a.netId != b.netId, a.layer == b.layer else { continue }
+                let wall = segmentDistance(a.a, a.b, b.a, b.b) - (a.radius + b.radius)
+                guard wall < threshold,
+                      reported.insert(PairKey(port: a.componentId, other: b.netId, layer: a.layer)).inserted
+                else { continue }
+                issues.append(Issue(
+                    netId: a.netId, netLabel: a.netLabel,
+                    kind: .portBoreClearance(
+                        portComponentId: a.componentId, portLabel: a.label,
+                        neighbor: .outlet, otherComponentId: b.componentId,
+                        otherNetId: b.netId, otherLabel: b.label,
+                        layer: a.layer, wall: max(0, wall),
+                        position: approachPoint(a.a, a.b, b.a, b.b)
+                    )
+                ))
+            }
+        }
+        return issues
     }
 
     // MARK: - Cross-net electrical merge

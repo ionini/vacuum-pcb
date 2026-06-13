@@ -35,7 +35,9 @@ struct MinimizerTests {
                                     PinRef(componentId: out.id, pinKey: "p")]),
         ]
         doc.physical.placements = [
-            Placement(componentId: vac.id, position: Point(x: 10, y: 12), rotation: .r0, layer: .top),
+            // VAC faces −X (its near left edge) so its edge outlet is a short
+            // stub, not a 60 mm bore sweeping across the board and crossing n2.
+            Placement(componentId: vac.id, position: Point(x: 10, y: 12), rotation: .r180, layer: .top),
             Placement(componentId: r1.id, position: Point(x: 26, y: 14), rotation: .r0, layer: .top),
             Placement(componentId: out.id, position: Point(x: 40, y: 18), rotation: .r0, layer: .top),
         ]
@@ -174,7 +176,9 @@ struct MinimizerTests {
             Net(label: "n3", pins: [PinRef(componentId: r2.id, pinKey: "2"), PinRef(componentId: out.id, pinKey: "p")]),
         ]
         doc.physical.placements = [
-            Placement(componentId: vac.id, position: Point(x: 12, y: 12), rotation: .r0, layer: .top),
+            // VAC faces −X (its near left edge) so its outlet doesn't sweep the
+            // full board width as a phantom channel across the other nets.
+            Placement(componentId: vac.id, position: Point(x: 12, y: 12), rotation: .r180, layer: .top),
             Placement(componentId: r1.id, position: Point(x: 26, y: 16), rotation: .r0, layer: .top),
             Placement(componentId: r2.id, position: Point(x: 22, y: 30), rotation: .r0, layer: .top),
             Placement(componentId: out.id, position: Point(x: 34, y: 20), rotation: .r0, layer: .top),
