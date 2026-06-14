@@ -27,6 +27,9 @@ struct ManufacturingSettingsView: View {
 
     @State private var draftMfg: ManufacturingConstants = .defaults
     @State private var draftBoard: Size = Size(width: 50, height: 30)
+    /// Document-level flag (lives on `CircuitDocument`, not `manufacturing`),
+    /// drafted here so it commits through the same Apply/Revert flow.
+    @State private var draftSkipEdgeWall: Bool = false
     @State private var initialized = false
 
     var body: some View {
@@ -67,6 +70,16 @@ struct ManufacturingSettingsView: View {
                     Text("Squares off the lower half of each routing channel (flat floor, arched top) for more void volume; the arch faces each plate's outer face so both plates stay printable. Off = round bores. Resistor bores are always round.")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
+            }
+
+            // DRC scope toggle. A document-level flag (not a manufacturing
+            // constant), shown in both inspector scopes since it governs the
+            // same DRC the min-wall row feeds.
+            group("Design rules") {
+                Toggle("Reusable component", isOn: $draftSkipEdgeWall)
+                    .font(.caption)
+                Text("Skips the board-edge thin-wall warnings for this design — its outline isn't a real outer face when it's embedded as a sub-part inside a larger board. Internal channel and bore wall checks still run, and any design that embeds this part re-checks its own edges normally.")
+                    .font(.caption2).foregroundStyle(.secondary)
             }
 
             // Gate dome diameter sizes the transistor body drawn on the 2D
@@ -146,11 +159,13 @@ struct ManufacturingSettingsView: View {
         // initial sync.
         .onChange(of: document.circuit.manufacturing) { _, _ in syncFromDocument() }
         .onChange(of: document.circuit.physical.boardOutline) { _, _ in syncFromDocument() }
+        .onChange(of: document.circuit.skipEdgeWallDRC) { _, _ in syncFromDocument() }
     }
 
     private var hasChanges: Bool {
         draftMfg != document.circuit.manufacturing
             || draftBoard != document.circuit.physical.boardOutline.size
+            || draftSkipEdgeWall != (document.circuit.skipEdgeWallDRC ?? false)
     }
 
     private func apply() {
@@ -165,6 +180,9 @@ struct ManufacturingSettingsView: View {
         }
         document.circuit.manufacturing = newMfg
         document.circuit.physical.boardOutline.size = sanitizedSize(draftBoard)
+        // Store nil for "off" so a design that never flags itself stays
+        // byte-identical to a v7 doc (and its content hash is unchanged).
+        document.circuit.skipEdgeWallDRC = draftSkipEdgeWall ? true : nil
         // Sync the draft back from the clamped values so the UI mirrors what
         // actually landed.
         syncFromDocument(force: true)
@@ -243,14 +261,17 @@ struct ManufacturingSettingsView: View {
     private func syncFromDocument(force: Bool = false) {
         let mfg = document.circuit.manufacturing
         let size = document.circuit.physical.boardOutline.size
+        let skipEdgeWall = document.circuit.skipEdgeWallDRC ?? false
         // Don't clobber an in-progress edit unless explicitly forced.
         if force || !initialized {
             draftMfg = mfg
             draftBoard = size
+            draftSkipEdgeWall = skipEdgeWall
             initialized = true
         } else if !hasChanges {
             draftMfg = mfg
             draftBoard = size
+            draftSkipEdgeWall = skipEdgeWall
         }
     }
 

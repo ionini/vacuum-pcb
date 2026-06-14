@@ -1474,7 +1474,14 @@ enum DRC {
         // physically sits inside the protrusion, *outside* the rectangle)
         // would clip the bare-rect edge and trip a false thin-wall warning
         // at every connector.
-        let outlineEdges = outerBoundaryEdges(in: doc)
+        //
+        // A design flagged as a reusable sub-component has no real outer face
+        // (its outline is embedded inside a larger plate), so suppress the
+        // board-edge wall check for it — an empty edge set turns the per-edge
+        // loop below into a no-op without a second code path. The flag is read
+        // off the top-level doc only; this never reaches a sub-part's internal
+        // routes, so a parent re-checks its own edges with its own flag.
+        let outlineEdges = (doc.skipEdgeWallDRC ?? false) ? [] : outerBoundaryEdges(in: doc)
 
         // Bores carry the world-Z band they occupy so the wall check can tell
         // a real same-depth conflict from a buried channel passing safely over

@@ -24,7 +24,12 @@ struct CircuitDocument: Codable, Hashable {
     /// v7: adds `connectorPinNames` on `Component` — optional per-pin display
     /// names for a connector, indexed positionally. Optional / decodeIfPresent
     /// and nil for unnamed connectors, so v6 → v7 is a no-op for existing docs.
-    static let currentSchemaVersion = 7
+    /// v8: adds `skipEdgeWallDRC` — a per-document flag that suppresses the
+    /// board-edge thin-wall DRC warnings for a design meant to be embedded as
+    /// a sub-part (its outline isn't a real outer face). Optional / nil-default
+    /// and omitted when off, so a v7 doc round-trips byte-identical and its
+    /// content/effective hashes are unchanged (v7 → v8 is a no-op).
+    static let currentSchemaVersion = 8
 
     var schemaVersion: Int
     var manufacturing: ManufacturingConstants
@@ -37,6 +42,16 @@ struct CircuitDocument: Codable, Hashable {
     /// require the user's parts folder. GC'd on save (entries whose hash isn't
     /// referenced get dropped).
     var librarySnapshots: [String: CircuitDocument]
+    /// Marks this design as a reusable sub-component whose `boardOutline` is
+    /// not a real outer face (it gets embedded inside a larger plate). When
+    /// set, DRC skips the board-edge thin-wall warnings (`thinWall(.outerFace)`)
+    /// for *this* document only — internal channel/bore wall checks still run.
+    /// The flag never propagates: `DRC.thinWallIssues` runs on the unflattened
+    /// top-level doc and never reads `librarySnapshots`, so any design that
+    /// embeds this part re-checks its own edges with its own flag. Optional /
+    /// nil-default and stripped from `contentHash`/`effectiveHash`, so toggling
+    /// it is a pure annotation that never churns snapshot keys or staleness.
+    var skipEdgeWallDRC: Bool?
 
     init(
         schemaVersion: Int = Self.currentSchemaVersion,
@@ -44,7 +59,8 @@ struct CircuitDocument: Codable, Hashable {
         logic: LogicGraph,
         schematic: SchematicLayout = .empty,
         physical: PhysicalLayout,
-        librarySnapshots: [String: CircuitDocument] = [:]
+        librarySnapshots: [String: CircuitDocument] = [:],
+        skipEdgeWallDRC: Bool? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.manufacturing = manufacturing
@@ -52,10 +68,12 @@ struct CircuitDocument: Codable, Hashable {
         self.schematic = schematic
         self.physical = physical
         self.librarySnapshots = librarySnapshots
+        self.skipEdgeWallDRC = skipEdgeWallDRC
     }
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, manufacturing, logic, schematic, physical, librarySnapshots
+        case skipEdgeWallDRC
     }
 
     init(from decoder: Decoder) throws {
@@ -68,6 +86,8 @@ struct CircuitDocument: Codable, Hashable {
         // v2 and earlier files don't carry snapshots — migration populates
         // them from the live library after decode.
         self.librarySnapshots = try c.decodeIfPresent([String: CircuitDocument].self, forKey: .librarySnapshots) ?? [:]
+        // v8: absent in v7-and-earlier files; nil means "off" everywhere.
+        self.skipEdgeWallDRC = try c.decodeIfPresent(Bool.self, forKey: .skipEdgeWallDRC)
     }
 }
 
@@ -383,6 +403,9 @@ extension CircuitDocument {
         hasher.combine(logic)
         hasher.combine(schematic)
         hasher.combine(physical)
+        // nil and false are the same "off" state — normalise so the two
+        // never read as distinct documents (would spuriously mark dirty).
+        hasher.combine(skipEdgeWallDRC ?? false)
     }
 
     static func == (lhs: CircuitDocument, rhs: CircuitDocument) -> Bool {
@@ -391,6 +414,7 @@ extension CircuitDocument {
             && lhs.logic == rhs.logic
             && lhs.schematic == rhs.schematic
             && lhs.physical == rhs.physical
+            && (lhs.skipEdgeWallDRC ?? false) == (rhs.skipEdgeWallDRC ?? false)
     }
 }
 
@@ -437,6 +461,10 @@ extension CircuitDocument {
     ///    dependency doesn't change WHAT this doc is, just where its
     ///    dependencies are cached. Stripping lets the migration fill in
     ///    missing inner pins without invalidating the parent's pin)
+    ///  - `skipEdgeWallDRC` (a per-doc DRC display preference with no
+    ///    geometric/behavioural effect — stripping to nil keeps the key
+    ///    byte-identical to a v7 doc so upgrading never re-hashes the library,
+    ///    and toggling the flag never re-pins a parent's snapshot)
     /// Used as the snapshot-dict key. For staleness comparison — does this
     /// doc behave differently than another doc, including via transitive
     /// dependency changes — use `effectiveHash()` instead.
@@ -444,6 +472,7 @@ extension CircuitDocument {
         var stripped = self
         stripped.librarySnapshots = [:]
         stripped.schemaVersion = 0
+        stripped.skipEdgeWallDRC = nil
         for i in stripped.logic.components.indices {
             stripped.logic.components[i].partRefHash = nil
         }
@@ -463,6 +492,9 @@ extension CircuitDocument {
     func effectiveHash() -> String {
         var stripped = self
         stripped.schemaVersion = 0
+        // No flatten/CAD effect, so it can't make this doc behave differently —
+        // exclude it (matches `contentHash`) to avoid phantom staleness.
+        stripped.skipEdgeWallDRC = nil
         let data = (try? Self.jsonEncoder.encode(stripped)) ?? Data()
         let digest = SHA256.hash(data: data)
         return digest.map { String(format: "%02x", $0) }.joined()
