@@ -106,9 +106,6 @@ struct Scene3DView {
         c.modelRoot.addChildNode(c.stencilNode)
         c.modelRoot.addChildNode(c.moldNode)
         c.modelRoot.addChildNode(c.highlightNode)
-        // Draw the highlight after everything else so its depth-test-free
-        // material lands on top rather than being overwritten.
-        c.highlightNode.renderingOrder = 100
 
         c.camera.usesOrthographicProjection = true
         c.camera.zNear = 0.01
@@ -201,20 +198,20 @@ struct Scene3DView {
         }
     }
 
-    /// The selected volume's cavity, drawn as a bright magenta glow that ignores
-    /// the depth buffer (renders on top of everything) so the cavity stays
-    /// visible even when buried inside a plate or behind other channels — the
-    /// point is to confirm *which* air space it is, regardless of occlusion.
+    /// The selected volume's cavity, shaded exactly like the feature channels
+    /// (depth-tested, so it picks up the same ambient-occlusion crevices and
+    /// lighting that give the normal channels their form) — just tinted magenta
+    /// and a touch more emissive so it reads as "this is the selected cavity".
+    /// It's built a hair proud of the real channel, so it sits on top of the
+    /// matching feature geometry rather than z-fighting it.
     private func highlightGeometry(for mesh: Mesh) -> SCNGeometry {
         let geometry = SCNGeometry(mesh)
         let material = SCNMaterial()
         let color = PlatformColor.systemPink
         material.diffuse.contents = color
-        material.emission.contents = color.withAlphaComponent(0.65)
-        material.isDoubleSided = true
+        material.emission.contents = color.withAlphaComponent(0.30)
+        material.isDoubleSided = false
         material.lightingModel = .blinn
-        material.readsFromDepthBuffer = false
-        material.writesToDepthBuffer = false
         geometry.materials = [material]
         return geometry
     }

@@ -59,6 +59,22 @@ struct VolumeSegment: Hashable {
     var layer: Layer
 }
 
+/// A resistor whose serpentine channel is part of a volume (it joins the
+/// volume's two halves). Carries just enough pose to rebuild the serpentine.
+struct VolumeResistor: Hashable {
+    var position: Point
+    var rotation: Rotation
+    var layer: Layer
+    var size: ResistorSize
+}
+
+/// A same-plate via inside a volume — a vertical bore joining channel depths
+/// (e.g. T0↔T1). Cross-silicone vias are NOT here; they're bridge `VolumeHole`s.
+struct VolumeVia: Hashable {
+    var pos: Point
+    var layers: [Layer]
+}
+
 /// One sealed air cavity in a single plate.
 struct Volume: Identifiable, Hashable {
     /// Stable, human-facing id assigned in display order: `T1`…`Tn` for the top
@@ -67,8 +83,10 @@ struct Volume: Identifiable, Hashable {
     var plate: Plate
     var netLabel: String
     var holes: [VolumeHole]
-    /// The channel runs that make up this cavity (for building its 3D mesh).
+    /// Geometry that makes up this cavity (for building its 3D highlight mesh).
     var segments: [VolumeSegment]
+    var resistors: [VolumeResistor]
+    var vias: [VolumeVia]
 }
 
 /// Decompose a (flattened) document into per-plate physical volumes.
@@ -105,6 +123,8 @@ func physicalVolumes(_ doc: CircuitDocument) -> [Volume] {
     struct PendingHole { let node: Int; let hole: VolumeHole }
     var pendingHoles: [PendingHole] = []
     var pendingSegs: [(node: Int, seg: VolumeSegment)] = []
+    var pendingVias: [(node: Int, via: VolumeVia)] = []
+    var pendingResistors: [(node: Int, res: VolumeResistor)] = []
     var pinNodeByRef: [PinRef: Int] = [:]
 
     for net in doc.logic.nets {
@@ -148,12 +168,20 @@ func physicalVolumes(_ doc: CircuitDocument) -> [Volume] {
         for group in doc.physical.viaLayerGroups(netId: net.id) where group.layers.count >= 2 {
             let platesPresent = Set(group.layers.map { $0.plate })
             for plate in platesPresent {
-                let layerNodes = group.layers.filter { $0.plate == plate }.map { nodeIndex(net.id, $0, group.position) }
+                let layersOnPlate = Array(group.layers.filter { $0.plate == plate })
+                let layerNodes = layersOnPlate.map { nodeIndex(net.id, $0, group.position) }
                 for k in layerNodes.dropFirst() { union(layerNodes[0], k) }
-                if platesPresent.count >= 2, let n0 = layerNodes.first {
+                guard let n0 = layerNodes.first else { continue }
+                if platesPresent.count >= 2 {
+                    // Cross-silicone: a bridge hole (mate through it later).
                     pendingHoles.append(PendingHole(node: n0,
                         hole: VolumeHole(ref: "via", feature: "via → \(plate.opposite == .top ? "top" : "bottom") plate",
                                          layer: nodes[n0].layer, pos: group.position, isBridge: true)))
+                }
+                if layersOnPlate.count >= 2 {
+                    // Same-plate via: a vertical bore joining channel depths —
+                    // real geometry to paint into the highlight.
+                    pendingVias.append((node: n0, via: VolumeVia(pos: group.position, layers: layersOnPlate)))
                 }
             }
         }
@@ -178,27 +206,36 @@ func physicalVolumes(_ doc: CircuitDocument) -> [Volume] {
     // vacuum on one side bleeds through to the other, so a "perfect vacuum"
     // test has to plug both. (Transistors are deliberately NOT joined.)
     for comp in doc.logic.components where comp.kind == .resistor {
-        if let a = pinNodeByRef[PinRef(componentId: comp.id, pinKey: "1")],
-           let b = pinNodeByRef[PinRef(componentId: comp.id, pinKey: "2")] {
-            union(a, b)
-        }
+        guard let a = pinNodeByRef[PinRef(componentId: comp.id, pinKey: "1")],
+              let b = pinNodeByRef[PinRef(componentId: comp.id, pinKey: "2")],
+              let place = placeById[comp.id] else { continue }
+        union(a, b)
+        pendingResistors.append((node: a, res: VolumeResistor(
+            position: place.position, rotation: place.rotation,
+            layer: Layer(plate: place.layer, depth: place.depth),
+            size: comp.resistorSize ?? .medium)))
     }
 
-    // Group holes, bridges and segments by connected component.
+    // Group holes, bridges, segments, vias and resistors by connected component.
     var holesByRoot: [Int: [VolumeHole]] = [:]
     var segsByRoot: [Int: [VolumeSegment]] = [:]
+    var viasByRoot: [Int: [VolumeVia]] = [:]
+    var resByRoot: [Int: [VolumeResistor]] = [:]
     var netsByRoot: [Int: Set<String>] = [:]
     for ph in pendingHoles {
         let root = find(ph.node)
         holesByRoot[root, default: []].append(ph.hole)
         netsByRoot[root, default: []].insert(netLabelById[nodes[ph.node].net] ?? "?")
     }
-    for ps in pendingSegs {
-        segsByRoot[find(ps.node), default: []].append(ps.seg)
-    }
+    for ps in pendingSegs { segsByRoot[find(ps.node), default: []].append(ps.seg) }
+    for pv in pendingVias { viasByRoot[find(pv.node), default: []].append(pv.via) }
+    for pr in pendingResistors { resByRoot[find(pr.node), default: []].append(pr.res) }
 
     // Built without ids; ids are assigned after the final sort below.
-    struct RawVolume { var plate: Plate; var netLabel: String; var holes: [VolumeHole]; var segments: [VolumeSegment] }
+    struct RawVolume {
+        var plate: Plate; var netLabel: String; var holes: [VolumeHole]
+        var segments: [VolumeSegment]; var resistors: [VolumeResistor]; var vias: [VolumeVia]
+    }
     var raw: [RawVolume] = []
     for (root, holes) in holesByRoot {
         let plate = holes.first!.layer.plate
@@ -213,7 +250,10 @@ func physicalVolumes(_ doc: CircuitDocument) -> [Volume] {
         case 1, 2: label = labels.joined(separator: " / ")
         default:   label = "\(labels.prefix(2).joined(separator: " / ")) +\(labels.count - 2)"
         }
-        raw.append(RawVolume(plate: plate, netLabel: label, holes: sortedHoles, segments: segsByRoot[root] ?? []))
+        raw.append(RawVolume(plate: plate, netLabel: label, holes: sortedHoles,
+                             segments: segsByRoot[root] ?? [],
+                             resistors: resByRoot[root] ?? [],
+                             vias: viasByRoot[root] ?? []))
     }
 
     // Top plate first, then by net label, then by where the cavity sits.
@@ -228,6 +268,7 @@ func physicalVolumes(_ doc: CircuitDocument) -> [Volume] {
     return sorted.map { r in
         let id: String
         if r.plate == .top { topN += 1; id = "T\(topN)" } else { bottomN += 1; id = "B\(bottomN)" }
-        return Volume(id: id, plate: r.plate, netLabel: r.netLabel, holes: r.holes, segments: r.segments)
+        return Volume(id: id, plate: r.plate, netLabel: r.netLabel, holes: r.holes,
+                      segments: r.segments, resistors: r.resistors, vias: r.vias)
     }
 }

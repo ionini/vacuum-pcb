@@ -1086,18 +1086,50 @@ enum PlateBuilder {
     /// not CSG-unioned: the overlap is invisible for an opaque highlight and far
     /// cheaper than a boolean union across the whole cavity.
     static func volumeMesh(for volume: Volume, _ m: ManufacturingConstants) -> Mesh {
-        let r = m.channelDiameter / 2 + 0.15
+        let channelR = m.channelDiameter / 2 + 0.15
+        let resistorR = m.resistorChannelDiameter / 2 + 0.1
         var polys: [Polygon] = []
+
+        // Routed channels.
         for seg in volume.segments where seg.positions.count >= 2 {
-            polys += channelMesh(waypoints: seg.positions, radius: r,
+            polys += channelMesh(waypoints: seg.positions, radius: channelR,
                                  midZ: m.midZ(for: seg.layer),
                                  flatBottom: m.flatBottomChannels,
                                  flipFloor: seg.layer.plate == .bottom).polygons
         }
+
+        // Resistor serpentines — the open channel that joins the cavity's two
+        // halves, built the same way the printed plate does (shared
+        // `ResistorGeometry`), so it lines up with the real bore.
+        for r in volume.resistors {
+            let halfLen = ManufacturingConstants.resistorFootprintLength / 2
+            let halfWid = ManufacturingConstants.resistorFootprintWidth / 2
+            let local = ResistorGeometry.path(
+                transitions: ResistorGeometry.transitions(for: r.size), halfLen: halfLen, halfWid: halfWid)
+            let rad = r.rotation.radians
+            let c = cos(rad), s = sin(rad)
+            let world = local.map {
+                Point(x: r.position.x + $0.x * c - $0.y * s, y: r.position.y + $0.x * s + $0.y * c)
+            }
+            guard world.count >= 2 else { continue }
+            polys += channelMesh(waypoints: world, radius: resistorR,
+                                 midZ: m.midZ(for: r.layer),
+                                 flatBottom: m.flatBottomChannels,
+                                 flipFloor: r.layer.plate == .bottom).polygons
+        }
+
+        // Same-plate vias — vertical bores joining channel depths (T0↔T1).
+        for v in volume.vias where v.layers.count >= 2 {
+            let zs = v.layers.map { m.midZ(for: $0) }
+            if let lo = zs.min(), let hi = zs.max(), hi > lo {
+                polys += viaCutterMesh(at: v.pos, radius: channelR, zLo: lo, zHi: hi).polygons
+            }
+        }
+
         // A bead at every hole so probe points stay visible even for a cavity
         // with little or no routed channel (e.g. a short abutment-only stub).
         for hole in volume.holes {
-            polys += Mesh.sphere(radius: r + 0.1, slices: 16)
+            polys += Mesh.sphere(radius: channelR + 0.1, slices: 16)
                 .translated(by: Vector(hole.pos.x, hole.pos.y, m.midZ(for: hole.layer)))
                 .polygons
         }
