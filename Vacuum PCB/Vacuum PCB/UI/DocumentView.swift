@@ -27,6 +27,15 @@ struct DocumentView: View {
     @State private var issueFocus: DRC.Focus?
 
     @State private var built: PlateBuilder.Output?
+    /// Per-plate physical volumes of the printed board (subparts flattened),
+    /// recomputed alongside each `rebuild()`. Drives the Preview tab's Volumes
+    /// inspector and the 3D highlight.
+    @State private var volumes: [Volume] = []
+    /// Which volume (by `Volume.id`) is selected for highlighting, if any.
+    @State private var selectedVolumeID: String?
+    /// Mesh of the selected volume, rebuilt when the selection changes; handed
+    /// to `Scene3DView` to glow on top of the plates.
+    @State private var highlightMesh: Mesh?
     @State private var isBuilding = false
     @State private var showExporter = false
     @State private var buildToken = 0
@@ -268,6 +277,7 @@ struct DocumentView: View {
                     moldFrame: built.moldFrame,
                     boardOutline: document.circuit.physical.boardOutline,
                     displayMode: previewMode,
+                    highlightMesh: highlightMesh,
                     cameraStore: cameraStore
                 )
                 previewModePicker
@@ -278,6 +288,7 @@ struct DocumentView: View {
                         .padding(.top, 56)
                 }
             }
+            .onChange(of: selectedVolumeID) { _, _ in updateHighlight() }
         } else if isBuilding {
             ProgressView("Building plates…")
         } else {
@@ -444,9 +455,13 @@ struct DocumentView: View {
         switch selectedTab {
         case .preview:
             ScrollView {
-                ManufacturingSettingsView(document: $document)
-                    .padding(14)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 18) {
+                    VolumeListView(volumes: volumes, selection: $selectedVolumeID)
+                    Divider()
+                    ManufacturingSettingsView(document: $document)
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         case .simulate:
             if let state = simulationState {
@@ -660,9 +675,18 @@ struct DocumentView: View {
         let snapshot = document.circuit
         DispatchQueue.global(qos: .userInitiated).async {
             let result = PlateBuilder.build(snapshot)
+            // Whole printed board, subparts flattened — matches what prints, so
+            // the volume cavities line up with the geometry above.
+            let vols = physicalVolumes(snapshot.flattenedForSimulation().document)
             DispatchQueue.main.async {
                 guard token == buildToken else { return }
                 self.built = result
+                self.volumes = vols
+                // Drop a stale selection if the rebuild changed the volume set.
+                if let id = self.selectedVolumeID, !vols.contains(where: { $0.id == id }) {
+                    self.selectedVolumeID = nil
+                }
+                self.updateHighlight()
                 self.isBuilding = false
                 self.previewDirty = false
                 if let action = self.pendingExportAction {
@@ -671,6 +695,16 @@ struct DocumentView: View {
                 }
             }
         }
+    }
+
+    /// Rebuild the highlight mesh for the selected volume (or clear it). Cheap —
+    /// it concatenates one cavity's channel primitives, no boolean CSG.
+    private func updateHighlight() {
+        guard let id = selectedVolumeID, let v = volumes.first(where: { $0.id == id }) else {
+            highlightMesh = nil
+            return
+        }
+        highlightMesh = PlateBuilder.volumeMesh(for: v, document.circuit.manufacturing)
     }
 }
 

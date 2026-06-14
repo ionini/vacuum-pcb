@@ -14,6 +14,8 @@ Commands:
 - `minimize` — compact a board's die headlessly, with as much compute (and as
   many parallel restarts) as you care to give it — no in-app main-thread cap.
 - `reroute` — measure auto-router quality on a board (DRC from scratch).
+- `continuity` — export a per-net "buzz-out" checklist for physically probing a
+  printed board with a vacuum tube (catches print-vs-design faults sim can't).
 
 It does **not** validate anything visual — layout and rendering still need a
 human.
@@ -116,6 +118,79 @@ EX="Vacuum PCB/Vacuum PCB/Examples/inverter.vpcb"
 `IN` high (atmosphere) → `OUT` low (vacuum), and vice versa: it inverts. With a
 weaker pump default the gate can't switch and both cases read the same — which
 is itself a useful thing for the tool to reveal.
+
+## Physical continuity (`continuity`)
+
+When a board sims fine but fails on the bench, the fault is almost always
+*physical* — a channel that didn't print through, two channels that fused into
+one, or a via that didn't actually connect its layers. None of these are
+visible to the simulator (which works from the logical netlist). `continuity`
+exports the checklist for proving the printed board against the design by hand:
+for each net, every physical opening you can press a vacuum tube against —
+transistor gate & source/drain, port/vent/source edge bores, resistor ends,
+connector tubes, and vias — with its layer (`T0`/`B0`…) and board-mm position.
+
+The test is the pneumatic equivalent of buzzing out a circuit with a multimeter:
+apply vacuum at any one point on a net; **every** other point on that net should
+pull a hard vacuum, and **nothing** on any other net should move. Because the
+list is exhaustive, the negative check is implicit — anything not listed under a
+net should be dead when you probe that net.
+
+```sh
+"$BIN" continuity design.vpcb              # top-level routes only
+"$BIN" continuity design.vpcb --flatten    # whole printed board (expands subparts)
+"$BIN" continuity design.vpcb --probe n12  # just one net (repeatable)
+"$BIN" continuity design.vpcb --json       # structured, for tooling
+```
+
+**Embedded subparts.** By default the checklist covers only the open file's own
+routes (same scope as `check`). A board that places a subpart prints that
+subpart's channels into its *own* plates, so those internal holes are part of
+the physical board too — pass `--flatten` to expand every subpart into board
+coordinates (labels become prefixed, e.g. `U6.Q1.gate`, `U6.U3.U1.Q2.gate`).
+Without it, the summary warns when unexpanded subparts are present so you don't
+mistake a partial list for a complete one. (For socket-mated *assemblies* —
+separate plate stacks joined at a connector — don't flatten; probe each half's
+file on its own, since they're physically distinct boards.)
+
+Vias are split three ways: a **through-hole** (spans both plates, e.g. `T0↔B0`)
+is probeable from either face; an **internal via** (same plate, e.g. `B0,B1`) is
+buried and not surface-accessible; an **orphan** (touches one layer only) is a
+broken via that won't connect at all — flagged with `⚠`, and the same fault DRC
+reports as `orphanVia`.
+
+Coordinates are board millimetres, matching the GUI's physical view; the header
+prints the board outline so you can measure relative to a corner if you prefer.
+Top-level only: subpart internals and post-mating net merges aren't descended
+into (open each subpart's own `.vpcb` and probe it separately) — same scope as
+`check`.
+
+### Physical volumes (`--volumes`)
+
+`continuity --volumes` lists not nets but **physical volumes**: one sealed air
+cavity in a *single* plate, the way it exists before the two plates are bonded.
+This is the unit you actually bench-test a freshly printed plate against — plug
+every hole but one, pull vacuum on the last, and a perfect vacuum proves that
+cavity is fully connected and leak-free. Output is grouped TOP / BOTTOM plate,
+each volume `T1`/`B2`… with its holes (and `via → … plate` bridges, the
+openings you mate through later). Implies `--flatten` (a volume is a physical
+thing, so subparts are always expanded).
+
+It differs from the net list in two physically-grounded ways:
+
+- **Plates are independent.** A net that crosses the silicone is *two* volumes,
+  one per plate, joined only at the through-holes (which aren't bonded yet). So
+  a dead through-hole shows up as a net whose two plate-halves never pull
+  together — invisible to sim, caught here.
+- **Resistors merge cavities; transistors don't.** A resistor is an always-open
+  serpentine channel joining its two pins, so vacuum bleeds through it — its two
+  (same-plate) cavities are one volume for testing. A transistor's source/drain
+  are gated by the silicone membrane, not an open channel, so they stay
+  separate. (Consequence: a VAC rail plus everything it feeds through pull-up
+  resistors reads as one large volume — that *is* one connected air space.)
+
+Same engine powers the **3D preview's Volumes inspector**, where selecting a
+volume glows that cavity in the scene.
 
 ## Compacting a board (`minimize`)
 

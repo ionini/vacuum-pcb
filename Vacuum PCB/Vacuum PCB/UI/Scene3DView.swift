@@ -57,6 +57,9 @@ struct Scene3DView {
     var moldFrame: Mesh
     var boardOutline: Rect
     var displayMode: PreviewDisplayMode
+    /// Mesh of the currently-selected physical volume to glow on top of the
+    /// plates (see the Volumes inspector). `nil` = nothing selected.
+    var highlightMesh: Mesh? = nil
     /// Outlives this view (lives in `DocumentView`) so orbit / zoom can be
     /// replayed after a tab switch tears the SCNView down. `nil` falls back to
     /// the default iso framing — fine for previews / tests.
@@ -71,6 +74,7 @@ struct Scene3DView {
         let bottomFeaturesNode = SCNNode()
         let stencilNode = SCNNode()
         let moldNode = SCNNode()
+        let highlightNode = SCNNode()
         let camera = SCNCamera()
         let cameraNode = SCNNode()
         var lastOutline: Rect?
@@ -101,6 +105,10 @@ struct Scene3DView {
         c.modelRoot.addChildNode(c.bottomFeaturesNode)
         c.modelRoot.addChildNode(c.stencilNode)
         c.modelRoot.addChildNode(c.moldNode)
+        c.modelRoot.addChildNode(c.highlightNode)
+        // Draw the highlight after everything else so its depth-test-free
+        // material lands on top rather than being overwritten.
+        c.highlightNode.renderingOrder = 100
 
         c.camera.usesOrthographicProjection = true
         c.camera.zNear = 0.01
@@ -184,6 +192,31 @@ struct Scene3DView {
         c.moldNode.geometry = moldFrame.isEmpty
             ? nil
             : plateGeometry(for: moldFrame, color: .systemOrange)
+        if let highlightMesh, !highlightMesh.isEmpty {
+            c.highlightNode.geometry = highlightGeometry(for: highlightMesh)
+            c.highlightNode.isHidden = false
+        } else {
+            c.highlightNode.geometry = nil
+            c.highlightNode.isHidden = true
+        }
+    }
+
+    /// The selected volume's cavity, drawn as a bright magenta glow that ignores
+    /// the depth buffer (renders on top of everything) so the cavity stays
+    /// visible even when buried inside a plate or behind other channels — the
+    /// point is to confirm *which* air space it is, regardless of occlusion.
+    private func highlightGeometry(for mesh: Mesh) -> SCNGeometry {
+        let geometry = SCNGeometry(mesh)
+        let material = SCNMaterial()
+        let color = PlatformColor.systemPink
+        material.diffuse.contents = color
+        material.emission.contents = color.withAlphaComponent(0.65)
+        material.isDoubleSided = true
+        material.lightingModel = .blinn
+        material.readsFromDepthBuffer = false
+        material.writesToDepthBuffer = false
+        geometry.materials = [material]
+        return geometry
     }
 
     private func plateGeometry(for mesh: Mesh, color: PlatformColor) -> SCNGeometry {

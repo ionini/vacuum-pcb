@@ -626,6 +626,261 @@ func reportStaleness(_ r: Validators.StalenessResult, libDir: String?, json: Boo
     print(r.pass ? "STALENESS: PASS (self-contained\(libDir == nil ? "" : " + current"))" : "STALENESS: FAIL")
 }
 
+// MARK: - Continuity checklist
+//
+// A pneumatic "buzz-out" list: for each net, every physical opening you can
+// press a vacuum tube against. Probing one point should pull every other point
+// on the SAME net to a hard vacuum and leave every point on every OTHER net
+// dead — the physical proof that the printed board matches the designed
+// netlist. This catches the fault class the simulator can't see: a channel
+// that didn't print through, two channels that fused, or a via that didn't
+// actually connect its layers.
+//
+// Top-level only, exactly like `check`: subpart internals and post-mating net
+// merges aren't descended into (open each subpart's own .vpcb to probe it).
+
+/// One physical opening on the board, grouped under its net.
+enum ProbePoint {
+    /// A placed component pin (gate / source-drain / port bore / resistor end /
+    /// connector tube / subpart boundary pin).
+    case pin(ref: String, feature: String, layer: Layer, pos: Point)
+    /// A drilled via, with the set of layers that meet at it.
+    case via(pos: Point, layers: Set<Layer>)
+    /// A pin whose component isn't placed — can't be located on the board.
+    case unplaced(ref: String, feature: String)
+}
+
+// `continuityFeature(_:pinKey:)` and the physical-volume model
+// (`Volume`/`VolumeHole`/`physicalVolumes`) live in the shared Model layer
+// (`Model/PhysicalVolumes.swift`) so the GUI's 3D volume highlighter and this
+// CLI stay in lockstep.
+
+/// Build the per-net probe-point listing for a document. Walks the top-level
+/// logic nets (subparts aren't descended into) and resolves each pin to its
+/// world position + layer, then adds every via on the net.
+func continuityChecklist(_ doc: CircuitDocument) -> [(net: Net, points: [ProbePoint])] {
+    let m = doc.manufacturing
+    let snaps = doc.librarySnapshots
+    let compById = Dictionary(doc.logic.components.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+    let placeById = Dictionary(doc.physical.placements.map { ($0.componentId, $0) }, uniquingKeysWith: { a, _ in a })
+
+    var result: [(net: Net, points: [ProbePoint])] = []
+    for net in doc.logic.nets {
+        var points: [ProbePoint] = []
+        for pinRef in net.pins {
+            guard let comp = compById[pinRef.componentId] else { continue }
+            let feature = continuityFeature(comp, pinKey: pinRef.pinKey)
+            // Use the friendliest available pin name: connectors carry a
+            // user-given name, subpart pins a library boundary-pin label
+            // (the raw key is a UUID), everything else the bare key.
+            let pinName: String
+            switch comp.kind {
+            case .connector: pinName = comp.connectorPinName(pinRef.pinKey)
+            case .subpart:   pinName = comp.subpartBoundaryPin(key: pinRef.pinKey, snapshots: snaps)?.label ?? pinRef.pinKey
+            default:         pinName = pinRef.pinKey
+            }
+            let ref = "\(comp.label).\(pinName)"
+            guard let place = placeById[pinRef.componentId] else {
+                points.append(.unplaced(ref: ref, feature: feature))
+                continue
+            }
+            guard let fpPin = comp.footprint(m, snapshots: snaps).pin(pinRef.pinKey) else { continue }
+            points.append(.pin(
+                ref: ref, feature: feature,
+                layer: place.resolvedLayer(of: fpPin, on: comp),
+                pos: place.worldPosition(of: fpPin)
+            ))
+        }
+        for group in doc.physical.viaLayerGroups(netId: net.id) {
+            points.append(.via(pos: group.position, layers: group.layers))
+        }
+        result.append((net: net, points: points))
+    }
+    return result.sorted { $0.net.label < $1.net.label }
+}
+
+// MARK: - Physical volumes (compute lives in Model/PhysicalVolumes.swift)
+
+func reportVolumes(_ doc: CircuitDocument, volumes: [Volume], json: Bool) {
+    let outline = doc.physical.boardOutline
+    let top = volumes.filter { $0.plate == .top }
+    let bottom = volumes.filter { $0.plate == .bottom }
+
+    if json {
+        func dump(_ vs: [Volume]) -> [[String: Any]] {
+            vs.map { v in
+                [
+                    "id": v.id,
+                    "plate": v.plate.rawValue,
+                    "net": v.netLabel,
+                    "holes": v.holes.map { h -> [String: Any] in
+                        ["ref": h.ref, "feature": h.feature, "layer": h.layer.uiLabel,
+                         "bridge": h.isBridge, "x": h.pos.x, "y": h.pos.y]
+                    },
+                ]
+            }
+        }
+        printJSON([
+            "file": path,
+            "boardOutline": ["minX": outline.minX, "minY": outline.minY,
+                             "maxX": outline.maxX, "maxY": outline.maxY],
+            "topPlate": dump(top),
+            "bottomPlate": dump(bottom),
+        ])
+        return
+    }
+
+    print("physical volume checklist — test each plate on its own, before assembly")
+    print(String(format: "board: (%.2f, %.2f) … (%.2f, %.2f) mm  — coordinates are board mm (GUI physical view)",
+                 outline.minX, outline.minY, outline.maxX, outline.maxY))
+    print("")
+    print("Each VOLUME is one sealed cavity in one plate. Plug every hole but one,")
+    print("press vacuum on the last → a perfect vacuum means that cavity is fully")
+    print("connected and leak-free. \"via → … plate\" holes join the other plate through")
+    print("the silicone once assembled — leave those for the assembled-board test.")
+    print("")
+
+    var bridges = 0
+    func section(_ vs: [Volume], _ title: String) {
+        print("══ \(title) — \(vs.count) volume\(vs.count == 1 ? "" : "s") ══")
+        if vs.isEmpty { print("  (none)"); print(""); return }
+        for v in vs {
+            print("  \(v.id)  [net \(v.netLabel)]  \(v.holes.count) hole\(v.holes.count == 1 ? "" : "s")")
+            for h in v.holes {
+                if h.isBridge { bridges += 1 }
+                let coord = String(format: "(%.2f, %.2f)", h.pos.x, h.pos.y)
+                print("      • \(padRight(h.ref, 20)) \(padRight(h.feature, 26)) \(padRight(h.layer.uiLabel, 4)) \(coord)")
+            }
+        }
+        print("")
+    }
+    section(top, "TOP PLATE")
+    section(bottom, "BOTTOM PLATE")
+
+    print("summary: \(volumes.count) volume\(volumes.count == 1 ? "" : "s") (\(top.count) top, \(bottom.count) bottom), \(bridges) through-hole bridge\(bridges == 1 ? "" : "s")")
+    print("note: a volume whose holes won't all pull together points to a channel that")
+    print("      didn't print through; a volume that won't hold vacuum has a leak or a")
+    print("      hole you didn't expect. Both are invisible to the simulator.")
+}
+
+/// Left-pad `s` to `width` with spaces so columns line up (%@ width flags are
+/// unreliable for Swift strings, so we pad by hand).
+func padRight(_ s: String, _ width: Int) -> String {
+    s.count >= width ? s : s + String(repeating: " ", count: width - s.count)
+}
+
+/// "T0↔B0" / "T0,T1" — the layers a via touches, sorted for stable output.
+func continuityViaLabel(_ layers: Set<Layer>) -> String {
+    let sorted = layers.map { $0.uiLabel }.sorted()
+    // Spans both plates → a real through-hole (joined with ↔); same-plate
+    // depth pairs are internal (joined with ,).
+    let spansPlates = Set(layers.map { $0.plate }).count >= 2
+    return sorted.joined(separator: spansPlates ? "↔" : ",")
+}
+
+func reportContinuity(_ doc: CircuitDocument, nets: [(net: Net, points: [ProbePoint])], json: Bool, flattened: Bool) {
+    let outline = doc.physical.boardOutline
+    let subpartCount = doc.logic.components.filter { $0.kind == .subpart }.count
+
+    if json {
+        let netsJSON = nets.map { entry -> [String: Any] in
+            [
+                "net": entry.net.label,
+                "id": entry.net.id.uuidString,
+                "points": entry.points.map { p -> [String: Any] in
+                    switch p {
+                    case let .pin(ref, feature, layer, pos):
+                        return ["type": "pin", "ref": ref, "feature": feature,
+                                "layer": layer.uiLabel, "plate": layer.plate.rawValue,
+                                "x": pos.x, "y": pos.y]
+                    case let .via(pos, layers):
+                        let plates = Set(layers.map { $0.plate })
+                        return ["type": "via",
+                                "layers": layers.map { $0.uiLabel }.sorted(),
+                                "throughHole": plates.count >= 2,
+                                "orphan": layers.count < 2,
+                                "x": pos.x, "y": pos.y]
+                    case let .unplaced(ref, feature):
+                        return ["type": "unplaced", "ref": ref, "feature": feature]
+                    }
+                },
+            ]
+        }
+        printJSON([
+            "file": path,
+            "scope": flattened ? "full-board" : "top-level",
+            "boardOutline": ["minX": outline.minX, "minY": outline.minY,
+                             "maxX": outline.maxX, "maxY": outline.maxY],
+            "nets": netsJSON,
+        ])
+        return
+    }
+
+    print("pneumatic continuity checklist")
+    if flattened {
+        print("scope: FULL BOARD — every embedded subpart's internal holes expanded into")
+        print("       board coordinates (labels are prefixed, e.g. U6.Q1.gate)")
+    } else {
+        print("scope: top-level routes only — subpart internals & post-mating merges not")
+        print("       included (re-run with --flatten to expand them)")
+    }
+    print(String(format: "board: (%.2f, %.2f) … (%.2f, %.2f) mm  — coordinates are board mm (GUI physical view)",
+                 outline.minX, outline.minY, outline.maxX, outline.maxY))
+    print("")
+
+    var totalPoints = 0
+    var orphanNets = 0
+    var emptyNets = 0
+    for entry in nets {
+        let count = entry.points.count
+        totalPoints += count
+        if count == 0 {
+            emptyNets += 1
+            print("NET \"\(entry.net.label)\"  — no physical probe points, nothing to test")
+            print("")
+            continue
+        }
+        print("NET \"\(entry.net.label)\"  (\(count) probe point\(count == 1 ? "" : "s"))")
+        print("  apply vacuum at any one point; every point on THIS net should pull a hard")
+        print("  vacuum, and no point on any OTHER net should move:")
+        var orphanHere = false
+        for p in entry.points {
+            switch p {
+            case let .pin(ref, feature, layer, pos):
+                let coord = String(format: "(%.2f, %.2f)", pos.x, pos.y)
+                print("    • \(padRight(ref, 16)) \(padRight(feature, 26)) \(padRight(layer.uiLabel, 7)) \(coord)")
+            case let .via(pos, layers):
+                let coord = String(format: "(%.2f, %.2f)", pos.x, pos.y)
+                let label = continuityViaLabel(layers)
+                if layers.count < 2 {
+                    orphanHere = true
+                    print("    • \(padRight("via", 16)) \(padRight("via — BROKEN", 26)) \(padRight(label, 7)) \(coord)  ⚠ ORPHAN: touches one layer only, will NOT connect (DRC: orphanVia)")
+                } else if Set(layers.map { $0.plate }).count >= 2 {
+                    print("    • \(padRight("via", 16)) \(padRight("through-hole (either face)", 26)) \(padRight(label, 7)) \(coord)")
+                } else {
+                    print("    • \(padRight("via", 16)) \(padRight("internal via (buried)", 26)) \(padRight(label, 7)) \(coord)")
+                }
+            case let .unplaced(ref, feature):
+                print("    • \(padRight(ref, 16)) \(padRight(feature, 26)) \(padRight("—", 7)) ⚠ UNPLACED — no board position")
+            }
+        }
+        if orphanHere { orphanNets += 1 }
+        print("")
+    }
+
+    print("summary: \(nets.count) net\(nets.count == 1 ? "" : "s"), \(totalPoints) probe point\(totalPoints == 1 ? "" : "s")")
+    if emptyNets > 0 {
+        print("· \(emptyNets) net\(emptyNets == 1 ? " has" : "s have") no physical probe points")
+    }
+    if orphanNets > 0 {
+        print("⚠ \(orphanNets) net\(orphanNets == 1 ? "" : "s") contain an orphan via (a via that won't actually connect its layers) — run `check` for DRC detail")
+    }
+    if !flattened && subpartCount > 0 {
+        print("⚠ this board has \(subpartCount) subpart instance\(subpartCount == 1 ? "" : "s") whose internal holes are NOT listed above.")
+        print("  Embedded subparts print into this same board — re-run with --flatten to include them.")
+    }
+}
+
 // MARK: - Argument parsing
 
 let usage = """
@@ -650,6 +905,19 @@ USAGE:
       every still-unrouted net. Top-level only (subparts aren't descended into;
       open a subpart's own file to check it). Validates physical connectivity
       headlessly.
+
+  vacuum-cli continuity <file.vpcb> [--flatten] [--probe NET] [--json]
+      Export a pneumatic continuity ("buzz-out") checklist: for each net, every
+      physical opening you can press a vacuum tube against — transistor gate &
+      source/drain, port/vent/source edge bores, resistor ends, connector tubes
+      and vias — with its layer and board-mm position. Probe one point and every
+      point on that net should pull a hard vacuum while nothing on any other net
+      moves. Catches the print-vs-design faults the simulator can't (a channel
+      that didn't print through, two channels fused, a via that didn't connect).
+      Defaults to top-level routes only; pass --flatten to expand every embedded
+      subpart's internal holes into board coordinates (the whole printed board,
+      labels prefixed e.g. U6.Q1.gate) — use this when the board contains
+      subparts. --probe NET limits output to one net by label; repeatable.
 
   vacuum-cli mesh <file.vpcb> [--json]
       Build the printed solids (PlateBuilder) and assert each plate is
@@ -768,6 +1036,8 @@ var libDir: String?
 var tol = 0.2
 var maxCombos = 4096
 var holds: [String: Double] = [:]
+var flattenFull = false
+var volumesMode = false
 
 var i = 0
 while i < args.count {
@@ -775,6 +1045,8 @@ while i < args.count {
     switch arg {
     case "--json": json = true
     case "--all-nets": showAllNets = true
+    case "--flatten", "--full": flattenFull = true
+    case "--volumes": volumesMode = true
     case "--steps":
         i += 1
         guard i < args.count, let n = Int(args[i]) else { fail("error: --steps needs an integer") }
@@ -911,6 +1183,25 @@ do {
             try result.encoded().write(to: URL(fileURLWithPath: outPath))
             if !json { print("wrote \(outPath)") }
         }
+
+    case "continuity":
+        // --flatten expands every embedded subpart's internals into board
+        // coordinates (the simulator's netlist-preserving flatten), so the
+        // checklist covers the *whole printed board*, not just the open
+        // file's own routes. Without it, only top-level routes are listed
+        // (same scope as `check`).
+        if volumesMode {
+            // Volumes are physical, so always work on the whole printed board
+            // (flatten is a no-op when there are no subparts).
+            let flat = doc.flattenedForSimulation().document
+            reportVolumes(flat, volumes: physicalVolumes(flat), json: json)
+            break
+        }
+        let filter = Set(probeFilter.map { $0.lowercased() })
+        let target = flattenFull ? doc.flattenedForSimulation().document : doc
+        var nets = continuityChecklist(target)
+        if !filter.isEmpty { nets = nets.filter { filter.contains($0.net.label.lowercased()) } }
+        reportContinuity(target, nets: nets, json: json, flattened: flattenFull)
 
     case "check":
         let issues = DRC.check(doc)

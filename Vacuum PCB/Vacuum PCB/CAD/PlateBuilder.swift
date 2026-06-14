@@ -1079,6 +1079,31 @@ enum PlateBuilder {
         return Mesh.union(parts)
     }
 
+    /// A loose, render-only mesh of one physical volume's channel network plus
+    /// a marker bead at each probe hole — for tinted highlighting in the 3D
+    /// preview. Reuses the real channel primitive, slightly inflated so it sits
+    /// proud of the carved channel (no z-fighting). Polygons are concatenated,
+    /// not CSG-unioned: the overlap is invisible for an opaque highlight and far
+    /// cheaper than a boolean union across the whole cavity.
+    static func volumeMesh(for volume: Volume, _ m: ManufacturingConstants) -> Mesh {
+        let r = m.channelDiameter / 2 + 0.15
+        var polys: [Polygon] = []
+        for seg in volume.segments where seg.positions.count >= 2 {
+            polys += channelMesh(waypoints: seg.positions, radius: r,
+                                 midZ: m.midZ(for: seg.layer),
+                                 flatBottom: m.flatBottomChannels,
+                                 flipFloor: seg.layer.plate == .bottom).polygons
+        }
+        // A bead at every hole so probe points stay visible even for a cavity
+        // with little or no routed channel (e.g. a short abutment-only stub).
+        for hole in volume.holes {
+            polys += Mesh.sphere(radius: r + 0.1, slices: 16)
+                .translated(by: Vector(hole.pos.x, hole.pos.y, m.midZ(for: hole.layer)))
+                .polygons
+        }
+        return Mesh(polys)
+    }
+
     /// Flat-floored box for one channel segment, occupying the lower half of the
     /// bore (from the bore floor up to the midline). Same Y-aligned-then-rolled
     /// convention as the segment cylinders so it lands exactly along the segment.
