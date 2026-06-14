@@ -385,11 +385,24 @@ enum Validators {
             // Transistor / LED body cavities — pads & dimples, as spheres at the
             // silicone face (a degenerate point-edge). The full bore radius
             // makes the sphere reach the channel midline, so a pad/dimple
-            // overlapping a foreign channel registers too.
+            // overlapping a foreign channel registers too. Dimples sit at the
+            // placement centre; pads at centre + (side·padsOffset) along the
+            // rotated source-drain axis, on the opposite plate.
             for ft in v.features {
-                let z = ft.plate == .top ? m.siliconeThickness / 2 : -m.siliconeThickness / 2
-                edges.append(makeEdge(ft.pos, ft.pos, z: z, r: ft.radius,
-                                      layer: Layer(plate: ft.plate, depth: 0), vol: vi, component: ft.component))
+                let plate: Plate
+                let pos: Point
+                if ft.kind == .pad {
+                    plate = ft.plate.opposite
+                    let r = ft.rotation.radians
+                    let dx = Double(ft.padSide) * m.padsOffset
+                    pos = Point(x: ft.center.x + dx * cos(r), y: ft.center.y + dx * sin(r))
+                } else {
+                    plate = ft.plate
+                    pos = ft.center
+                }
+                let z = plate == .top ? m.siliconeThickness / 2 : -m.siliconeThickness / 2
+                edges.append(makeEdge(pos, pos, z: z, r: ft.radius,
+                                      layer: Layer(plate: plate, depth: 0), vol: vi, component: ft.component))
             }
         }
 

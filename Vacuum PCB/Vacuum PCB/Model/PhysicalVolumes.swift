@@ -77,16 +77,28 @@ struct VolumeVia: Hashable {
 
 /// A transistor/LED *body* cavity belonging to a volume: a source/drain pad or
 /// a gate (or LED) dimple. These are the widest features on the board, so they
-/// dominate collision-checking. `component` lets the collision pass skip a
-/// transistor's own pad pair (the intended valve gap) while still catching two
-/// *different* components' bodies overlapping.
+/// dominate collision-checking, and they're painted into the highlight using
+/// the *same* solids the plate builds (so it's a 1:1 match, not a proxy ball).
+///
+/// We store the placement pose rather than a single point so both the real
+/// solid (gate dome / single pad lobe) and the conservative collision sphere
+/// can be reconstructed. `component` lets the collision pass skip a transistor's
+/// own pad pair (the intended valve gap) while still catching two *different*
+/// components' bodies overlapping.
 struct VolumeFeature: Hashable {
-    enum Kind: String, Hashable { case dimple, pad }
-    var pos: Point
-    var radius: Double
+    enum Kind: String, Hashable { case dimple, ledDimple, pad }
+    /// Placement (gate / LED) centre, world coords. A pad is built from this
+    /// centre + rotation + side, exactly as `PlateBuilder` does.
+    var center: Point
+    var rotation: Rotation
+    /// The placement plate (gate / LED dimple plate). Pads sit on `plate.opposite`.
     var plate: Plate
     var component: UUID
     var kind: Kind
+    /// Pad lobe side: +1 = pin "b" (local +X), −1 = pin "a" (local −X). 0 for dimples.
+    var padSide: Int
+    /// Cavity radius — used for the conservative collision sphere.
+    var radius: Double
 }
 
 /// One sealed air cavity in a single plate.
@@ -165,18 +177,23 @@ func physicalVolumes(_ doc: CircuitDocument) -> [Volume] {
             pendingHoles.append(PendingHole(node: n,
                 hole: VolumeHole(ref: pin.ref, feature: pin.feature, layer: pin.layer, pos: pin.pos, isBridge: false)))
             // Transistor / LED body cavities (gate or LED dimple, source/drain
-            // pads) — the widest features, so collision-checking needs them.
-            if let comp = compById[pin.pinRef.componentId] {
+            // pads) — the widest features, so collision-checking needs them, and
+            // the highlight paints them with the real solids.
+            if let comp = compById[pin.pinRef.componentId], let place = placeById[pin.pinRef.componentId] {
                 switch comp.kind {
-                case .transistor:
-                    let isGate = pin.pinRef.pinKey == "gate"
+                case .transistor where pin.pinRef.pinKey == "gate":
                     pendingFeatures.append((node: n, feature: VolumeFeature(
-                        pos: pin.pos, radius: (isGate ? m.dimpleDiameter : m.padsDiameter) / 2,
-                        plate: pin.layer.plate, component: comp.id, kind: isGate ? .dimple : .pad)))
+                        center: place.position, rotation: place.rotation, plate: place.layer,
+                        component: comp.id, kind: .dimple, padSide: 0, radius: m.dimpleDiameter / 2)))
+                case .transistor:
+                    pendingFeatures.append((node: n, feature: VolumeFeature(
+                        center: place.position, rotation: place.rotation, plate: place.layer,
+                        component: comp.id, kind: .pad,
+                        padSide: pin.pinRef.pinKey == "b" ? 1 : -1, radius: m.padsDiameter / 2)))
                 case .led:
                     pendingFeatures.append((node: n, feature: VolumeFeature(
-                        pos: pin.pos, radius: m.ledDimpleDiameter / 2,
-                        plate: pin.layer.plate, component: comp.id, kind: .dimple)))
+                        center: place.position, rotation: place.rotation, plate: place.layer,
+                        component: comp.id, kind: .ledDimple, padSide: 0, radius: m.ledDimpleDiameter / 2)))
                 default: break
                 }
             }

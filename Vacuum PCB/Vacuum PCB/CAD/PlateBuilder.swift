@@ -1126,14 +1126,35 @@ enum PlateBuilder {
             }
         }
 
-        // Transistor / LED body cavities — pads & dimples — as spheres at the
-        // silicone face, so the wide bodies show in the highlight (and read as
-        // the same cavities the collision check tests).
+        // Transistor / LED body cavities — painted with the *same* solids the
+        // plate builds (gate/LED dimple dome, single source/drain pad lobe), so
+        // the highlight is a 1:1 match with the printed cavity rather than a
+        // proxy ball. Each is inflated a hair (same +0.15 mm as the channels)
+        // so it sits proud of the real feature instead of z-fighting it.
+        let topInnerZ = m.siliconeThickness / 2
+        let bottomInnerZ = -m.siliconeThickness / 2
+        let bump = 0.3   // +0.15 mm on the diameter / radius
         for ft in volume.features {
-            let z = ft.plate == .top ? m.siliconeThickness / 2 : -m.siliconeThickness / 2
-            polys += Mesh.sphere(radius: ft.radius, slices: 20)
-                .translated(by: Vector(ft.pos.x, ft.pos.y, z))
-                .polygons
+            switch ft.kind {
+            case .dimple:
+                var mi = m; mi.dimpleDiameter += bump
+                polys += dimpleMesh(at: ft.center, layer: ft.plate, m: mi,
+                                    topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ).polygons
+            case .ledDimple:
+                var mi = m; mi.ledDimpleDiameter += bump
+                polys += ledDimpleMesh(at: ft.center, layer: ft.plate, m: mi,
+                                       topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ).polygons
+            case .pad:
+                let oppZ = ft.plate.opposite == .top ? topInnerZ : bottomInnerZ
+                // padSide is the footprint sign (+1 = pin "b", local +X). The
+                // lathe's "+axial" lobe lands on local −X after its roll, so the
+                // footprint side maps to the *opposite* `positiveSide`.
+                polys += padLobeSolid(R: m.padsDiameter / 2 + bump / 2, sep: m.padsSeparation,
+                                      fillet: m.padsFilletRadius, positiveSide: ft.padSide < 0)
+                    .rotated(by: Euclid.Rotation.roll(.radians(ft.rotation.radians)))
+                    .translated(by: Vector(ft.center.x, ft.center.y, oppZ))
+                    .polygons
+            }
         }
 
         // A bead at every hole so probe points stay visible even for a cavity
@@ -1389,11 +1410,9 @@ enum PlateBuilder {
         ))
     }
 
-    /// Builds the two pad solids (filleted spherical caps) symmetric across
-    /// the gate centre along the source-drain (local X) axis, joined into a
-    /// single mesh. Built in lathe space (revolve around lathe Y axis) and
-    /// then rotated so Y → local X.
-    static func filletedPadsSolid(R: Double, sep: Double, fillet: Double) -> Mesh {
+    /// One pad lathe in lathe space (revolve around lathe Y), sitting on the
+    /// +axial side. The full pad pair and a single lobe both build from this.
+    private static func padLatheProfile(R: Double, sep: Double, fillet: Double) -> Mesh {
         let maxFillet = (R - sep / 2) / 2 - 0.001
         let f = max(0, min(fillet, maxFillet))
         let validFillet = f > 0
@@ -1447,9 +1466,15 @@ enum PlateBuilder {
             pts.append(Vector(R * cos(angle), R * sin(angle), 0))
         }
 
-        let path = Path(pts.map { PathPoint.point($0) })
-        let rightPadLathe = Mesh.lathe(path, slices: 32)
+        return Mesh.lathe(Path(pts.map { PathPoint.point($0) }), slices: 32)
+    }
 
+    /// Builds the two pad solids (filleted spherical caps) symmetric across
+    /// the gate centre along the source-drain (local X) axis, joined into a
+    /// single mesh. Built in lathe space (revolve around lathe Y axis) and
+    /// then rotated so Y → local X.
+    static func filletedPadsSolid(R: Double, sep: Double, fillet: Double) -> Mesh {
+        let rightPadLathe = padLatheProfile(R: R, sep: sep, fillet: fillet)
         // Left pad = right pad reflected through the lathe origin along the
         // axial direction. roll(.pi) around Z flips (x, y) → (−x, −y); the
         // pad is symmetric in the radial direction so this just mirrors the
@@ -1460,6 +1485,19 @@ enum PlateBuilder {
         // Lathe Y axis → local X axis. roll(−π/2) maps (x, y, z) → (y, −x, z),
         // so the axial direction now points along local +X / −X.
         return bothLathe.rotated(by: Euclid.Rotation.roll(-.halfPi))
+    }
+
+    /// A *single* pad lobe (not the pair) in component-local coordinates, for
+    /// painting one net's pad into the volume highlight. `positiveSide` true =
+    /// the local +X lobe (transistor pin "b"); false = the −X lobe (pin "a").
+    /// Same lathe as `filletedPadsSolid`, just without the union of the two
+    /// lobes — so it's a 1:1 match with the printed cavity and needs no CSG.
+    static func padLobeSolid(R: Double, sep: Double, fillet: Double, positiveSide: Bool) -> Mesh {
+        let lobe = padLatheProfile(R: R, sep: sep, fillet: fillet)
+        // The lathe sits on +axial (→ local +X after the final roll). Mirror it
+        // for the −X lobe, then map lathe Y → local X like `filletedPadsSolid`.
+        let placed = positiveSide ? lobe : lobe.rotated(by: Euclid.Rotation.roll(.pi))
+        return placed.rotated(by: Euclid.Rotation.roll(-.halfPi))
     }
 
     // MARK: - Resistor serpentine
