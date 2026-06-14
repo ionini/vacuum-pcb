@@ -46,3 +46,42 @@ The register is **robust and the resistor is not critical** — don't tune R1. T
 
 ## Tooling note
 `vacuum-cli simulate --json` **aborts** (`NSInvalidArgumentException: Invalid number value (NaN) in JSON write`) whenever a probe/net pressure is NaN — which the solver emits at near-singular corners (very low leak + low R/mm). Worked around here by parsing text output. The text path is fine. (Flagged for a fix: sanitize NaN/Inf → null in the JSON writer.)
+
+---
+
+# internalLeak sweep (2026-06-12, on "4bit register with bus 2.vpcb" current rev)
+
+Channel-to-channel leak through the printed plastic walls (`--param internalLeak`),
+geometry-derived per net pair and max-normalized: the value IS the conductance of
+the single worst (longest-parallel/closest) channel pair on this board; a printed
+resistor edge ≈ 0.2 in the same units, global leak default is 0.025.
+
+Two hold modes between store and read (worst margin over 1010/0101):
+
+| internalLeak | hold, bus floating | isolated hold, bus driven to OPPOSITE word |
+|---|---|---|
+| 0–0.2 | 0.87→0.82 works | 0.87→0.82 works |
+| 0.24 | 0.80 works | works |
+| **0.26** | **−0.01 DATA LOST** | works |
+| 0.5 | lost | 0.70 works |
+| 0.7+ | lost | lost |
+
+- **Boundary: internalLeak ≈ 0.25** in the normal (bus-floating) hold state — the
+  register only dies once the worst wall on the board leaks like a deliberate
+  printed resistor (~0.2 conductance). That is ~10× the global-leak default and
+  far porous-er than any plausible print; margin degrades only 0.87→0.80 before
+  the cliff. Cross-talk corruption of an *isolated* cell needs ~2× more (0.5+).
+- **Budget is shared with global leak** (same hold-vs-leak battle): at leak=0.035
+  (the known global ceiling) internalLeak tolerance drops to ~0.1–0.2; at
+  leak=0.005 it stretches to ~0.5. `map_leak__internalLeak.csv`.
+- **Protocol discovery:** in the documented hold state (`WRITE=vac, READ=vac`) the
+  bus transistor paths are OPEN — the latch drives the floating bus, but an
+  externally driven bus writes straight through (perfect inversion, even at
+  internalLeak=0). True isolation is `WRITE=atm, READ=atm`. The bus must float
+  during normal hold; never park an external driver on it.
+- The old `validate_internalleak.py` disturb column is invalid (left `WRITE=atm`,
+  i.e. write-enabled). Superseded by `internalleak_sweep.py`.
+
+## Files
+- `internalleak_sweep.py` → `sens_internalLeak.csv`, `map_leak__internalLeak.csv`
+- `register_current.vpcb` — the board rev tested (differs from `register.vpcb`)
