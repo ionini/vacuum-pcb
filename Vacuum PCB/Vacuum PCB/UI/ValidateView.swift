@@ -43,6 +43,25 @@ final class ValidationModel {
     /// Number of combinations the sweep will run given the current holds.
     var sweptComboCount: Int { 1 << inputLabels.filter { holds[$0] == nil }.count }
 
+    /// Which gates to run this pass, keyed by title (see `titles`). Absent = on.
+    /// Persisted globally so the choice survives relaunch — handy for dropping
+    /// the slow Robustness gate when you only want a quick volume-collision pass.
+    var enabled: [String: Bool] = ValidationModel.loadEnabled()
+
+    func isEnabled(_ title: String) -> Bool { enabled[title] ?? true }
+    func setEnabled(_ title: String, _ on: Bool) {
+        enabled[title] = on
+        UserDefaults.standard.set(enabled, forKey: Self.enabledKey)
+    }
+    /// How many gates will actually run / be skipped this pass.
+    var enabledCount: Int { Self.titles.filter { isEnabled($0) }.count }
+    var skippedCount: Int { Self.titles.count - enabledCount }
+
+    private static let enabledKey = "ValidationModel.enabledChecks"
+    private static func loadEnabled() -> [String: Bool] {
+        (UserDefaults.standard.dictionary(forKey: enabledKey) as? [String: Bool]) ?? [:]
+    }
+
     static let titles = [
         "Connectivity (top-level)",
         "Self-containment",
@@ -50,6 +69,14 @@ final class ValidationModel {
         "Logic + convergence",
         "Robustness (±20%)",
         "Volume collisions",
+    ]
+    /// Short cost hint shown beside each gate's checkbox, so it's clear which
+    /// ones are worth skipping for a quick pass.
+    static let costHint: [String: String] = [
+        titles[2]: "builds mesh",
+        titles[3]: "exhaustive sweep",
+        titles[4]: "slow — many corners",
+        titles[5]: "builds solids",
     ]
     static var idleReports: [Validators.Report] {
         titles.map { Validators.Report(id: $0, title: $0, status: .pending, detail: ["Not run yet"]) }
@@ -80,7 +107,15 @@ final class ValidationModel {
         isRunning = true
         ranOnce = true
         progressText = "Starting…"
-        reports = Self.titles.map { Validators.Report(id: $0, title: $0, status: .running, detail: ["…"]) }
+        // Snapshot the enabled gates (Sendable [Bool], indexed like `titles`)
+        // so the off-main worker can skip unchecked ones without touching the
+        // main-actor `enabled` dictionary. Skipped gates show as pending up front.
+        let onChecks = Self.titles.map { isEnabled($0) }
+        reports = Self.titles.enumerated().map { idx, t in
+            onChecks[idx]
+                ? Validators.Report(id: t, title: t, status: .running, detail: ["…"])
+                : Validators.Report(id: t, title: t, status: .pending, detail: ["Skipped — unchecked for this run."])
+        }
         let holds = self.holds
 
         DispatchQueue.global(qos: .userInitiated).async {
@@ -100,28 +135,39 @@ final class ValidationModel {
                 DispatchQueue.main.async { if token == self.runToken { self.progressText = s } }
             }
 
-            setProgress("Connectivity…")
-            post(0, Validators.connectivity(snapshot)) { Self.connectivityReport($0) }
-
-            setProgress("Self-containment…")
-            post(1, Validators.staleness(snapshot, libDir: nil)) { Self.stalenessReport($0) }
-
-            setProgress("Building plates…")
-            post(2, Validators.mesh(snapshot)) { Self.meshReport($0) }
-
-            setProgress("Exhaustive sweep…")
-            let net = Validators.buildNetwork(snapshot)
-            post(3, Validators.sweep(
-                network: net, params: params, maxSteps: 20000, epsilon: 1e-5, maxCombos: 4096, holds: holds
-            )) { Self.sweepReport($0) }
-
-            let marg = Validators.margins(
-                network: net, base: params, tol: 0.2, maxSteps: 20000, epsilon: 1e-5, maxCombos: 4096, holds: holds
-            ) { c, total, _, _, _ in setProgress("Margins corner \(c)/\(total)…") }
-            post(4, marg) { Self.marginsReport($0) }
-
-            setProgress("Volume collisions…")
-            post(5, Validators.volumeCollisions(snapshot)) { Self.collisionReport($0) }
+            if onChecks[0] {
+                setProgress("Connectivity…")
+                post(0, Validators.connectivity(snapshot)) { Self.connectivityReport($0) }
+            }
+            if onChecks[1] {
+                setProgress("Self-containment…")
+                post(1, Validators.staleness(snapshot, libDir: nil)) { Self.stalenessReport($0) }
+            }
+            if onChecks[2] {
+                setProgress("Building plates…")
+                post(2, Validators.mesh(snapshot)) { Self.meshReport($0) }
+            }
+            // Sweep and Robustness share the (non-trivial) network build, so only
+            // pay for it when at least one of them runs.
+            if onChecks[3] || onChecks[4] {
+                let net = Validators.buildNetwork(snapshot)
+                if onChecks[3] {
+                    setProgress("Exhaustive sweep…")
+                    post(3, Validators.sweep(
+                        network: net, params: params, maxSteps: 20000, epsilon: 1e-5, maxCombos: 4096, holds: holds
+                    )) { Self.sweepReport($0) }
+                }
+                if onChecks[4] {
+                    let marg = Validators.margins(
+                        network: net, base: params, tol: 0.2, maxSteps: 20000, epsilon: 1e-5, maxCombos: 4096, holds: holds
+                    ) { c, total, _, _, _ in setProgress("Margins corner \(c)/\(total)…") }
+                    post(4, marg) { Self.marginsReport($0) }
+                }
+            }
+            if onChecks[5] {
+                setProgress("Volume collisions…")
+                post(5, Validators.volumeCollisions(snapshot)) { Self.collisionReport($0) }
+            }
 
             DispatchQueue.main.async {
                 guard token == self.runToken else { return }
@@ -227,6 +273,7 @@ struct ValidateView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 header
+                checksCard
                 inputsCard
                 ForEach(model.reports) { reportCard($0) }
                 footnote
@@ -237,6 +284,42 @@ struct ValidateView: View {
         }
         .onAppear { model.refreshInputs(from: document.circuit) }
         .onChange(of: document.circuit) { _, new in model.refreshInputs(from: new) }
+    }
+
+    /// Pre-run gate selection. Unchecked gates are skipped this pass — drop the
+    /// slow Robustness sweep when you only want a quick volume-collision check.
+    /// The choice is remembered across runs and relaunches.
+    private var checksCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Checks to run").font(.headline)
+                Spacer()
+                Text("\(model.enabledCount) of \(ValidationModel.titles.count)")
+                    .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            }
+            ForEach(Array(ValidationModel.titles.enumerated()), id: \.offset) { _, title in
+                Toggle(isOn: enabledBinding(title)) {
+                    HStack(spacing: 6) {
+                        Text(title).font(.callout)
+                        if let hint = ValidationModel.costHint[title] {
+                            Text(hint).font(.caption2).foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+                .toggleStyle(.checkbox)
+                .disabled(model.isRunning)
+            }
+            Text("Unchecked gates are skipped — their card shows as “skipped” rather than running. Skip Robustness for a fast pass; it re-runs the sweep across many ±20% corners.")
+                .font(.caption2).foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func enabledBinding(_ title: String) -> Binding<Bool> {
+        Binding(get: { model.isEnabled(title) }, set: { model.setEnabled(title, $0) })
     }
 
     /// Per-input "Sweep / Hold Vac / Hold Atm" controls. Held inputs are pinned
@@ -307,7 +390,7 @@ struct ValidateView: View {
                 model.run(snapshot: document.circuit, params: .defaults)
             }
             .buttonStyle(.borderedProminent)
-            .disabled(model.isRunning)
+            .disabled(model.isRunning || model.enabledCount == 0)
         }
     }
 
@@ -315,7 +398,7 @@ struct ValidateView: View {
         switch model.overall {
         case .pending: return "Connectivity, self-containment, a printable watertight mesh, exhaustive logic + convergence, and ±20% parameter margins — one gate each."
         case .running: return "Running the battery off the main thread…"
-        case .pass:    return "All gates green."
+        case .pass:    return model.skippedCount == 0 ? "All gates green." : "All enabled gates green (\(model.skippedCount) skipped)."
         case .warn:    return "Passed, with warnings — see below."
         case .fail:    return "One or more gates failed — see below."
         }
