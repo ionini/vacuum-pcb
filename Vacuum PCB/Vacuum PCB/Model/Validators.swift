@@ -312,6 +312,9 @@ enum Validators {
             /// The two colliding volume ids (e.g. "T4", "T9").
             let a: String
             let b: String
+            /// The two colliding nets' labels (the actual shorted nets).
+            let netA: String
+            let netB: String
             /// Approximate board-mm location of the overlap.
             let at: Point
             let layerA: Layer
@@ -328,6 +331,7 @@ enum Validators {
         let flat = doc.flattenedForSimulation().document
         let m = flat.manufacturing
         let vols = physicalVolumes(flat)
+        let netLabel = Dictionary(flat.logic.nets.map { ($0.id, $0.label) }, uniquingKeysWith: { a, _ in a })
 
         // One straight channel run (or a degenerate point = a pad/dimple
         // sphere), in 3D, tagged with its owning volume. `component` is set for
@@ -340,12 +344,17 @@ enum Validators {
             let layer: Layer
             let vol: Int
             let component: UUID?
+            /// Owning net for single-net geometry (channel / via / pad / dimple);
+            /// nil for a resistor serpentine, which bridges two nets and so is
+            /// never treated as "same net" with anything (always checked).
+            let net: UUID?
             // AABB (inflated by r) for cheap broad-phase rejection.
             let lo: Vector, hi: Vector
         }
-        func makeEdge(_ p: Point, _ q: Point, z: Double, r: Double, layer: Layer, vol: Int, component: UUID? = nil) -> Edge {
+        func makeEdge(_ p: Point, _ q: Point, z: Double, r: Double, layer: Layer, vol: Int,
+                      component: UUID? = nil, net: UUID? = nil) -> Edge {
             let a = Vector(p.x, p.y, z), b = Vector(q.x, q.y, z)
-            return Edge(a: a, b: b, r: r, plate: layer.plate, layer: layer, vol: vol, component: component,
+            return Edge(a: a, b: b, r: r, plate: layer.plate, layer: layer, vol: vol, component: component, net: net,
                         lo: Vector(min(a.x, b.x) - r, min(a.y, b.y) - r, min(a.z, b.z) - r),
                         hi: Vector(max(a.x, b.x) + r, max(a.y, b.y) + r, max(a.z, b.z) + r))
         }
@@ -356,30 +365,23 @@ enum Validators {
             for seg in v.segments where seg.positions.count >= 2 {
                 let z = m.midZ(for: seg.layer)
                 for k in 0..<(seg.positions.count - 1) {
-                    edges.append(makeEdge(seg.positions[k], seg.positions[k + 1], z: z, r: channelR, layer: seg.layer, vol: vi))
+                    edges.append(makeEdge(seg.positions[k], seg.positions[k + 1], z: z, r: channelR, layer: seg.layer, vol: vi, net: seg.net))
                 }
             }
-            let resistorR = m.resistorChannelDiameter / 2
-            for res in v.resistors {
-                let halfLen = ManufacturingConstants.resistorFootprintLength / 2
-                let halfWid = ManufacturingConstants.resistorFootprintWidth / 2
-                let local = ResistorGeometry.path(
-                    transitions: ResistorGeometry.transitions(for: res.size), halfLen: halfLen, halfWid: halfWid)
-                let rad = res.rotation.radians, c = cos(rad), s = sin(rad)
-                let world = local.map { Point(x: res.position.x + $0.x * c - $0.y * s,
-                                              y: res.position.y + $0.x * s + $0.y * c) }
-                let z = m.midZ(for: res.layer)
-                for k in 0..<max(0, world.count - 1) {
-                    edges.append(makeEdge(world[k], world[k + 1], z: z, r: resistorR, layer: res.layer, vol: vi))
-                }
-            }
+            // Resistor serpentines are deliberately NOT collision edges: a
+            // resistor bridges two nets (so it isn't single-net, and its two
+            // ends legitimately touch both those nets' channels), and it lives
+            // inside the transistor footprint where DRC already bars foreign
+            // channels. Including it only produced false positives (its own VAC
+            // end touching the VAC rail), never a short DRC doesn't already
+            // catch. (Still painted in the highlight via PlateBuilder.volumeMesh.)
             for via in v.vias where via.layers.count >= 2 {
                 let zs = via.layers.map { m.midZ(for: $0) }
                 let lo = zs.min()!, hi = zs.max()!
                 let a = Vector(via.pos.x, via.pos.y, lo), b = Vector(via.pos.x, via.pos.y, hi)
                 let r = m.channelDiameter / 2
                 edges.append(Edge(a: a, b: b, r: r, plate: via.layers[0].plate, layer: via.layers[0], vol: vi,
-                                  component: nil,
+                                  component: nil, net: via.net,
                                   lo: Vector(a.x - r, a.y - r, lo - r), hi: Vector(a.x + r, a.y + r, hi + r)))
             }
             // Transistor / LED body cavities — pads & dimples, as spheres at the
@@ -391,7 +393,7 @@ enum Validators {
                 let plate = ft.kind == .pad ? ft.plate.opposite : ft.plate
                 let z = plate == .top ? m.siliconeThickness / 2 : -m.siliconeThickness / 2
                 edges.append(makeEdge(ft.pinPos, ft.pinPos, z: z, r: ft.radius,
-                                      layer: Layer(plate: plate, depth: 0), vol: vi, component: ft.component))
+                                      layer: Layer(plate: plate, depth: 0), vol: vi, component: ft.component, net: ft.net))
             }
         }
 
@@ -407,6 +409,11 @@ enum Validators {
             for j in (i + 1)..<edges.count {
                 let f = edges[j]
                 if e.vol == f.vol || e.plate != f.plate { continue }
+                // Same net overlapping itself is never a short — it's the net
+                // connecting to itself (e.g. a rail whose channels cross mid-span
+                // and so landed in separate volumes). A real short is two
+                // *different* nets, which keep distinct ids and still flag.
+                if let en = e.net, let fn = f.net, en == fn { continue }
                 // A transistor's own pad pair (and pad↔gate) sit intentionally
                 // close — skip features that share a component.
                 if let ec = e.component, ec == f.component { continue }
@@ -421,6 +428,8 @@ enum Validators {
                 let mid = (e.a + f.a) * 0.5
                 hits.append(CollisionResult.Hit(
                     plate: e.plate, a: vols[e.vol].id, b: vols[f.vol].id,
+                    netA: e.net.flatMap { netLabel[$0] } ?? "?",
+                    netB: f.net.flatMap { netLabel[$0] } ?? "(resistor)",
                     at: Point(x: mid.x, y: mid.y), layerA: e.layer, layerB: f.layer, overlap: limit - d))
             }
         }

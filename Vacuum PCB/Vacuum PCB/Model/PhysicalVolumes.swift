@@ -57,6 +57,8 @@ struct VolumeHole: Hashable {
 struct VolumeSegment: Hashable {
     var positions: [Point]
     var layer: Layer
+    /// Owning net — lets the collision check ignore a net overlapping itself.
+    var net: UUID
 }
 
 /// A resistor whose serpentine channel is part of a volume (it joins the
@@ -73,6 +75,7 @@ struct VolumeResistor: Hashable {
 struct VolumeVia: Hashable {
     var pos: Point
     var layers: [Layer]
+    var net: UUID
 }
 
 /// A transistor/LED *body* cavity belonging to a volume: a source/drain pad or
@@ -95,6 +98,7 @@ struct VolumeFeature: Hashable {
     var plate: Plate
     var component: UUID
     var kind: Kind
+    var net: UUID
     /// Cavity radius — used for the conservative collision sphere.
     var radius: Double
     /// World position of this feature's pin: the pad bore (pad) or the gate
@@ -187,15 +191,15 @@ func physicalVolumes(_ doc: CircuitDocument) -> [Volume] {
                 case .transistor where pin.pinRef.pinKey == "gate":
                     pendingFeatures.append((node: n, feature: VolumeFeature(
                         center: place.position, rotation: place.rotation, plate: place.layer,
-                        component: comp.id, kind: .dimple, radius: m.dimpleDiameter / 2, pinPos: pin.pos)))
+                        component: comp.id, kind: .dimple, net: net.id, radius: m.dimpleDiameter / 2, pinPos: pin.pos)))
                 case .transistor:
                     pendingFeatures.append((node: n, feature: VolumeFeature(
                         center: place.position, rotation: place.rotation, plate: place.layer,
-                        component: comp.id, kind: .pad, radius: m.padsDiameter / 2, pinPos: pin.pos)))
+                        component: comp.id, kind: .pad, net: net.id, radius: m.padsDiameter / 2, pinPos: pin.pos)))
                 case .led:
                     pendingFeatures.append((node: n, feature: VolumeFeature(
                         center: place.position, rotation: place.rotation, plate: place.layer,
-                        component: comp.id, kind: .ledDimple, radius: m.ledDimpleDiameter / 2, pinPos: pin.pos)))
+                        component: comp.id, kind: .ledDimple, net: net.id, radius: m.ledDimpleDiameter / 2, pinPos: pin.pos)))
                 default: break
                 }
             }
@@ -210,7 +214,7 @@ func physicalVolumes(_ doc: CircuitDocument) -> [Volume] {
                 guard positions.count >= 2 else { continue }
                 let idxs = positions.map { nodeIndex(net.id, segment.layer, $0) }
                 for i in 0..<(idxs.count - 1) { union(idxs[i], idxs[i + 1]) }
-                pendingSegs.append((node: idxs[0], seg: VolumeSegment(positions: positions, layer: segment.layer)))
+                pendingSegs.append((node: idxs[0], seg: VolumeSegment(positions: positions, layer: segment.layer, net: net.id)))
             }
         }
 
@@ -232,7 +236,7 @@ func physicalVolumes(_ doc: CircuitDocument) -> [Volume] {
                 if layersOnPlate.count >= 2 {
                     // Same-plate via: a vertical bore joining channel depths —
                     // real geometry to paint into the highlight.
-                    pendingVias.append((node: n0, via: VolumeVia(pos: group.position, layers: layersOnPlate)))
+                    pendingVias.append((node: n0, via: VolumeVia(pos: group.position, layers: layersOnPlate, net: net.id)))
                 }
             }
         }
@@ -249,6 +253,67 @@ func physicalVolumes(_ doc: CircuitDocument) -> [Volume] {
         for j in (i + 1)..<nodes.count where nodes[i].net == nodes[j].net && nodes[i].layer == nodes[j].layer {
             let dx = nodes[i].p.x - nodes[j].p.x, dy = nodes[i].p.y - nodes[j].p.y
             if dx * dx + dy * dy < mergeDist * mergeDist { union(i, j) }
+        }
+    }
+
+    // Merge same-net channels that physically overlap *mid-span*: two channels
+    // of one net can cross at a point that's a waypoint of neither, so the node
+    // heal above misses them and the net gets split into separate volumes (e.g.
+    // a VAC rail whose distribution channel crosses each sub-block's tap). Same
+    // net + same layer + bores overlapping ⇒ one cavity. Same-net only, so it
+    // can't fuse distinct nets; a non-overlapping same-net gap (a real break)
+    // stays split.
+    func segDist2D(_ a0: Point, _ a1: Point, _ b0: Point, _ b1: Point) -> Double {
+        func clamp(_ x: Double) -> Double { x < 0 ? 0 : (x > 1 ? 1 : x) }
+        let d1x = a1.x - a0.x, d1y = a1.y - a0.y
+        let d2x = b1.x - b0.x, d2y = b1.y - b0.y
+        let rx = a0.x - b0.x, ry = a0.y - b0.y
+        let aa = d1x * d1x + d1y * d1y, ee = d2x * d2x + d2y * d2y, ff = d2x * rx + d2y * ry
+        let eps = 1e-9
+        var s = 0.0, t = 0.0
+        if aa <= eps && ee <= eps { return (rx * rx + ry * ry).squareRoot() }
+        if aa <= eps { t = clamp(ff / ee) }
+        else {
+            let cc = d1x * rx + d1y * ry
+            if ee <= eps { s = clamp(-cc / aa) }
+            else {
+                let bb = d1x * d2x + d1y * d2y
+                let denom = aa * ee - bb * bb
+                s = denom > eps ? clamp((bb * ff - cc * ee) / denom) : 0
+                t = (bb * s + ff) / ee
+                if t < 0 { t = 0; s = clamp(-cc / aa) }
+                else if t > 1 { t = 1; s = clamp((bb - cc) / aa) }
+            }
+        }
+        let cx = (a0.x + d1x * s) - (b0.x + d2x * t)
+        let cy = (a0.y + d1y * s) - (b0.y + d2y * t)
+        return (cx * cx + cy * cy).squareRoot()
+    }
+    // Per-segment XY bounding box (inflated by mergeDist) for broad-phase reject.
+    let segBoxes: [(minX: Double, minY: Double, maxX: Double, maxY: Double)] = pendingSegs.map {
+        var loX = Double.greatestFiniteMagnitude, loY = loX
+        var hiX = -Double.greatestFiniteMagnitude, hiY = hiX
+        for p in $0.seg.positions { loX = min(loX, p.x); loY = min(loY, p.y); hiX = max(hiX, p.x); hiY = max(hiY, p.y) }
+        return (loX, loY, hiX, hiY)
+    }
+    for i in 0..<pendingSegs.count where pendingSegs[i].seg.positions.count >= 2 {
+        let si = pendingSegs[i].seg, bi = segBoxes[i]
+        for j in (i + 1)..<pendingSegs.count {
+            let sj = pendingSegs[j].seg
+            guard sj.positions.count >= 2, si.net == sj.net, si.layer == sj.layer else { continue }
+            let bj = segBoxes[j]
+            if bi.maxX + mergeDist < bj.minX || bj.maxX + mergeDist < bi.minX
+            || bi.maxY + mergeDist < bj.minY || bj.maxY + mergeDist < bi.minY { continue }
+            if find(pendingSegs[i].node) == find(pendingSegs[j].node) { continue }
+            var overlaps = false
+            outer: for u in 0..<(si.positions.count - 1) {
+                for v in 0..<(sj.positions.count - 1) {
+                    if segDist2D(si.positions[u], si.positions[u + 1], sj.positions[v], sj.positions[v + 1]) < mergeDist {
+                        overlaps = true; break outer
+                    }
+                }
+            }
+            if overlaps { union(pendingSegs[i].node, pendingSegs[j].node) }
         }
     }
 

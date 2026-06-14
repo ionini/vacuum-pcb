@@ -202,8 +202,8 @@ final class ValidationModel {
         }
         var d = ["\(c.hits.count) unintended overlap\(c.hits.count == 1 ? "" : "s") — volumes that should be separate touch in the printed geometry:"]
         d += c.hits.prefix(10).map {
-            String(format: "• %@ ↔ %@ on %@ at (%.1f, %.1f) — %.2f mm overlap",
-                   $0.a, $0.b, $0.layerA.uiLabel, $0.at.x, $0.at.y, $0.overlap)
+            String(format: "• %@ ↔ %@  (nets %@ ↔ %@)  on %@ at (%.1f, %.1f) — %.2f mm overlap",
+                   $0.a, $0.b, $0.netA, $0.netB, $0.layerA.uiLabel, $0.at.x, $0.at.y, $0.overlap)
         }
         // Each hit jumps to the 3D preview with the two cavities lit in
         // contrasting colours.

@@ -770,7 +770,7 @@ func reportCollisions(_ r: Validators.CollisionResult, json: Bool) {
             "volumes": r.volumeCount,
             "pass": r.pass,
             "collisions": r.hits.map { h -> [String: Any] in
-                ["a": h.a, "b": h.b, "plate": h.plate.rawValue,
+                ["a": h.a, "b": h.b, "netA": h.netA, "netB": h.netB, "plate": h.plate.rawValue,
                  "layerA": h.layerA.uiLabel, "layerB": h.layerB.uiLabel,
                  "x": h.at.x, "y": h.at.y, "overlap": h.overlap]
             },
@@ -784,8 +784,8 @@ func reportCollisions(_ r: Validators.CollisionResult, json: Bool) {
     }
     print("\(r.hits.count) unintended overlap\(r.hits.count == 1 ? "" : "s") — volumes that should be isolated touch in the printed geometry:")
     for h in r.hits.prefix(80) {
-        print(String(format: "  ✗ %@ ↔ %@ on %@ at (%.2f, %.2f)  %.2f mm overlap",
-                     h.a, h.b, h.layerA.uiLabel, h.at.x, h.at.y, h.overlap))
+        print(String(format: "  ✗ %@ ↔ %@  (nets %@ ↔ %@)  on %@ at (%.2f, %.2f)  %.2f mm overlap",
+                     h.a, h.b, h.netA, h.netB, h.layerA.uiLabel, h.at.x, h.at.y, h.overlap))
     }
     print("COLLISIONS: FAIL (a 2D-DRC-invisible short — two distinct nets fused)")
 }
