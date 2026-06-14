@@ -1361,6 +1361,75 @@ enum DRC {
                 ))
             }
         }
+
+        // --- Channel ↔ transistor source/drain pad breach ---
+        // A transistor switches by sealing the strip of plate between its
+        // source and drain pads; the gate dome flexes the silicone over that
+        // strip. A channel whose centerline crosses that strip drills a void
+        // straight through it, permanently shorting source to drain — the
+        // "hole between source and drain" failure.
+        //
+        // Detection works in the transistor's own frame: project each channel
+        // edge onto the source→drain axis (origin at the gate). The breach
+        // signature is the edge crossing the axis (endpoints on opposite
+        // sides) at a point within the pads' half-height — i.e. passing
+        // *between* the pads where there's wall to destroy. A channel that
+        // merely terminates at one pad and runs outward stays on one side and
+        // never crosses, so legitimate source/drain connections (and the
+        // common same-net graze of a supply line skimming one pad) don't trip.
+        //
+        // The pad cavities live inside sub-parts, so this only surfaces on the
+        // flattened doc: the un-flattened `clearanceIssues` / `thinWallIssues`
+        // never see them, and the route-vs-route loop above doesn't model pads.
+        let m = flat.manufacturing
+        let comps = Dictionary(flat.logic.components.map { ($0.id, $0) },
+                               uniquingKeysWith: { first, _ in first })
+        // Half the pad cap's footprint along the axis perpendicular — the span
+        // over which solid wall actually separates the two pads.
+        let padHalfHeight = (pow(m.padsDiameter / 2, 2) - pow(m.padsSeparation / 2, 2)).squareRoot()
+        var breachReported: Set<String> = []
+        for placement in flat.physical.placements {
+            guard let comp = comps[placement.componentId], comp.kind == .transistor
+            else { continue }
+            let fp = comp.footprint(m, snapshots: flat.librarySnapshots)
+            // Pads sit on the plate opposite the gate dome, at the silicone
+            // face (depth 0).
+            let padLayer = Layer(plate: placement.layer.opposite, depth: 0)
+            guard let aPin = fp.pin("a"), let bPin = fp.pin("b") else { continue }
+            let gate = placement.position
+            let source = placement.worldPosition(of: aPin)
+            let drain = placement.worldPosition(of: bPin)
+            let axisLen = (pow(drain.x - source.x, 2) + pow(drain.y - source.y, 2)).squareRoot()
+            guard axisLen > 0 else { continue }
+            let ux = (drain.x - source.x) / axisLen, uy = (drain.y - source.y) / axisLen
+            func axisCoord(_ p: Point) -> Double { (p.x - gate.x) * ux + (p.y - gate.y) * uy }
+            for e in edges where e.layer == padLayer {
+                let sA = axisCoord(e.a), sB = axisCoord(e.b)
+                // Edge must straddle the source→drain axis (opposite signs).
+                guard (sA < 0) != (sB < 0), sA != sB else { continue }
+                let t = sA / (sA - sB)
+                let cross = Point(x: e.a.x + t * (e.b.x - e.a.x),
+                                  y: e.a.y + t * (e.b.y - e.a.y))
+                // Perpendicular distance from the gate to the crossing: the
+                // along-axis component is 0 there, so it's just |cross − gate|.
+                let perp = (pow(cross.x - gate.x, 2) + pow(cross.y - gate.y, 2)).squareRoot()
+                guard perp < padHalfHeight else { continue }
+                let key = "\(placement.componentId.uuidString)|\(e.netId.uuidString)"
+                if breachReported.contains(key) { continue }
+                breachReported.insert(key)
+                issues.append(Issue(
+                    netId: e.netId, netLabel: e.label,
+                    kind: .crossNetMerge(
+                        // `otherNetId` carries the transistor's id (not a net):
+                        // it's only used for canvas focus, and `comp.label`
+                        // ("U4.Q1") drives the sub-part-instance selection.
+                        otherNetId: comp.id, otherNetLabel: comp.label,
+                        layer: padLayer,
+                        position: cross
+                    )
+                ))
+            }
+        }
         return issues
     }
 
