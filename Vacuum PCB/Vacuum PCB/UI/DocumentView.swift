@@ -31,11 +31,13 @@ struct DocumentView: View {
     /// recomputed alongside each `rebuild()`. Drives the Preview tab's Volumes
     /// inspector and the 3D highlight.
     @State private var volumes: [Volume] = []
-    /// Which volume (by `Volume.id`) is selected for highlighting, if any.
-    @State private var selectedVolumeID: String?
-    /// Mesh of the selected volume, rebuilt when the selection changes; handed
-    /// to `Scene3DView` to glow on top of the plates.
-    @State private var highlightMesh: Mesh?
+    /// Which volumes (by `Volume.id`) are highlighted in the 3D preview. One
+    /// when the user clicks a row in the Volumes inspector; two (in contrasting
+    /// colours) when jumped here from a collision in the Validate tab.
+    @State private var highlightedVolumeIDs: [String] = []
+    /// Highlight meshes (one per id, with a palette colour index), rebuilt when
+    /// the selection or the build changes; handed to `Scene3DView`.
+    @State private var highlightMeshes: [VolumeHighlight] = []
     @State private var isBuilding = false
     @State private var showExporter = false
     @State private var buildToken = 0
@@ -215,7 +217,7 @@ struct DocumentView: View {
         case .simulate:
             simulateView
         case .validate:
-            ValidateView(model: validationModel, document: $document, onOpenInSimulate: openInSimulate)
+            ValidateView(model: validationModel, document: $document, onAction: handleValidationAction)
         }
     }
 
@@ -229,6 +231,19 @@ struct DocumentView: View {
         }
         simulationState?.params = params
         selectedTab = .simulate
+    }
+
+    /// Dispatch a Validate-panel follow-up: a margin corner reopens in Simulate;
+    /// a collision jumps to the 3D preview with the two cavities highlighted in
+    /// contrasting colours.
+    private func handleValidationAction(_ target: Validators.ReportAction.Target) {
+        switch target {
+        case .openInSimulate(let params):
+            openInSimulate(params)
+        case .showVolumes(let ids):
+            highlightedVolumeIDs = ids
+            selectedTab = .preview
+        }
     }
 
     @ViewBuilder private var simulateView: some View {
@@ -277,7 +292,7 @@ struct DocumentView: View {
                     moldFrame: built.moldFrame,
                     boardOutline: document.circuit.physical.boardOutline,
                     displayMode: previewMode,
-                    highlightMesh: highlightMesh,
+                    highlights: highlightMeshes,
                     cameraStore: cameraStore
                 )
                 previewModePicker
@@ -288,7 +303,7 @@ struct DocumentView: View {
                         .padding(.top, 56)
                 }
             }
-            .onChange(of: selectedVolumeID) { _, _ in updateHighlight() }
+            .onChange(of: highlightedVolumeIDs) { _, _ in updateHighlight() }
         } else if isBuilding {
             ProgressView("Building plates…")
         } else {
@@ -456,7 +471,12 @@ struct DocumentView: View {
         case .preview:
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    VolumeListView(volumes: volumes, selection: $selectedVolumeID)
+                    VolumeListView(
+                        volumes: volumes,
+                        highlighted: Set(highlightedVolumeIDs),
+                        onSelect: { id in
+                            highlightedVolumeIDs = (highlightedVolumeIDs == [id]) ? [] : [id]
+                        })
                     Divider()
                     ManufacturingSettingsView(document: $document)
                 }
@@ -682,10 +702,9 @@ struct DocumentView: View {
                 guard token == buildToken else { return }
                 self.built = result
                 self.volumes = vols
-                // Drop a stale selection if the rebuild changed the volume set.
-                if let id = self.selectedVolumeID, !vols.contains(where: { $0.id == id }) {
-                    self.selectedVolumeID = nil
-                }
+                // Drop any highlighted ids the rebuild no longer has.
+                let live = Set(vols.map(\.id))
+                self.highlightedVolumeIDs.removeAll { !live.contains($0) }
                 self.updateHighlight()
                 self.isBuilding = false
                 self.previewDirty = false
@@ -697,14 +716,15 @@ struct DocumentView: View {
         }
     }
 
-    /// Rebuild the highlight mesh for the selected volume (or clear it). Cheap —
-    /// it concatenates one cavity's channel primitives, no boolean CSG.
+    /// Rebuild the highlight meshes for the highlighted volume ids (color index
+    /// = position, so a collision's two cavities get contrasting colours).
+    /// Cheap — each is a concatenation of one cavity's primitives, no CSG.
     private func updateHighlight() {
-        guard let id = selectedVolumeID, let v = volumes.first(where: { $0.id == id }) else {
-            highlightMesh = nil
-            return
+        let m = document.circuit.manufacturing
+        highlightMeshes = highlightedVolumeIDs.enumerated().compactMap { index, id in
+            guard let v = volumes.first(where: { $0.id == id }) else { return nil }
+            return VolumeHighlight(mesh: PlateBuilder.volumeMesh(for: v, m), colorIndex: index)
         }
-        highlightMesh = PlateBuilder.volumeMesh(for: v, document.circuit.manufacturing)
     }
 }
 

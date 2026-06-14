@@ -49,6 +49,7 @@ final class ValidationModel {
         "Printability (mesh)",
         "Logic + convergence",
         "Robustness (±20%)",
+        "Volume collisions",
     ]
     static var idleReports: [Validators.Report] {
         titles.map { Validators.Report(id: $0, title: $0, status: .pending, detail: ["Not run yet"]) }
@@ -119,6 +120,9 @@ final class ValidationModel {
             ) { c, total, _, _, _ in setProgress("Margins corner \(c)/\(total)…") }
             post(4, marg) { Self.marginsReport($0) }
 
+            setProgress("Volume collisions…")
+            post(5, Validators.volumeCollisions(snapshot)) { Self.collisionReport($0) }
+
             DispatchQueue.main.async {
                 guard token == self.runToken else { return }
                 self.isRunning = false
@@ -185,9 +189,29 @@ final class ValidationModel {
         // Each failing corner becomes an "Open in Simulate" action carrying the
         // exact parameters that produced it.
         let actions = m.failures.prefix(8).map {
-            Validators.ReportAction(label: "Open in Simulate: \($0.label)", params: $0.params)
+            Validators.ReportAction(label: "Open in Simulate: \($0.label)", target: .openInSimulate($0.params))
         }
         return Report(id: titles[4], title: titles[4], status: .fail, detail: Array(detail), actions: Array(actions))
+    }
+
+    private static func collisionReport(_ c: Validators.CollisionResult) -> Report {
+        let title = titles[5]
+        if c.pass {
+            return Report(id: title, title: title, status: .pass,
+                          detail: ["No overlaps — \(c.volumeCount) cavities, all isolated on their plate."])
+        }
+        var d = ["\(c.hits.count) unintended overlap\(c.hits.count == 1 ? "" : "s") — volumes that should be separate touch in the printed geometry:"]
+        d += c.hits.prefix(10).map {
+            String(format: "• %@ ↔ %@ on %@ at (%.1f, %.1f) — %.2f mm overlap",
+                   $0.a, $0.b, $0.layerA.uiLabel, $0.at.x, $0.at.y, $0.overlap)
+        }
+        // Each hit jumps to the 3D preview with the two cavities lit in
+        // contrasting colours.
+        let actions = c.hits.prefix(8).map {
+            Validators.ReportAction(label: "Show \($0.a) ↔ \($0.b) in 3D preview",
+                                    target: .showVolumes([$0.a, $0.b]))
+        }
+        return Report(id: title, title: title, status: .fail, detail: d, actions: Array(actions))
     }
 }
 
@@ -197,7 +221,7 @@ final class ValidationModel {
 struct ValidateView: View {
     let model: ValidationModel
     @Binding var document: VPCBDocument
-    let onOpenInSimulate: (SimulationParameters) -> Void
+    let onAction: (Validators.ReportAction.Target) -> Void
 
     var body: some View {
         ScrollView {
@@ -308,7 +332,7 @@ struct ValidateView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if !r.actions.isEmpty {
-                    FlowButtons(actions: r.actions, onTap: onOpenInSimulate)
+                    FlowButtons(actions: r.actions, onTap: onAction)
                         .padding(.top, 4)
                 }
             }
@@ -336,23 +360,31 @@ struct ValidateView: View {
     }
 }
 
-/// Wrapping row of "Open in Simulate" buttons, one per failing corner.
+/// Wrapping row of follow-up buttons (open a margin corner in Simulate, or show
+/// colliding volumes in the 3D preview), one per action.
 private struct FlowButtons: View {
     let actions: [Validators.ReportAction]
-    let onTap: (SimulationParameters) -> Void
+    let onTap: (Validators.ReportAction.Target) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(actions) { action in
                 Button {
-                    onTap(action.params)
+                    onTap(action.target)
                 } label: {
-                    Label(action.label, systemImage: "waveform.path.badge.plus")
+                    Label(action.label, systemImage: icon(for: action.target))
                         .font(.caption)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
             }
+        }
+    }
+
+    private func icon(for target: Validators.ReportAction.Target) -> String {
+        switch target {
+        case .openInSimulate: return "waveform.path.badge.plus"
+        case .showVolumes:    return "cube.transparent"
         }
     }
 }

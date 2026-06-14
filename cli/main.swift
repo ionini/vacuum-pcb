@@ -763,6 +763,33 @@ func reportVolumes(_ doc: CircuitDocument, volumes: [Volume], json: Bool) {
     print("      hole you didn't expect. Both are invisible to the simulator.")
 }
 
+func reportCollisions(_ r: Validators.CollisionResult, json: Bool) {
+    if json {
+        printJSON([
+            "file": path,
+            "volumes": r.volumeCount,
+            "pass": r.pass,
+            "collisions": r.hits.map { h -> [String: Any] in
+                ["a": h.a, "b": h.b, "plate": h.plate.rawValue,
+                 "layerA": h.layerA.uiLabel, "layerB": h.layerB.uiLabel,
+                 "x": h.at.x, "y": h.at.y, "overlap": h.overlap]
+            },
+        ])
+        return
+    }
+    print("volume collisions: \(r.volumeCount) cavities checked")
+    if r.hits.isEmpty {
+        print("COLLISIONS: PASS (no two separate volumes overlap)")
+        return
+    }
+    print("\(r.hits.count) unintended overlap\(r.hits.count == 1 ? "" : "s") — volumes that should be isolated touch in the printed geometry:")
+    for h in r.hits.prefix(80) {
+        print(String(format: "  ✗ %@ ↔ %@ on %@ at (%.2f, %.2f)  %.2f mm overlap",
+                     h.a, h.b, h.layerA.uiLabel, h.at.x, h.at.y, h.overlap))
+    }
+    print("COLLISIONS: FAIL (a 2D-DRC-invisible short — two distinct nets fused)")
+}
+
 /// Left-pad `s` to `width` with spaces so columns line up (%@ width flags are
 /// unreliable for Swift strings, so we pad by hand).
 func padRight(_ s: String, _ width: Int) -> String {
@@ -918,6 +945,14 @@ USAGE:
       subpart's internal holes into board coordinates (the whole printed board,
       labels prefixed e.g. U6.Q1.gate) — use this when the board contains
       subparts. --probe NET limits output to one net by label; repeatable.
+
+  vacuum-cli collisions <file.vpcb> [--json]
+      Decompose the (flattened) board into physical volumes and assert no two
+      *separate* volumes touch on the same plate — an independent, 3D
+      short-check. Because every intended connection (route, same-plate via,
+      resistor) is already merged into one volume, an overlap is an unintended
+      fusion of two distinct nets. Catches shorts the 2D DRC can miss (inter-
+      depth proximity, real bore geometry, flattened subpart channels).
 
   vacuum-cli mesh <file.vpcb> [--json]
       Build the printed solids (PlateBuilder) and assert each plate is
@@ -1203,6 +1238,11 @@ do {
         if !filter.isEmpty { nets = nets.filter { filter.contains($0.net.label.lowercased()) } }
         reportContinuity(target, nets: nets, json: json, flattened: flattenFull)
 
+    case "collisions":
+        let r = Validators.volumeCollisions(doc)
+        reportCollisions(r, json: json)
+        if !r.pass { exit(1) }
+
     case "check":
         let issues = DRC.check(doc)
         let rats = Ratsnest.missingEdges(doc)
@@ -1299,6 +1339,10 @@ do {
                                       maxSteps: settleCap, epsilon: epsilon, maxCombos: maxCombos, holds: holds)
         reportMargins(marg, json: false)
         allPass = marg.pass && allPass
+        print("── volume collisions (3D short-check, subparts flattened) ──")
+        let coll = Validators.volumeCollisions(doc)
+        reportCollisions(coll, json: false)
+        allPass = coll.pass && allPass
         print("")
         print(allPass ? "VERIFY: ✅ ALL GREEN" : "VERIFY: ❌ FAILED — see above")
         if !allPass { exit(1) }

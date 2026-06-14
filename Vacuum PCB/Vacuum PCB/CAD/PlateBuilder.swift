@@ -1126,6 +1126,16 @@ enum PlateBuilder {
             }
         }
 
+        // Transistor / LED body cavities — pads & dimples — as spheres at the
+        // silicone face, so the wide bodies show in the highlight (and read as
+        // the same cavities the collision check tests).
+        for ft in volume.features {
+            let z = ft.plate == .top ? m.siliconeThickness / 2 : -m.siliconeThickness / 2
+            polys += Mesh.sphere(radius: ft.radius, slices: 20)
+                .translated(by: Vector(ft.pos.x, ft.pos.y, z))
+                .polygons
+        }
+
         // A bead at every hole so probe points stay visible even for a cavity
         // with little or no routed channel (e.g. a short abutment-only stub).
         for hole in volume.holes {

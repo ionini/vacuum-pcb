@@ -10,7 +10,11 @@ import SwiftUI
 /// the cavity is fully connected and leak-free.
 struct VolumeListView: View {
     let volumes: [Volume]
-    @Binding var selection: String?
+    /// Volume ids currently glowing in the scene (one when picked here, two
+    /// when shown from a collision). Rows in the set are tinted.
+    let highlighted: Set<String>
+    /// Toggle a volume's highlight (the parent decides single vs. clearing).
+    let onSelect: (String) -> Void
 
     var body: some View {
         let top = volumes.filter { $0.plate == .top }
@@ -49,10 +53,10 @@ struct VolumeListView: View {
 
     @ViewBuilder
     private func row(_ v: Volume) -> some View {
-        let isSelected = selection == v.id
+        let isSelected = highlighted.contains(v.id)
         VStack(alignment: .leading, spacing: 4) {
             Button {
-                selection = isSelected ? nil : v.id
+                onSelect(v.id)
             } label: {
                 HStack(spacing: 8) {
                     Text(v.id)

@@ -20,6 +20,14 @@ enum PreviewDisplayMode: String, CaseIterable, Hashable {
     }
 }
 
+/// One volume cavity to glow in the scene. `colorIndex` picks from
+/// `Scene3DView`'s palette, so two colliding volumes can be shown in
+/// contrasting colours (index 0 vs 1) without the caller knowing about colours.
+struct VolumeHighlight {
+    var mesh: Mesh
+    var colorIndex: Int
+}
+
 /// A saved camera point of view — the orbit angle and orthographic zoom the
 /// user left the 3D preview at.
 struct Scene3DCameraPose {
@@ -57,9 +65,9 @@ struct Scene3DView {
     var moldFrame: Mesh
     var boardOutline: Rect
     var displayMode: PreviewDisplayMode
-    /// Mesh of the currently-selected physical volume to glow on top of the
-    /// plates (see the Volumes inspector). `nil` = nothing selected.
-    var highlightMesh: Mesh? = nil
+    /// Physical-volume cavities to glow on top of the plates (see the Volumes
+    /// inspector / collision gate). Empty = nothing highlighted.
+    var highlights: [VolumeHighlight] = []
     /// Outlives this view (lives in `DocumentView`) so orbit / zoom can be
     /// replayed after a tab switch tears the SCNView down. `nil` falls back to
     /// the default iso framing — fine for previews / tests.
@@ -74,7 +82,8 @@ struct Scene3DView {
         let bottomFeaturesNode = SCNNode()
         let stencilNode = SCNNode()
         let moldNode = SCNNode()
-        let highlightNode = SCNNode()
+        /// Parent of the per-volume highlight nodes; rebuilt on each refresh.
+        let highlightRoot = SCNNode()
         let camera = SCNCamera()
         let cameraNode = SCNNode()
         var lastOutline: Rect?
@@ -105,7 +114,7 @@ struct Scene3DView {
         c.modelRoot.addChildNode(c.bottomFeaturesNode)
         c.modelRoot.addChildNode(c.stencilNode)
         c.modelRoot.addChildNode(c.moldNode)
-        c.modelRoot.addChildNode(c.highlightNode)
+        c.modelRoot.addChildNode(c.highlightRoot)
 
         c.camera.usesOrthographicProjection = true
         c.camera.zNear = 0.01
@@ -189,25 +198,27 @@ struct Scene3DView {
         c.moldNode.geometry = moldFrame.isEmpty
             ? nil
             : plateGeometry(for: moldFrame, color: .systemOrange)
-        if let highlightMesh, !highlightMesh.isEmpty {
-            c.highlightNode.geometry = highlightGeometry(for: highlightMesh)
-            c.highlightNode.isHidden = false
-        } else {
-            c.highlightNode.geometry = nil
-            c.highlightNode.isHidden = true
+        c.highlightRoot.childNodes.forEach { $0.removeFromParentNode() }
+        for h in highlights where !h.mesh.isEmpty {
+            let node = SCNNode(geometry: highlightGeometry(for: h.mesh, color: Self.palette[h.colorIndex % Self.palette.count]))
+            c.highlightRoot.addChildNode(node)
         }
     }
 
-    /// The selected volume's cavity, shaded exactly like the feature channels
+    /// Contrasting glow colours, indexed by `VolumeHighlight.colorIndex`. Picked
+    /// to stand out against the blue/teal plates and from each other (e.g. the
+    /// two cavities of a collision).
+    static let palette: [PlatformColor] = [.systemPink, .systemGreen, .systemYellow, .systemPurple]
+
+    /// One highlighted cavity, shaded exactly like the feature channels
     /// (depth-tested, so it picks up the same ambient-occlusion crevices and
-    /// lighting that give the normal channels their form) — just tinted magenta
-    /// and a touch more emissive so it reads as "this is the selected cavity".
-    /// It's built a hair proud of the real channel, so it sits on top of the
-    /// matching feature geometry rather than z-fighting it.
-    private func highlightGeometry(for mesh: Mesh) -> SCNGeometry {
+    /// lighting that give the normal channels their form) — just tinted and a
+    /// touch more emissive so it reads as "this is the highlighted cavity".
+    /// Built a hair proud of the real channel, so it sits on top of the matching
+    /// feature geometry rather than z-fighting it.
+    private func highlightGeometry(for mesh: Mesh, color: PlatformColor) -> SCNGeometry {
         let geometry = SCNGeometry(mesh)
         let material = SCNMaterial()
-        let color = PlatformColor.systemPink
         material.diffuse.contents = color
         material.emission.contents = color.withAlphaComponent(0.30)
         material.isDoubleSided = false

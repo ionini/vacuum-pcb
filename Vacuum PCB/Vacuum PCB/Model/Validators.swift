@@ -291,14 +291,180 @@ enum Validators {
         ConnResult(drcIssues: DRC.check(doc), unrouted: Ratsnest.missingEdges(doc).count)
     }
 
+    // MARK: - Volume collisions
+    //
+    // Independent geometric short-check: decompose the (flattened) board into
+    // physical volumes — which already merge everything *meant* to connect
+    // (routes, same-plate vias, resistor serpentines) — then test whether any
+    // two *separate* volumes physically touch on the same plate. Because every
+    // intended connection is already inside one volume, an overlap between two
+    // volumes is an *un*intended one: two distinct nets fused in the print.
+    //
+    // It works on the real 3D channel geometry (true bore radii, per-depth Z),
+    // so it sees inter-depth proximity and flattened subpart channels that the
+    // 2D centreline-distance DRC can miss. Pads/footprint bodies aren't modelled
+    // here — DRC's exclusion-zone checks cover those.
+
+    struct CollisionResult {
+        struct Hit: Identifiable {
+            let id = UUID()
+            let plate: Plate
+            /// The two colliding volume ids (e.g. "T4", "T9").
+            let a: String
+            let b: String
+            /// Approximate board-mm location of the overlap.
+            let at: Point
+            let layerA: Layer
+            let layerB: Layer
+            /// How deep the two bores overlap, mm (wall-to-wall penetration).
+            let overlap: Double
+        }
+        let hits: [Hit]
+        let volumeCount: Int
+        var pass: Bool { hits.isEmpty }
+    }
+
+    static func volumeCollisions(_ doc: CircuitDocument) -> CollisionResult {
+        let flat = doc.flattenedForSimulation().document
+        let m = flat.manufacturing
+        let vols = physicalVolumes(flat)
+
+        // One straight channel run (or a degenerate point = a pad/dimple
+        // sphere), in 3D, tagged with its owning volume. `component` is set for
+        // transistor body features so a transistor's own pad pair (its valve
+        // gap) isn't mistaken for a short.
+        struct Edge {
+            let a: Vector, b: Vector
+            let r: Double
+            let plate: Plate
+            let layer: Layer
+            let vol: Int
+            let component: UUID?
+            // AABB (inflated by r) for cheap broad-phase rejection.
+            let lo: Vector, hi: Vector
+        }
+        func makeEdge(_ p: Point, _ q: Point, z: Double, r: Double, layer: Layer, vol: Int, component: UUID? = nil) -> Edge {
+            let a = Vector(p.x, p.y, z), b = Vector(q.x, q.y, z)
+            return Edge(a: a, b: b, r: r, plate: layer.plate, layer: layer, vol: vol, component: component,
+                        lo: Vector(min(a.x, b.x) - r, min(a.y, b.y) - r, min(a.z, b.z) - r),
+                        hi: Vector(max(a.x, b.x) + r, max(a.y, b.y) + r, max(a.z, b.z) + r))
+        }
+
+        var edges: [Edge] = []
+        for (vi, v) in vols.enumerated() {
+            let channelR = m.channelDiameter / 2
+            for seg in v.segments where seg.positions.count >= 2 {
+                let z = m.midZ(for: seg.layer)
+                for k in 0..<(seg.positions.count - 1) {
+                    edges.append(makeEdge(seg.positions[k], seg.positions[k + 1], z: z, r: channelR, layer: seg.layer, vol: vi))
+                }
+            }
+            let resistorR = m.resistorChannelDiameter / 2
+            for res in v.resistors {
+                let halfLen = ManufacturingConstants.resistorFootprintLength / 2
+                let halfWid = ManufacturingConstants.resistorFootprintWidth / 2
+                let local = ResistorGeometry.path(
+                    transitions: ResistorGeometry.transitions(for: res.size), halfLen: halfLen, halfWid: halfWid)
+                let rad = res.rotation.radians, c = cos(rad), s = sin(rad)
+                let world = local.map { Point(x: res.position.x + $0.x * c - $0.y * s,
+                                              y: res.position.y + $0.x * s + $0.y * c) }
+                let z = m.midZ(for: res.layer)
+                for k in 0..<max(0, world.count - 1) {
+                    edges.append(makeEdge(world[k], world[k + 1], z: z, r: resistorR, layer: res.layer, vol: vi))
+                }
+            }
+            for via in v.vias where via.layers.count >= 2 {
+                let zs = via.layers.map { m.midZ(for: $0) }
+                let lo = zs.min()!, hi = zs.max()!
+                let a = Vector(via.pos.x, via.pos.y, lo), b = Vector(via.pos.x, via.pos.y, hi)
+                let r = m.channelDiameter / 2
+                edges.append(Edge(a: a, b: b, r: r, plate: via.layers[0].plate, layer: via.layers[0], vol: vi,
+                                  component: nil,
+                                  lo: Vector(a.x - r, a.y - r, lo - r), hi: Vector(a.x + r, a.y + r, hi + r)))
+            }
+            // Transistor / LED body cavities — pads & dimples, as spheres at the
+            // silicone face (a degenerate point-edge). The full bore radius
+            // makes the sphere reach the channel midline, so a pad/dimple
+            // overlapping a foreign channel registers too.
+            for ft in v.features {
+                let z = ft.plate == .top ? m.siliconeThickness / 2 : -m.siliconeThickness / 2
+                edges.append(makeEdge(ft.pos, ft.pos, z: z, r: ft.radius,
+                                      layer: Layer(plate: ft.plate, depth: 0), vol: vi, component: ft.component))
+            }
+        }
+
+        // Cross-volume, same-plate segment pairs whose bores genuinely overlap.
+        // Legal different-net channels are kept ≥ minChannelSpacing apart, so a
+        // sub-(r1+r2) distance is an actual fusion; the small margin keeps a
+        // touch of floating-point slack from a hair-tangent edge case.
+        let margin = 0.05
+        var seen = Set<Int>()   // packed volume-pair key
+        var hits: [CollisionResult.Hit] = []
+        for i in 0..<edges.count {
+            let e = edges[i]
+            for j in (i + 1)..<edges.count {
+                let f = edges[j]
+                if e.vol == f.vol || e.plate != f.plate { continue }
+                // A transistor's own pad pair (and pad↔gate) sit intentionally
+                // close — skip features that share a component.
+                if let ec = e.component, ec == f.component { continue }
+                if e.hi.x < f.lo.x || f.hi.x < e.lo.x
+                || e.hi.y < f.lo.y || f.hi.y < e.lo.y
+                || e.hi.z < f.lo.z || f.hi.z < e.lo.z { continue }
+                let d = segmentDistance(e.a, e.b, f.a, f.b)
+                let limit = e.r + f.r - margin
+                guard d < limit else { continue }
+                let key = min(e.vol, f.vol) * vols.count + max(e.vol, f.vol)
+                guard seen.insert(key).inserted else { continue }
+                let mid = (e.a + f.a) * 0.5
+                hits.append(CollisionResult.Hit(
+                    plate: e.plate, a: vols[e.vol].id, b: vols[f.vol].id,
+                    at: Point(x: mid.x, y: mid.y), layerA: e.layer, layerB: f.layer, overlap: limit - d))
+            }
+        }
+        return CollisionResult(hits: hits, volumeCount: vols.count)
+    }
+
+    /// Shortest distance between two 3-D line segments (clamped closest points).
+    private static func segmentDistance(_ p1: Vector, _ q1: Vector, _ p2: Vector, _ q2: Vector) -> Double {
+        func clamp(_ x: Double) -> Double { x < 0 ? 0 : (x > 1 ? 1 : x) }
+        let d1 = q1 - p1, d2 = q2 - p2, r = p1 - p2
+        let a = d1.dot(d1), e = d2.dot(d2), f = d2.dot(r)
+        let eps = 1e-9
+        var s = 0.0, t = 0.0
+        if a <= eps && e <= eps { return r.length }
+        if a <= eps {
+            t = clamp(f / e)
+        } else {
+            let c = d1.dot(r)
+            if e <= eps {
+                s = clamp(-c / a)
+            } else {
+                let b = d1.dot(d2)
+                let denom = a * e - b * b
+                s = denom > eps ? clamp((b * f - c * e) / denom) : 0
+                t = (b * s + f) / e
+                if t < 0 { t = 0; s = clamp(-c / a) }
+                else if t > 1 { t = 1; s = clamp((b - c) / a) }
+            }
+        }
+        return ((p1 + d1 * s) - (p2 + d2 * t)).length
+    }
+
     // MARK: - UI-facing report
 
-    /// An actionable parameter set attached to a report (e.g. reopen a failing
-    /// margin corner in the Simulate tab). Surface-agnostic; the CLI ignores it.
+    /// A follow-up the Validate panel can offer for a failing gate (the CLI
+    /// ignores these). Either reopen a failing margin corner in the Simulate
+    /// tab, or jump to the 3D preview with the named volumes highlighted (used
+    /// by the collision gate to show the two cavities that touch).
     struct ReportAction: Identifiable {
+        enum Target {
+            case openInSimulate(SimulationParameters)
+            case showVolumes([String])
+        }
         let id = UUID()
         let label: String
-        let params: SimulationParameters
+        let target: Target
     }
 
     /// A single gate's outcome, surface-agnostic. The Validate panel renders a
