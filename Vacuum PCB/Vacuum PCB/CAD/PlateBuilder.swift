@@ -1146,14 +1146,24 @@ enum PlateBuilder {
                                        topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ).polygons
             case .pad:
                 let oppZ = ft.plate.opposite == .top ? topInnerZ : bottomInnerZ
-                // padSide is the footprint sign (+1 = pin "b", local +X). The
-                // lathe's "+axial" lobe lands on local −X after its roll, so the
-                // footprint side maps to the *opposite* `positiveSide`.
-                polys += padLobeSolid(R: m.padsDiameter / 2 + bump / 2, sep: m.padsSeparation,
-                                      fillet: m.padsFilletRadius, positiveSide: ft.padSide < 0)
-                    .rotated(by: Euclid.Rotation.roll(.radians(ft.rotation.radians)))
-                    .translated(by: Vector(ft.center.x, ft.center.y, oppZ))
-                    .polygons
+                // The pad pair has two lobes; *this* net owns the one over its
+                // bore. Build both candidates and keep whichever centroid lands
+                // nearest `pinPos` — robust to the lathe/roll handedness, which
+                // (as it turns out) flips the side with rotation.
+                func placedLobe(_ positive: Bool) -> Mesh {
+                    padLobeSolid(R: m.padsDiameter / 2 + bump / 2, sep: m.padsSeparation,
+                                 fillet: m.padsFilletRadius, positiveSide: positive)
+                        .rotated(by: Euclid.Rotation.roll(.radians(ft.rotation.radians)))
+                        .translated(by: Vector(ft.center.x, ft.center.y, oppZ))
+                }
+                func dist2(_ mesh: Mesh) -> Double {
+                    let b = mesh.bounds
+                    let cx = (b.min.x + b.max.x) / 2, cy = (b.min.y + b.max.y) / 2
+                    let dx = cx - ft.pinPos.x, dy = cy - ft.pinPos.y
+                    return dx * dx + dy * dy
+                }
+                let lobeT = placedLobe(true), lobeF = placedLobe(false)
+                polys += (dist2(lobeT) <= dist2(lobeF) ? lobeT : lobeF).polygons
             }
         }
 

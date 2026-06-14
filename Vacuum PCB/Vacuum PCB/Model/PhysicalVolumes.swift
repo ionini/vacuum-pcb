@@ -87,18 +87,21 @@ struct VolumeVia: Hashable {
 /// components' bodies overlapping.
 struct VolumeFeature: Hashable {
     enum Kind: String, Hashable { case dimple, ledDimple, pad }
-    /// Placement (gate / LED) centre, world coords. A pad is built from this
-    /// centre + rotation + side, exactly as `PlateBuilder` does.
+    /// Placement (gate / LED) centre, world coords. A pad lobe is built from
+    /// this centre + rotation, exactly as `PlateBuilder` does.
     var center: Point
     var rotation: Rotation
     /// The placement plate (gate / LED dimple plate). Pads sit on `plate.opposite`.
     var plate: Plate
     var component: UUID
     var kind: Kind
-    /// Pad lobe side: +1 = pin "b" (local +X), −1 = pin "a" (local −X). 0 for dimples.
-    var padSide: Int
     /// Cavity radius — used for the conservative collision sphere.
     var radius: Double
+    /// World position of this feature's pin: the pad bore (pad) or the gate
+    /// centre (dimple). Used as the collision-sphere centre, and to choose which
+    /// of the two pad lobes is *this* net's (the one nearest the bore) — robust
+    /// to any rotation/flatten, unlike a fixed side mapping.
+    var pinPos: Point
 }
 
 /// One sealed air cavity in a single plate.
@@ -184,16 +187,15 @@ func physicalVolumes(_ doc: CircuitDocument) -> [Volume] {
                 case .transistor where pin.pinRef.pinKey == "gate":
                     pendingFeatures.append((node: n, feature: VolumeFeature(
                         center: place.position, rotation: place.rotation, plate: place.layer,
-                        component: comp.id, kind: .dimple, padSide: 0, radius: m.dimpleDiameter / 2)))
+                        component: comp.id, kind: .dimple, radius: m.dimpleDiameter / 2, pinPos: pin.pos)))
                 case .transistor:
                     pendingFeatures.append((node: n, feature: VolumeFeature(
                         center: place.position, rotation: place.rotation, plate: place.layer,
-                        component: comp.id, kind: .pad,
-                        padSide: pin.pinRef.pinKey == "b" ? 1 : -1, radius: m.padsDiameter / 2)))
+                        component: comp.id, kind: .pad, radius: m.padsDiameter / 2, pinPos: pin.pos)))
                 case .led:
                     pendingFeatures.append((node: n, feature: VolumeFeature(
                         center: place.position, rotation: place.rotation, plate: place.layer,
-                        component: comp.id, kind: .ledDimple, padSide: 0, radius: m.ledDimpleDiameter / 2)))
+                        component: comp.id, kind: .ledDimple, radius: m.ledDimpleDiameter / 2, pinPos: pin.pos)))
                 default: break
                 }
             }
