@@ -7,9 +7,25 @@ struct NetEdge {
     struct End {
         let pin: PinRef
         let point: CGPoint
+        /// Direction the wire leaves this pin (perpendicular to the symbol
+        /// edge it sits on), used to route the edge orthogonally.
+        let exit: ExitDir
     }
     let a: End
     let b: End
+
+    /// Orthogonal polyline this edge renders as — each pin's stub plus the
+    /// minimal-corner bridge between them. Shared by the editor renderer
+    /// (`NetLinesView`), the Simulate canvas, and the right-click hit-test so
+    /// all three agree on the wire's shape.
+    func polyline(stub: CGFloat = 14) -> [CGPoint] {
+        WireRouter.route(from: a.point, a.exit, to: b.point, b.exit, stub: stub)
+    }
+
+    /// The polyline with rounded corners, ready to stroke.
+    func roundedPath(radius: CGFloat = 9, stub: CGFloat = 14) -> Path {
+        WireRouter.roundedPath(polyline(stub: stub), radius: radius)
+    }
 }
 
 /// Shared geometry of a net's rendered "rat's nest". Used both by
@@ -28,9 +44,16 @@ enum NetEdgeBuilder {
     ///     nearest neighbour in the tree rather than all spoking from the
     ///     first-added pin.
     static func edges(for net: Net, in document: CircuitDocument) -> [NetEdge] {
-        let positions = pinPositions(in: document)
+        edges(for: net, in: document, geometry: pinGeometry(in: document))
+    }
+
+    /// Variant that reuses a precomputed pin-geometry map. Callers that build
+    /// edges for many nets at once (the hover hit-test, the renderer) compute
+    /// `pinGeometry` once and pass it here rather than rebuilding it per net.
+    static func edges(for net: Net, in document: CircuitDocument,
+                      geometry: [PinRef: PinGeometry]) -> [NetEdge] {
         let placed: [NetEdge.End] = net.pins.compactMap { ref in
-            positions[ref].map { NetEdge.End(pin: ref, point: $0) }
+            geometry[ref].map { NetEdge.End(pin: ref, point: $0.point, exit: $0.exit) }
         }
         guard placed.count >= 2 else { return [] }
         if let anchorIdx = explicitAnchor(in: placed, document: document) {
@@ -39,16 +62,30 @@ enum NetEdgeBuilder {
         return mst(placed)
     }
 
-    /// Resolves world-screen positions of every pin in the schematic.
-    static func pinPositions(in document: CircuitDocument) -> [PinRef: CGPoint] {
-        var out: [PinRef: CGPoint] = [:]
+    /// World position + exit direction of a pin, with the owning component's
+    /// schematic rotation already baked in.
+    struct PinGeometry {
+        let point: CGPoint
+        let exit: ExitDir
+    }
+
+    /// Resolves the world-screen position and exit direction of every pin in
+    /// the schematic, applying each component's schematic rotation. The single
+    /// source of truth for "where is this pin and which way does its wire
+    /// leave" — used for routing, hit-testing, and the rubber-band line.
+    static func pinGeometry(in document: CircuitDocument) -> [PinRef: PinGeometry] {
+        var out: [PinRef: PinGeometry] = [:]
         for component in document.logic.components {
             guard let center = document.schematic.position(for: component.id) else { continue }
-            let metrics = ComponentSymbolMetrics.metrics(for: component, snapshots: document.librarySnapshots)
+            let metrics = ComponentSymbolMetrics
+                .metrics(for: component, snapshots: document.librarySnapshots)
+                .rotated(by: document.schematic.rotation(for: component.id))
             for key in component.pinKeys(snapshots: document.librarySnapshots) {
                 let off = metrics.pinOffset(key)
-                out[PinRef(componentId: component.id, pinKey: key)] =
-                    CGPoint(x: center.x + off.x, y: center.y + off.y)
+                out[PinRef(componentId: component.id, pinKey: key)] = PinGeometry(
+                    point: CGPoint(x: center.x + off.x, y: center.y + off.y),
+                    exit: ExitDir.from(off)
+                )
             }
         }
         return out

@@ -276,6 +276,15 @@ struct SchematicContextSection: View {
                     Text(header)
                         .font(.caption.bold())
                         .foregroundStyle(.secondary)
+                    if !selection.components.isEmpty {
+                        Button {
+                            SchematicActions.rotate(document: &document, selection: selection)
+                        } label: {
+                            Label(rotateLabel, systemImage: "rotate.right")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.bordered)
+                    }
                     Button(role: .destructive) {
                         SchematicActions.delete(document: &document, selection: &selection)
                     } label: {
@@ -300,6 +309,12 @@ struct SchematicContextSection: View {
         if n > 1 { return "\(n) components" }
         if n == 1 { return "Component" }
         return "Net"
+    }
+
+    private var rotateLabel: String {
+        selection.components.count > 1
+            ? "Rotate \(selection.components.count) components 90°"
+            : "Rotate 90°"
     }
 
     private var deleteLabel: String {
@@ -327,6 +342,17 @@ enum SchematicActions {
             deleteNet(netId, in: &document)
         }
         selection = .none
+    }
+
+    /// Rotate every selected component 90° clockwise on the schematic.
+    /// Schematic-only cosmetic reorientation — it moves which side the pins
+    /// sit on; the physical/CAD layout is untouched. No-op when no component
+    /// is selected. Selection is preserved so repeated presses keep turning
+    /// the same component.
+    static func rotate(document: inout VPCBDocument, selection: SchematicSelection) {
+        for id in selection.components {
+            document.circuit.schematic.rotate(componentId: id, by: 1)
+        }
     }
 
     private static func deleteComponent(_ id: UUID, in document: inout VPCBDocument) {

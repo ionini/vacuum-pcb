@@ -14,19 +14,27 @@ import SwiftUI
 struct NetLinesView: View {
     let document: CircuitDocument
     let selection: SchematicSelection
+    /// Net the cursor is currently over, highlighted brighter/wider than the
+    /// resting state so the whole connection lights up on hover. Selection
+    /// still wins when both apply.
+    var hoveredNet: UUID? = nil
 
     var body: some View {
         Canvas { ctx, _ in
+            // Resolve pin positions once for the whole net mesh rather than
+            // rebuilding the map per net.
+            let geometry = NetEdgeBuilder.pinGeometry(in: document)
             for net in document.logic.nets {
-                let isSelected = selection.contains(net: net.id)
-                for edge in NetEdgeBuilder.edges(for: net, in: document) {
-                    var path = Path()
-                    path.move(to: edge.a.point)
-                    path.addLine(to: edge.b.point)
+                let style = netStroke(for: net.id)
+                for edge in NetEdgeBuilder.edges(for: net, in: document, geometry: geometry) {
                     ctx.stroke(
-                        path,
-                        with: .color(isSelected ? .accentColor : .secondary),
-                        lineWidth: isSelected ? 2.5 : 1.2
+                        edge.roundedPath(),
+                        with: .color(style.color),
+                        style: StrokeStyle(
+                            lineWidth: style.width,
+                            lineCap: .round,
+                            lineJoin: .round
+                        )
                     )
                 }
             }
@@ -34,17 +42,26 @@ struct NetLinesView: View {
                 guard let a = MatingEndpointGeometry.point(for: mating.a, in: document),
                       let b = MatingEndpointGeometry.point(for: mating.b, in: document)
                 else { continue }
-                var path = Path()
-                path.move(to: a)
-                path.addLine(to: b)
+                let da = MatingEndpointGeometry.exit(for: mating.a, selfPoint: a, otherPoint: b, in: document)
+                let db = MatingEndpointGeometry.exit(for: mating.b, selfPoint: b, otherPoint: a, in: document)
                 ctx.stroke(
-                    path,
+                    WireRouter.roundedPath(WireRouter.route(from: a, da, to: b, db), radius: 9),
                     with: .color(.indigo.opacity(0.75)),
-                    style: StrokeStyle(lineWidth: 4.5, lineCap: .round)
+                    style: StrokeStyle(lineWidth: 4.5, lineCap: .round, lineJoin: .round)
                 )
             }
         }
         .allowsHitTesting(false)
+    }
+
+    /// Resting / hovered / selected stroke for a net. Selection is the
+    /// strongest signal (full accent, widest); hover is a lighter accent so it
+    /// reads as "this is what you'd select"; everything else is the quiet
+    /// secondary rat's-nest line.
+    private func netStroke(for netId: UUID) -> (color: Color, width: CGFloat) {
+        if selection.contains(net: netId) { return (.accentColor, 2.5) }
+        if netId == hoveredNet { return (.accentColor.opacity(0.55), 2.0) }
+        return (.secondary, 1.2)
     }
 }
 
@@ -68,10 +85,35 @@ enum MatingEndpointGeometry {
                   subpart.kind == .subpart,
                   let pos = document.schematic.position(for: subpartId)
             else { return nil }
-            let metrics = ComponentSymbolMetrics.metrics(for: subpart, snapshots: document.librarySnapshots)
+            let metrics = ComponentSymbolMetrics
+                .metrics(for: subpart, snapshots: document.librarySnapshots)
+                .rotated(by: document.schematic.rotation(for: subpartId))
             guard let layout = metrics.sockets.first(where: { $0.connectorId == connectorId })
             else { return nil }
             return CGPoint(x: pos.x + layout.centre.x, y: pos.y + layout.centre.y)
         }
+    }
+
+    /// Direction the mating bus-line should leave an endpoint. A subpart
+    /// socket leaves perpendicular to the (rotated) edge it sits on; a
+    /// top-level connector centre — which has no natural side — heads straight
+    /// toward the other endpoint.
+    static func exit(
+        for endpoint: ConnectorEndpoint,
+        selfPoint: CGPoint,
+        otherPoint: CGPoint,
+        in document: CircuitDocument
+    ) -> ExitDir {
+        if case .subpartSocket(let subpartId, let connectorId) = endpoint,
+           let subpart = document.logic.components.first(where: { $0.id == subpartId }),
+           subpart.kind == .subpart {
+            let metrics = ComponentSymbolMetrics
+                .metrics(for: subpart, snapshots: document.librarySnapshots)
+                .rotated(by: document.schematic.rotation(for: subpartId))
+            if let layout = metrics.sockets.first(where: { $0.connectorId == connectorId }) {
+                return ExitDir(side: layout.side)
+            }
+        }
+        return ExitDir.from(CGPoint(x: otherPoint.x - selfPoint.x, y: otherPoint.y - selfPoint.y))
     }
 }

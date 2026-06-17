@@ -201,6 +201,44 @@ struct ComponentSymbolMetrics {
     func pinOffset(_ key: String) -> CGPoint {
         pinOffsets[key] ?? .zero
     }
+
+    /// Returns a copy reoriented by `quarterTurns` 90° clockwise steps. Pin
+    /// offsets and socket centres rotate by `(x,y) → (-y,x)` (screen coords,
+    /// y-down), the bounding `size` swaps width/height on odd turns so pins
+    /// stay glued to the symbol edges, and each socket's `side` follows. The
+    /// symbol's label is drawn separately and intentionally NOT rotated, so
+    /// text stays upright. The single source of truth for schematic rotation —
+    /// every pin-position consumer threads the component's rotation through here.
+    func rotated(by quarterTurns: Int) -> ComponentSymbolMetrics {
+        let q = ((quarterTurns % 4) + 4) % 4
+        guard q != 0 else { return self }
+        func rot(_ p: CGPoint) -> CGPoint {
+            switch q {
+            case 1:  return CGPoint(x: -p.y, y: p.x)
+            case 2:  return CGPoint(x: -p.x, y: -p.y)
+            default: return CGPoint(x: p.y, y: -p.x)
+            }
+        }
+        let newSize = (q % 2 == 1)
+            ? CGSize(width: size.height, height: size.width)
+            : size
+        let newSockets = sockets.map { s in
+            SymbolSocketLayout(
+                connectorId: s.connectorId,
+                label: s.label,
+                pinCount: s.pinCount,
+                pinNames: s.pinNames,
+                role: s.role,
+                side: s.side.rotated(by: q),
+                centre: rot(s.centre)
+            )
+        }
+        return ComponentSymbolMetrics(
+            size: newSize,
+            pinOffsets: pinOffsets.mapValues(rot),
+            sockets: newSockets
+        )
+    }
 }
 
 /// Visual symbol of one component on the schematic. Drawn as a stylized shape
@@ -208,10 +246,14 @@ struct ComponentSymbolMetrics {
 struct ComponentSymbolView: View {
     let component: Component
     let isSelected: Bool
+    /// Schematic orientation in 90° clockwise quarter-turns. Rotates the
+    /// symbol's box + pins/sockets; the label text stays upright.
+    var rotationQuarterTurns: Int = 0
     @Environment(\.librarySnapshots) private var librarySnapshots
 
     private var metrics: ComponentSymbolMetrics {
         ComponentSymbolMetrics.metrics(for: component, snapshots: librarySnapshots)
+            .rotated(by: rotationQuarterTurns)
     }
 
     /// Boundary-pin label lookup for subparts — keyed by the pin's UUID

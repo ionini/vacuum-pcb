@@ -24,6 +24,9 @@ struct ComponentNodeView: View {
     /// schematic coords.
     var onPinDragChanged: (PinRef, CGPoint) -> Void = { _, _ in }
     var onPinDragEnded: (PinRef, CGPoint) -> Void = { _, _ in }
+    /// Schematic orientation in 90° clockwise quarter-turns. Rotates the
+    /// symbol's box, pin handles, and sockets; the label stays upright.
+    var rotationQuarterTurns: Int = 0
 
     @State private var dragOffset: CGSize = .zero
     /// Set when `dragInvalidation` changes during a live drag. The drag
@@ -63,8 +66,10 @@ struct ComponentNodeView: View {
     var body: some View {
         let snapshots = document.circuit.librarySnapshots
         let m = ComponentSymbolMetrics.metrics(for: component, snapshots: snapshots)
+            .rotated(by: rotationQuarterTurns)
         return ZStack {
-            ComponentSymbolView(component: component, isSelected: isSelected)
+            ComponentSymbolView(component: component, isSelected: isSelected,
+                                rotationQuarterTurns: rotationQuarterTurns)
                 .onTapGesture {
                     handleSymbolTap()
                 }

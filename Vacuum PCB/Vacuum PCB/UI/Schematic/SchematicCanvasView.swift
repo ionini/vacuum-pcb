@@ -10,6 +10,9 @@ struct SchematicCanvasView: View {
     @Binding var netDrawState: NetDrawState
 
     @State private var mouseLocation: CGPoint = .zero
+    /// Net under the cursor, for the hover highlight. Recomputed as the cursor
+    /// moves; cleared when it leaves the canvas or a net draw begins.
+    @State private var hoveredNet: UUID?
     /// Shared multi-component drag state. Lives here so every ComponentNodeView
     /// that participates in the same drag reads the same translation and
     /// follows in tandem.
@@ -105,6 +108,7 @@ struct SchematicCanvasView: View {
                     handlers: [
                         KeyCodes.delete: { deleteSelection() },
                         KeyCodes.forwardDelete: { deleteSelection() },
+                        KeyCodes.r: { rotateSelection() },
                         KeyCodes.escape: {
                             netDrawState = .idle
                             selection = .none
@@ -242,7 +246,7 @@ struct SchematicCanvasView: View {
                 // by the high-priority gesture above.
                 .gesture(marqueeGesture, including: navigateMode ? .none : .gesture)
 
-            NetLinesView(document: document.circuit, selection: selection)
+            NetLinesView(document: document.circuit, selection: selection, hoveredNet: hoveredNet)
 
             ForEach(document.circuit.logic.components.filter { $0.kind != .screw }) { component in
                 let pos = document.circuit.schematic.position(for: component.id)
@@ -255,14 +259,15 @@ struct SchematicCanvasView: View {
                     multiDrag: $multiDrag,
                     dragInvalidation: dragInvalidation,
                     onPinDragChanged: handlePinDragChanged,
-                    onPinDragEnded: handlePinDragEnded
+                    onPinDragEnded: handlePinDragEnded,
+                    rotationQuarterTurns: document.circuit.schematic.rotation(for: component.id)
                 )
                 .position(x: pos.x, y: pos.y)
             }
 
             if case .awaitingSecondPin(let firstPin) = netDrawState,
-               let start = pinScreenPosition(firstPin) {
-                rubberBand(from: start, to: mouseLocation)
+               let g = NetEdgeBuilder.pinGeometry(in: document.circuit)[firstPin] {
+                rubberBand(from: g.point, exit: g.exit, to: mouseLocation)
             }
 
             marqueeOverlay
@@ -280,8 +285,11 @@ struct SchematicCanvasView: View {
             // value is already in schematic units — usable directly for
             // rubber-band rendering and marquee math.
             switch phase {
-            case .active(let pos): mouseLocation = pos
-            case .ended: break
+            case .active(let pos):
+                mouseLocation = pos
+                updateHoveredNet(at: pos)
+            case .ended:
+                if hoveredNet != nil { hoveredNet = nil }
             }
         }
     }
@@ -485,7 +493,9 @@ struct SchematicCanvasView: View {
         var hits: Set<UUID> = []
         for component in document.circuit.logic.components {
             guard let center = document.circuit.schematic.position(for: component.id) else { continue }
-            let metrics = ComponentSymbolMetrics.metrics(for: component)
+            let metrics = ComponentSymbolMetrics
+                .metrics(for: component, snapshots: document.circuit.librarySnapshots)
+                .rotated(by: document.circuit.schematic.rotation(for: component.id))
             // Use the component's bounding rect (centered on its schematic
             // position) as the hit area. Marquee that touches any pixel of
             // the symbol counts as hit.
@@ -507,13 +517,15 @@ struct SchematicCanvasView: View {
 
     // MARK: - Rubber band
 
-    private func rubberBand(from a: CGPoint, to b: CGPoint) -> some View {
-        Path { p in
-            p.move(to: a)
-            p.addLine(to: b)
-        }
-        .stroke(Color.accentColor.opacity(0.8), style: StrokeStyle(lineWidth: 1.6, dash: [4, 3]))
-        .allowsHitTesting(false)
+    private func rubberBand(from a: CGPoint, exit: ExitDir, to b: CGPoint) -> some View {
+        // Free end at the cursor (nil exit) so the line stubs out of the
+        // anchored pin and meets the cursor with one orthogonal turn.
+        WireRouter.roundedPath(WireRouter.route(from: a, exit, to: b, nil), radius: 9)
+            .stroke(
+                Color.accentColor.opacity(0.8),
+                style: StrokeStyle(lineWidth: 1.6, lineJoin: .round, dash: [4, 3])
+            )
+            .allowsHitTesting(false)
     }
 
     // MARK: - Pin drag (drag-to-route)
@@ -552,32 +564,43 @@ struct SchematicCanvasView: View {
         let radius: Double = InputPlatform.isTouch ? 18 : 14
         let radiusSq = radius * radius
         var best: (ref: PinRef, distSq: Double)?
-        for component in document.circuit.logic.components where component.kind != .screw {
-            guard let center = document.circuit.schematic.position(for: component.id) else { continue }
-            let metrics = ComponentSymbolMetrics.metrics(
-                for: component,
-                snapshots: document.circuit.librarySnapshots
-            )
-            for key in component.pinKeys(snapshots: document.circuit.librarySnapshots) {
-                let off = metrics.pinOffset(key)
-                let dx = Double(schematicPt.x) - (center.x + off.x)
-                let dy = Double(schematicPt.y) - (center.y + off.y)
-                let d2 = dx * dx + dy * dy
-                if d2 <= radiusSq, d2 < (best?.distSq ?? .greatestFiniteMagnitude) {
-                    best = (PinRef(componentId: component.id, pinKey: key), d2)
-                }
+        // `pinGeometry` already resolves rotated pin positions and skips
+        // screws (they carry no pins), so the hit-test follows the symbols.
+        for (ref, geo) in NetEdgeBuilder.pinGeometry(in: document.circuit) {
+            let dx = Double(schematicPt.x) - Double(geo.point.x)
+            let dy = Double(schematicPt.y) - Double(geo.point.y)
+            let d2 = dx * dx + dy * dy
+            if d2 <= radiusSq, d2 < (best?.distSq ?? .greatestFiniteMagnitude) {
+                best = (ref, d2)
             }
         }
         return best?.ref
     }
 
-    private func pinScreenPosition(_ ref: PinRef) -> CGPoint? {
-        guard let comp = document.circuit.logic.components.first(where: { $0.id == ref.componentId }),
-              let center = document.circuit.schematic.position(for: ref.componentId)
-        else { return nil }
-        let metrics = ComponentSymbolMetrics.metrics(for: comp)
-        let off = metrics.pinOffset(ref.pinKey)
-        return CGPoint(x: center.x + off.x, y: center.y + off.y)
+    // MARK: - Hover highlight
+
+    /// Highlights the net nearest the cursor (within a small slop) by storing
+    /// its id; `NetLinesView` strokes it brighter. Skipped while drawing a net
+    /// — the rubber band owns the cursor then. Builds the pin-geometry map once
+    /// and shares it across nets so the frequent hover ticks stay cheap.
+    private func updateHoveredNet(at pt: CGPoint) {
+        guard case .idle = netDrawState else {
+            if hoveredNet != nil { hoveredNet = nil }
+            return
+        }
+        let threshold: Double = 10
+        let geometry = NetEdgeBuilder.pinGeometry(in: document.circuit)
+        var best: (netId: UUID, distance: Double)?
+        for net in document.circuit.logic.nets {
+            for edge in NetEdgeBuilder.edges(for: net, in: document.circuit, geometry: geometry) {
+                let d = Double(WireRouter.distance(from: pt, to: edge.polyline()))
+                if d <= threshold, d < (best?.distance ?? .greatestFiniteMagnitude) {
+                    best = (net.id, d)
+                }
+            }
+        }
+        let next = best?.netId
+        if next != hoveredNet { hoveredNet = next }
     }
 
     // MARK: - Right-click on a net line
@@ -587,7 +610,7 @@ struct SchematicCanvasView: View {
         var best: (netId: UUID, pinToRemove: PinRef, distance: Double)?
         for net in document.circuit.logic.nets {
             for edge in NetEdgeBuilder.edges(for: net, in: document.circuit) {
-                let d = distanceFromPoint(pt, toSegmentFrom: edge.a.point, to: edge.b.point)
+                let d = Double(WireRouter.distance(from: pt, to: edge.polyline()))
                 guard d <= threshold else { continue }
                 if d < (best?.distance ?? .greatestFiniteMagnitude) {
                     let aDist = hypot(Double(pt.x - edge.a.point.x), Double(pt.y - edge.a.point.y))
@@ -613,18 +636,16 @@ struct SchematicCanvasView: View {
         }
     }
 
-    private func distanceFromPoint(_ p: CGPoint, toSegmentFrom a: CGPoint, to b: CGPoint) -> Double {
-        let dx = b.x - a.x, dy = b.y - a.y
-        let lenSq = dx * dx + dy * dy
-        guard lenSq > 0 else { return hypot(Double(p.x - a.x), Double(p.y - a.y)) }
-        let t = max(0, min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq))
-        return hypot(Double(p.x - (a.x + CGFloat(t) * dx)),
-                     Double(p.y - (a.y + CGFloat(t) * dy)))
-    }
-
     // MARK: - Deletion
 
     private func deleteSelection() {
         SchematicActions.delete(document: &document, selection: &selection)
+    }
+
+    /// Rotate every selected component 90° clockwise (R key). Mirrors
+    /// `deleteSelection` — the inspector's "Rotate 90°" button drives the
+    /// same `SchematicActions.rotate` path.
+    private func rotateSelection() {
+        SchematicActions.rotate(document: &document, selection: selection)
     }
 }

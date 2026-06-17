@@ -91,10 +91,11 @@ private struct SchematicCanvasLayer: View {
             let pressure = rawNetPressure(net.id, pressures: pressures, remap: remap)
             let stroke = PressureColor.strokeColor(for: pressure)
             for edge in NetEdgeBuilder.edges(for: net, in: document) {
-                var path = Path()
-                path.move(to: edge.a.point)
-                path.addLine(to: edge.b.point)
-                ctx.stroke(path, with: .color(stroke), lineWidth: 2.4)
+                ctx.stroke(
+                    edge.roundedPath(),
+                    with: .color(stroke),
+                    style: StrokeStyle(lineWidth: 2.4, lineCap: .round, lineJoin: .round)
+                )
             }
         }
     }
@@ -107,13 +108,12 @@ private struct SchematicCanvasLayer: View {
             guard let a = MatingEndpointGeometry.point(for: mating.a, in: document),
                   let b = MatingEndpointGeometry.point(for: mating.b, in: document)
             else { continue }
-            var path = Path()
-            path.move(to: a)
-            path.addLine(to: b)
+            let da = MatingEndpointGeometry.exit(for: mating.a, selfPoint: a, otherPoint: b, in: document)
+            let db = MatingEndpointGeometry.exit(for: mating.b, selfPoint: b, otherPoint: a, in: document)
             ctx.stroke(
-                path,
+                WireRouter.roundedPath(WireRouter.route(from: a, da, to: b, db), radius: 9),
                 with: .color(.indigo.opacity(0.75)),
-                style: StrokeStyle(lineWidth: 4.5, lineCap: .round)
+                style: StrokeStyle(lineWidth: 4.5, lineCap: .round, lineJoin: .round)
             )
         }
     }
@@ -130,7 +130,9 @@ private struct SchematicCanvasLayer: View {
         for component in document.logic.components where component.kind != .screw {
             let pos = document.schematic.position(for: component.id) ?? Point(x: 200, y: 200)
             let center = CGPoint(x: pos.x, y: pos.y)
-            let metrics = ComponentSymbolMetrics.metrics(for: component, snapshots: document.librarySnapshots)
+            let metrics = ComponentSymbolMetrics
+                .metrics(for: component, snapshots: document.librarySnapshots)
+                .rotated(by: document.schematic.rotation(for: component.id))
             let pressure = nodePressure(component: component, pressures: pressures, remap: remap)
             let fill = PressureColor.color(for: pressure).opacity(0.55)
             let stroke = PressureColor.strokeColor(for: pressure)

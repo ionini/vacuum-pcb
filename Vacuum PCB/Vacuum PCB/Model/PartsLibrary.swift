@@ -8,6 +8,17 @@ import Combine
 /// edge of the schematic bounding box and orders pins along that edge.
 enum SymbolSide: String, Hashable {
     case left, right, top, bottom
+
+    /// Rotates the side by `quarterTurns` 90° clockwise steps, matching the
+    /// schematic symbol's `(x,y) → (-y,x)` rotation (screen coords, y-down):
+    /// right → bottom → left → top → right. Keeps socket tabs on the edge
+    /// they visually move to when the user rotates a subpart.
+    func rotated(by quarterTurns: Int) -> SymbolSide {
+        let cw: [SymbolSide] = [.right, .bottom, .left, .top]
+        guard let i = cw.firstIndex(of: self) else { return self }
+        let q = ((quarterTurns % 4) + 4) % 4
+        return cw[(i + q) % 4]
+    }
 }
 
 /// One externally-visible mating socket of a library part. A subpart that
