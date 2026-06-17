@@ -44,6 +44,7 @@ let package = Package(
                 "DESIGN.md",
                 "ASSEMBLY_PLAN.md",
                 "CONNECTOR_PLAN.md",
+                "SUBPART_FLIP_PLAN.md",
                 "EUCLID_PERF.md",
                 "Vacuum PCB.icon",
                 "Icon 2.icon",

@@ -21,6 +21,9 @@ struct ParkingLotView: View {
     /// Diagnostics from the last minimize run, shown as a compact readout
     /// under the button. Nil before the first run.
     let minimizeStats: Minimizer.Stats?
+    /// Whether minimize runs the transistor-orientation pre-pass (flips
+    /// transistors to cut cross-silicone vias). Bound so the choice persists.
+    @Binding var optimizeOrientation: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -51,6 +54,10 @@ struct ParkingLotView: View {
 
             Divider().padding(.vertical, 4)
             Text("Optimize").font(.caption.bold()).foregroundStyle(.secondary)
+            Toggle("Optimize orientation", isOn: $optimizeOrientation)
+                .controlSize(.small)
+                .font(.caption2)
+                .help("Flip transistors to reduce vias that cross the silicone, before placing")
             Button(action: onMinimize) {
                 HStack(spacing: 5) {
                     if isMinimizing { ProgressView().controlSize(.mini) }
@@ -98,6 +105,11 @@ struct ParkingLotView: View {
             }
             Text("DRC \(s.baselineIssues) → \(s.finalIssues)")
                 .foregroundStyle(s.finalIssues > s.baselineIssues ? .orange : .secondary)
+            if s.crossSiliconeViasBefore != s.crossSiliconeViasAfter || s.orientationFlips > 0 {
+                Text("vias \(s.crossSiliconeViasBefore) → \(s.crossSiliconeViasAfter)"
+                     + (s.orientationFlips > 0 ? "  (\(s.orientationFlips) flip\(s.orientationFlips == 1 ? "" : "s"))" : ""))
+                    .foregroundStyle(s.crossSiliconeViasAfter < s.crossSiliconeViasBefore ? .green : .secondary)
+            }
         }
         .font(.caption2)
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -387,6 +387,9 @@ func reportMinimize(_ before: CircuitDocument, _ after: CircuitDocument, stats: 
             "wireAfter": stats.wirelengthAfter,
             "drcBefore": stats.baselineIssues,
             "drcAfter": stats.finalIssues,
+            "viasBefore": stats.crossSiliconeViasBefore,
+            "viasAfter": stats.crossSiliconeViasAfter,
+            "orientationFlips": stats.orientationFlips,
         ]
         printJSON(root)
         return
@@ -397,6 +400,9 @@ func reportMinimize(_ before: CircuitDocument, _ after: CircuitDocument, stats: 
                  stats.outlineBefore.size.width, stats.outlineBefore.size.height,
                  stats.outlineAfter.size.width, stats.outlineAfter.size.height,
                  saved, stats.adopted ? "saved" : "— not adopted"))
+    print(String(format: "vias: %d → %d  (%d transistor flip%@)",
+                 stats.crossSiliconeViasBefore, stats.crossSiliconeViasAfter,
+                 stats.orientationFlips, stats.orientationFlips == 1 ? "" : "s"))
 }
 
 /// Collapse a DRC issue list into a "kind: count" histogram for skimmable
@@ -1017,6 +1023,8 @@ MINIMIZE OPTIONS:
                         Wall time ≈ --seconds regardless of N (up to core count).
   --seed N              Base PRNG seed (default 0); restart k uses seed+k.
   --iters N             Cap on placement-search trials per restart (default auto).
+  --no-orientation      Skip the transistor-orientation pre-pass (which flips
+                        transistors to reduce silicone-crossing vias).
   --json                Machine-readable output.
 
 VALIDATION OPTIONS (sweep / margins / staleness / verify):
@@ -1064,6 +1072,7 @@ var seconds: Double = 10
 var seed: UInt64 = 0
 var iters: Int?
 var restarts = 1
+var optimizeOrientation = true
 var phaseArgs: [String] = []
 var epsilon = 1e-5
 var params = SimulationParameters.defaults
@@ -1134,6 +1143,8 @@ while i < args.count {
         i += 1
         guard i < args.count, let n = Int(args[i]), n >= 1 else { fail("error: --restarts needs a positive integer") }
         restarts = n
+    case "--no-orientation":
+        optimizeOrientation = false
     case "--lib":
         i += 1
         guard i < args.count else { fail("error: --lib needs a DIR") }
@@ -1200,7 +1211,8 @@ do {
         func optionsFor(seed s: UInt64) -> Minimizer.Options {
             Minimizer.Options(
                 maxIterations: iters ?? auto.maxIterations,
-                timeBudget: seconds, seed: s, margin: auto.margin
+                timeBudget: seconds, seed: s, margin: auto.margin,
+                optimizeOrientation: optimizeOrientation
             )
         }
         let (result, stats) = runMinimize(doc, restarts: restarts, baseSeed: seed,

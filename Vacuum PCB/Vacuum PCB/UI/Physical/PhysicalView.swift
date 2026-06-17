@@ -262,6 +262,9 @@ struct PhysicalInspector: View {
     /// Diagnostics from the most recent minimize run, shown under the button
     /// (iterations, area saved, DRC). Nil until the user runs Minimize once.
     @State private var minimizeStats: Minimizer.Stats?
+    /// Whether Minimize runs the transistor-orientation pre-pass (flips
+    /// transistors to cut cross-silicone vias). On by default.
+    @State private var optimizeOrientation = true
     @FocusState private var boardFieldFocused: BoardField?
 
     private enum BoardField: Hashable { case width, height }
@@ -325,7 +328,8 @@ struct PhysicalInspector: View {
                         onPlaceAll: placeAllUnplaced,
                         onMinimize: minimize,
                         isMinimizing: isMinimizing,
-                        minimizeStats: minimizeStats
+                        minimizeStats: minimizeStats,
+                        optimizeOrientation: $optimizeOrientation
                     )
                 }
                 .padding(.horizontal, 14)
@@ -571,7 +575,9 @@ struct PhysicalInspector: View {
         isMinimizing = true
         Task { @MainActor in
             await Task.yield()
-            let result = Minimizer.report(document.circuit)
+            var options = Minimizer.Options.make(forComponentCount: document.circuit.physical.placements.count)
+            options.optimizeOrientation = optimizeOrientation
+            let result = Minimizer.report(document.circuit, options: options)
             // Only the physical projection changes (one undo step); the logic
             // graph is never touched. Always assign so a no-improvement run is
             // a true no-op rather than a redundant mutation.

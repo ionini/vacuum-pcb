@@ -48,6 +48,11 @@ enum Minimizer {
     // overlap on a comparable footing with area for the boards we deal with.
     private static let wWire = 2.0
     private static let wOverlap = 16.0
+    /// Penalty per cross-silicone via (~mm²-equivalent). These vias leak and
+    /// need spacing, so the placement/orientation search should prefer routing
+    /// that stays on one plate. Weighted below `wOverlap` so it nudges without
+    /// overriding the die-area goal. Tunable.
+    private static let wVia = 4.0
 
     // MARK: - Options
 
@@ -64,6 +69,10 @@ enum Minimizer {
         var seed: UInt64
         /// Breathing room (mm) left around the features when shrink-fitting.
         var margin: Double
+        /// Run the placement-independent transistor-orientation pre-pass before
+        /// the search, flipping transistors to cut cross-silicone vias. On by
+        /// default; the result is only kept if it still routes within baseline.
+        var optimizeOrientation: Bool = true
 
         static func make(forComponentCount n: Int) -> Options {
             Options(
@@ -73,7 +82,8 @@ enum Minimizer {
                 maxIterations: min(2_000_000, max(20_000, n * 4_000)),
                 timeBudget: 3.0,
                 seed: 0x5EED_FACE,
-                margin: 3.0
+                margin: 3.0,
+                optimizeOrientation: true
             )
         }
     }
@@ -93,6 +103,11 @@ enum Minimizer {
         var wirelengthBefore = 0.0
         var wirelengthAfter = 0.0
         var finalIssues = 0
+        // Cross-silicone vias before/after, and how many transistors the
+        // orientation pre-pass flipped. Exact counts (the headline numbers).
+        var crossSiliconeViasBefore = 0
+        var crossSiliconeViasAfter = 0
+        var orientationFlips = 0
         var outlineBefore = Rect(origin: .zero, size: Size(width: 0, height: 0))
         var outlineAfter = Rect(origin: .zero, size: Size(width: 0, height: 0))
         // The phase-2 candidate as evaluated by the adopt/revert gate (before
@@ -104,13 +119,14 @@ enum Minimizer {
 
         var summary: String {
             String(
-                format: "iters=%d acc=%d rej=%d adopted=%@ | area %.0f→%.0f | wire %.0f→%.0f | outline %.0f×%.0f→%.0f×%.0f | cand area=%.0f outline=%.0f×%.0f DRC=%d | DRC %d→%d | %.2fs",
+                format: "iters=%d acc=%d rej=%d adopted=%@ | area %.0f→%.0f | wire %.0f→%.0f | outline %.0f×%.0f→%.0f×%.0f | cand area=%.0f outline=%.0f×%.0f DRC=%d | DRC %d→%d | vias %d→%d flips=%d | %.2fs",
                 iterations, accepted, rejected, adopted ? "Y" : "N",
                 areaBefore, areaAfter, wirelengthBefore, wirelengthAfter,
                 outlineBefore.size.width, outlineBefore.size.height,
                 outlineAfter.size.width, outlineAfter.size.height,
                 candidateArea, candidateOutline.size.width, candidateOutline.size.height, candidateIssues,
-                baselineIssues, finalIssues, elapsed
+                baselineIssues, finalIssues,
+                crossSiliconeViasBefore, crossSiliconeViasAfter, orientationFlips, elapsed
             )
         }
     }
@@ -136,12 +152,14 @@ enum Minimizer {
         var stats = Stats(baselineIssues: baseline,
                           areaBefore: area(of: input) ?? 0,
                           wirelengthBefore: hpwl(of: input),
+                          crossSiliconeViasBefore: input.physical.crossSiliconeViaPositions().count,
                           outlineBefore: outline)
         func finish(_ d: CircuitDocument, adopted: Bool) -> (doc: CircuitDocument, stats: Stats) {
             stats.adopted = adopted
             stats.areaAfter = area(of: d) ?? 0
             stats.wirelengthAfter = hpwl(of: d)
             stats.finalIssues = blockingIssueCount(d)
+            stats.crossSiliconeViasAfter = d.physical.crossSiliconeViaPositions().count
             stats.outlineAfter = d.physical.boardOutline
             stats.elapsed = Date().timeIntervalSince(start)
             return (d, stats)
@@ -163,7 +181,32 @@ enum Minimizer {
         // cost-worse moves with a cooling probability, so it climbs out of the
         // local minima the old greedy repair got stuck in. The best DRC-clean
         // layout seen is carried into phase 2.
+        // ── Phase 0: orientation pre-pass (placement-independent) ─────────────
+        // Flipping a transistor moves its gate/pads to the opposite plate
+        // without touching XY, so the count of nets that must cross the silicone
+        // depends only on this assignment. Solve it first, re-route the disturbed
+        // nets, and keep it only if it still builds within baseline — otherwise
+        // discard the flips and anneal from the original layout (never break a
+        // board). The annealer then places/routes this improved orientation.
         var working = input
+        if options.optimizeOrientation {
+            var oriented = input
+            let result = OrientationOptimizer.optimize(input, seed: options.seed)
+            let flips = OrientationOptimizer.apply(result, to: &oriented)
+            if flips > 0 {
+                let moved = Set(result.layerForTransistor.keys)
+                var movedNets: Set<UUID> = []
+                for net in oriented.logic.nets
+                where net.pins.contains(where: { moved.contains($0.componentId) }) {
+                    movedNets.insert(net.id)
+                }
+                reroute(&oriented, nets: movedNets)
+                if blockingIssueCount(oriented) <= baseline {
+                    working = oriented
+                    stats.orientationFlips = flips
+                }
+            }
+        }
         var rng = SplitMix64(seed: options.seed)
         let deadline = Date().addingTimeInterval(options.timeBudget)
         let movable = movableIndices(input)
@@ -229,7 +272,16 @@ enum Minimizer {
         let candDie = areaOf(candidate.physical.boardOutline)
         let smaller = candDie < inDie - 1e-6
         let tidier = candDie <= inDie + 1e-6 && hpwl(of: candidate) < hpwl(of: input) * 0.99
-        if candIssues <= baseline, smaller || tidier {
+        // An orientation win shows up as fewer cross-silicone vias with the die
+        // unchanged (flips don't move XY). Adopt it even when area/wirelength are
+        // flat, as long as the board still builds and the wiring didn't bloat to
+        // buy it. Exact counter here — the gate runs once per report.
+        let viasIn = input.physical.crossSiliconeViaPositions().count
+        let viasOut = candidate.physical.crossSiliconeViaPositions().count
+        let fewerVias = candDie <= inDie + 1e-6
+            && viasOut < viasIn
+            && hpwl(of: candidate) <= hpwl(of: input) * 1.01
+        if candIssues <= baseline, smaller || tidier || fewerVias {
             return finish(candidate, adopted: true)
         }
         return finish(input, adopted: false)
@@ -237,10 +289,32 @@ enum Minimizer {
 
     // MARK: - Proxy cost
 
-    /// `area + wWire·HPWL + wOverlap·overlap` — the phase-1 objective.
+    /// `area + wWire·HPWL + wOverlap·overlap + wVia·vias` — the phase-1 objective.
     private static func cost(of doc: CircuitDocument) -> Double {
         let a = area(of: doc) ?? 0
         return a + wWire * hpwl(of: doc) + wOverlap * overlapPenalty(of: doc)
+            + wVia * Double(crossSiliconeViaCount(doc))
+    }
+
+    /// Cheap per-iteration count of silicone-crossing vias: per route, the paired
+    /// count of depth-0 `.via` waypoints on opposite plates. Mirrors the T0/B0
+    /// rule in `PhysicalLayout.crossSiliconeViaPositions` but skips its O(n²) XY
+    /// matching — the negotiated router emits a crossing as one via waypoint on
+    /// each plate, so `min(top, bottom)` per route is the crossing count. A cost
+    /// proxy only; Stats and the adopt gate use the exact counter. Internal so
+    /// tests can pin it to the exact count.
+    static func crossSiliconeViaCount(_ doc: CircuitDocument) -> Int {
+        var total = 0
+        for route in doc.physical.routes {
+            var top = 0, bottom = 0
+            for seg in route.segments where seg.layer.depth == 0 {
+                for wp in seg.waypoints where wp.kind == .via {
+                    if seg.layer.plate == .top { top += 1 } else { bottom += 1 }
+                }
+            }
+            total += min(top, bottom)
+        }
+        return total
     }
 
     /// Total half-perimeter wirelength: for each net, the half-perimeter of the
