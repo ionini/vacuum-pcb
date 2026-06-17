@@ -18,26 +18,34 @@ struct NetLinesView: View {
     /// resting state so the whole connection lights up on hover. Selection
     /// still wins when both apply.
     var hoveredNet: UUID? = nil
+    /// When false, VAC/ATM nets draw as wires instead of tap symbols.
+    var railTaps: Bool = true
 
     var body: some View {
         Canvas { ctx, _ in
-            // Resolve pin positions once for the whole net mesh rather than
-            // rebuilding the map per net.
-            let geometry = NetEdgeBuilder.pinGeometry(in: document)
-            for net in document.logic.nets {
-                let style = netStroke(for: net.id)
-                for edge in NetEdgeBuilder.edges(for: net, in: document, geometry: geometry) {
+            let nets = SchematicWireGeometry.render(in: document, railTaps: railTaps)
+
+            // Wires + rail taps.
+            for net in nets {
+                let style = netStroke(for: net.netId)
+                for edge in net.edges {
                     ctx.stroke(
-                        edge.roundedPath(),
+                        WireRouter.roundedPath(edge.points, radius: 9),
                         with: .color(style.color),
-                        style: StrokeStyle(
-                            lineWidth: style.width,
-                            lineCap: .round,
-                            lineJoin: .round
-                        )
+                        style: StrokeStyle(lineWidth: style.width, lineCap: .round, lineJoin: .round)
                     )
                 }
+                for tap in net.taps {
+                    drawTap(ctx, tap, highlighted: isHighlighted(net.netId))
+                }
             }
+
+            // Break crossings of different nets with a hop so it's clear they
+            // don't connect, then dot the real junctions.
+            drawHops(ctx, nets)
+            drawJunctionDots(ctx, nets)
+
+            // Connector matings: chunky indigo bus-lines on top.
             for mating in document.logic.matings {
                 guard let a = MatingEndpointGeometry.point(for: mating.a, in: document),
                       let b = MatingEndpointGeometry.point(for: mating.b, in: document)
@@ -54,6 +62,10 @@ struct NetLinesView: View {
         .allowsHitTesting(false)
     }
 
+    private func isHighlighted(_ netId: UUID) -> Bool {
+        selection.contains(net: netId) || netId == hoveredNet
+    }
+
     /// Resting / hovered / selected stroke for a net. Selection is the
     /// strongest signal (full accent, widest); hover is a lighter accent so it
     /// reads as "this is what you'd select"; everything else is the quiet
@@ -62,6 +74,107 @@ struct NetLinesView: View {
         if selection.contains(net: netId) { return (.accentColor, 2.5) }
         if netId == hoveredNet { return (.accentColor.opacity(0.55), 2.0) }
         return (.secondary, 1.2)
+    }
+
+    // MARK: - Rail taps
+
+    /// Draws one rail tap: a short stub out of the pin ending in a perpendicular
+    /// bar (the rail symbol) with a VAC/ATM label, in the rail's colour.
+    private func drawTap(_ ctx: GraphicsContext, _ tap: SchematicWireGeometry.Tap, highlighted: Bool) {
+        let stub: CGFloat = 12, half: CGFloat = 7
+        let p = tap.point
+        let v = tap.exit.vector
+        let end = CGPoint(x: p.x + v.x * stub, y: p.y + v.y * stub)
+        let perp = tap.exit.isHorizontal ? CGPoint(x: 0, y: 1) : CGPoint(x: 1, y: 0)
+        let railColor: Color = tap.rail == .vacuumSource ? .red : .green
+        let lineColor: Color = highlighted ? .accentColor : railColor.opacity(0.85)
+        let w: CGFloat = highlighted ? 2.2 : 1.6
+
+        var stubPath = Path()
+        stubPath.move(to: p)
+        stubPath.addLine(to: end)
+        ctx.stroke(stubPath, with: .color(lineColor), style: StrokeStyle(lineWidth: w, lineCap: .round))
+
+        var bar = Path()
+        bar.move(to: CGPoint(x: end.x - perp.x * half, y: end.y - perp.y * half))
+        bar.addLine(to: CGPoint(x: end.x + perp.x * half, y: end.y + perp.y * half))
+        ctx.stroke(bar, with: .color(lineColor), style: StrokeStyle(lineWidth: w + 0.4, lineCap: .round))
+
+        var text = ctx.resolve(Text(tap.rail == .vacuumSource ? "VAC" : "ATM")
+            .font(.system(size: 9, weight: .medium)))
+        text.shading = .color(railColor)
+        ctx.draw(text, at: CGPoint(x: end.x + v.x * 9, y: end.y + v.y * 9), anchor: .center)
+    }
+
+    // MARK: - Junction dots
+
+    /// A filled dot wherever 3+ wire segments of one net meet — the unambiguous
+    /// "these are joined" marker (a 2-way meeting is just a corner).
+    private func drawJunctionDots(_ ctx: GraphicsContext, _ nets: [SchematicWireGeometry.NetRender]) {
+        for net in nets {
+            var degree: [PinRef: Int] = [:]
+            var pointFor: [PinRef: CGPoint] = [:]
+            for e in net.edges {
+                degree[e.a, default: 0] += 1
+                degree[e.b, default: 0] += 1
+                if let f = e.points.first { pointFor[e.a] = f }
+                if let l = e.points.last { pointFor[e.b] = l }
+            }
+            let color = netStroke(for: net.netId).color
+            for (pin, d) in degree where d >= 3 {
+                guard let c = pointFor[pin] else { continue }
+                let r: CGFloat = 3
+                ctx.fill(Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)),
+                         with: .color(color))
+            }
+        }
+    }
+
+    // MARK: - Crossing hops
+
+    /// Where an orthogonal segment of one net crosses one of another net, break
+    /// the under-wire with a small background gap and redraw the over-wire's
+    /// local piece, so a crossing reads as "passes over", not "connects".
+    private func drawHops(_ ctx: GraphicsContext, _ nets: [SchematicWireGeometry.NetRender]) {
+        struct Seg { let netIndex: Int; let netId: UUID; let a: CGPoint; let b: CGPoint }
+        var segs: [Seg] = []
+        for (i, net) in nets.enumerated() {
+            for e in net.edges where e.points.count >= 2 {
+                for k in 0..<(e.points.count - 1) {
+                    segs.append(Seg(netIndex: i, netId: net.netId, a: e.points[k], b: e.points[k + 1]))
+                }
+            }
+        }
+        func horizontal(_ s: Seg) -> Bool { abs(s.a.y - s.b.y) < 0.5 }
+
+        for i in 0..<segs.count {
+            for j in (i + 1)..<segs.count {
+                let s = segs[i], t = segs[j]
+                guard s.netId != t.netId, horizontal(s) != horizontal(t) else { continue }
+                let h = horizontal(s) ? s : t
+                let vSeg = horizontal(s) ? t : s
+                let x = vSeg.a.x, y = h.a.y
+                let hx0 = min(h.a.x, h.b.x), hx1 = max(h.a.x, h.b.x)
+                let vy0 = min(vSeg.a.y, vSeg.b.y), vy1 = max(vSeg.a.y, vSeg.b.y)
+                guard x > hx0 + 2, x < hx1 - 2, y > vy0 + 2, y < vy1 - 2 else { continue }
+
+                let g: CGFloat = 4
+                ctx.fill(Path(ellipseIn: CGRect(x: x - g, y: y - g, width: 2 * g, height: 2 * g)),
+                         with: .color(Color.canvasBackground))
+                let overVertical = vSeg.netIndex > h.netIndex
+                let over = overVertical ? vSeg : h
+                let stroke = netStroke(for: over.netId)
+                var piece = Path()
+                if overVertical {
+                    piece.move(to: CGPoint(x: x, y: y - g - 1))
+                    piece.addLine(to: CGPoint(x: x, y: y + g + 1))
+                } else {
+                    piece.move(to: CGPoint(x: x - g - 1, y: y))
+                    piece.addLine(to: CGPoint(x: x + g + 1, y: y))
+                }
+                ctx.stroke(piece, with: .color(stroke.color), style: StrokeStyle(lineWidth: stroke.width, lineCap: .round))
+            }
+        }
     }
 }
 

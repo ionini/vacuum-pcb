@@ -13,6 +13,9 @@ struct SchematicView: View {
     /// Passed in from DocumentView so the Export menu can sit immediately
     /// before the Inspector toggle on the trailing edge.
     let exportMenu: ExportMenuButton
+    /// Draw VAC/ATM rail nets as compact tap symbols (vs. wires). Shared with
+    /// the canvas + Simulate view through the same AppStorage key.
+    @AppStorage("schematicShowRailTaps") private var showRailTaps = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -25,6 +28,13 @@ struct SchematicView: View {
             InspectorStrip(document: $document, selection: $selection)
         }
         .toolbar {
+            ToolbarItem(placement: .automatic) {
+                Toggle(isOn: $showRailTaps) {
+                    Label("Rail taps", systemImage: "powerplug")
+                }
+                .toggleStyle(.button)
+                .help("Show VAC/ATM rail nets as compact tap symbols instead of wires")
+            }
             ToolbarItem(placement: .primaryAction) { exportMenu }
             ToolbarItem(placement: .primaryAction) {
                 InspectorToggleButton(showInspector: $showInspector)
@@ -135,20 +145,11 @@ struct SchematicInspector: View {
     }
 
     private func addComponent(kind: ComponentKind, portDirection: PortDirection?) {
-        let label = document.circuit.logic.nextLabel(for: kind, portDirection: portDirection)
-        let id = UUID()
-        let component = Component(
-            id: id,
-            kind: kind,
-            label: label,
-            resistorSize: kind == .resistor ? .medium : nil,
-            portDirection: portDirection,
-            connectorPinCount: kind == .connector ? 4 : nil,
-            connectorRole: kind == .connector ? .bottomExtend : nil
-        )
+        let component = SchematicActions.makeComponent(
+            kind: kind, portDirection: portDirection, in: document.circuit)
         document.circuit.logic.components.append(component)
-        document.circuit.schematic.setPosition(spawnPosition(), for: id)
-        selection = .component(id)
+        document.circuit.schematic.setPosition(spawnPosition(), for: component.id)
+        selection = .component(component.id)
     }
 
     /// Instantiates a library part. Enforces the layer-count check up
@@ -353,6 +354,22 @@ enum SchematicActions {
         for id in selection.components {
             document.circuit.schematic.rotate(componentId: id, by: 1)
         }
+    }
+
+    /// Builds a fresh primitive component with a unique label. Pure — the
+    /// caller appends it and assigns its schematic position. Shared by the
+    /// palette's click-to-add and the canvas's drag-to-place drop.
+    static func makeComponent(kind: ComponentKind, portDirection: PortDirection?,
+                              in circuit: CircuitDocument) -> Component {
+        Component(
+            id: UUID(),
+            kind: kind,
+            label: circuit.logic.nextLabel(for: kind, portDirection: portDirection),
+            resistorSize: kind == .resistor ? .medium : nil,
+            portDirection: portDirection,
+            connectorPinCount: kind == .connector ? 4 : nil,
+            connectorRole: kind == .connector ? .bottomExtend : nil
+        )
     }
 
     private static func deleteComponent(_ id: UUID, in document: inout VPCBDocument) {

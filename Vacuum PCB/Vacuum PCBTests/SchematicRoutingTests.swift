@@ -228,4 +228,177 @@ struct SchematicRoutingTests {
         let decoded = try JSONDecoder().decode(SchematicPosition.self, from: data)
         #expect(decoded.rotationQuarterTurns == 3)
     }
+
+    // MARK: - Grid + lanes
+
+    @Test func gridSnapRoundsToStep() {
+        #expect(SchematicLayout.snapToGrid(Point(x: 23, y: 57)) == Point(x: 20, y: 60))
+        #expect(SchematicLayout.snapToGrid(Point(x: -11, y: 9)) == Point(x: -20, y: 0))
+        #expect(SchematicLayout.snapToGrid(Point(x: 30, y: 50)) == Point(x: 40, y: 60))   // .5 rounds away from zero
+    }
+
+    @Test func laneOffsetIsDeterministicAndCentered() {
+        #expect(SchematicWireGeometry.laneOffset(forNetAt: 2) == 0)
+        #expect(SchematicWireGeometry.laneOffset(forNetAt: 0) == -14)
+        #expect(SchematicWireGeometry.laneOffset(forNetAt: 4) == 14)
+        // Repeats every 5 nets (stable, no jitter).
+        #expect(SchematicWireGeometry.laneOffset(forNetAt: 5) == SchematicWireGeometry.laneOffset(forNetAt: 0))
+    }
+
+    // MARK: - Waypoints (router)
+
+    @Test func routeThreadsWaypoints() {
+        let a = CGPoint(x: 0, y: 0), b = CGPoint(x: 200, y: 0)
+        let pts = WireRouter.route(from: a, .right, to: b, .left,
+                                   waypoints: [CGPoint(x: 100, y: 80)])
+        expectOrthogonal(pts)
+        #expect(pts.contains { approx($0.x, 100) && approx($0.y, 80) })   // passes through it
+        #expect(approx(pts.first!.x, 0) && approx(pts.last!.x, 200))
+    }
+
+    @Test func projectionFindsNearestPointAndArclength() {
+        let poly = [CGPoint(x: 0, y: 0), CGPoint(x: 100, y: 0), CGPoint(x: 100, y: 100)]
+        let p1 = WireRouter.projection(of: CGPoint(x: 40, y: 9), onto: poly)
+        #expect(approx(p1.point.x, 40) && approx(p1.point.y, 0))
+        #expect(approx(p1.arclength, 40))
+        let p2 = WireRouter.projection(of: CGPoint(x: 109, y: 50), onto: poly)
+        #expect(approx(p2.point.x, 100) && approx(p2.point.y, 50))
+        #expect(approx(p2.arclength, 150))
+    }
+
+    @Test func routeAvoidsObstacleInTrunk() {
+        // A box straddling the centred channel forces the vertical trunk off
+        // the obstacle's x-band.
+        let a = CGPoint(x: 0, y: 0), b = CGPoint(x: 200, y: 60)
+        let box = CGRect(x: 90, y: -50, width: 20, height: 200)   // blocks x∈(90,110)
+        let pts = WireRouter.route(from: a, .right, to: b, .left, obstacles: [box])
+        expectOrthogonal(pts)
+        for i in 0..<(pts.count - 1) where approx(pts[i].x, pts[i + 1].x) {
+            let x = pts[i].x   // a vertical segment
+            #expect(x <= 90.01 || x >= 109.99, "vertical trunk x=\(x) runs through the obstacle")
+        }
+    }
+
+    // MARK: - Waypoints (model)
+
+    @Test func pinPairIsCanonical() {
+        let x = PinRef(componentId: UUID(), pinKey: "a")
+        let y = PinRef(componentId: UUID(), pinKey: "b")
+        #expect(PinPair(x, y) == PinPair(y, x))
+    }
+
+    @Test func waypointStoreOrientsAndMutates() {
+        var layout = SchematicLayout.empty
+        let p1 = PinRef(componentId: UUID(), pinKey: "1")
+        let p2 = PinRef(componentId: UUID(), pinKey: "2")
+        layout.setWaypoints([Point(x: 10, y: 0), Point(x: 20, y: 0)], a: p1, b: p2)
+
+        #expect(layout.waypoints(p1, p2) == [Point(x: 10, y: 0), Point(x: 20, y: 0)])
+        #expect(layout.waypoints(p2, p1) == [Point(x: 20, y: 0), Point(x: 10, y: 0)])  // reversed
+
+        layout.moveWaypoint(pair: PinPair(p1, p2), index: 0, to: Point(x: 99, y: 9))
+        #expect(layout.waypoints(p1, p2).contains(Point(x: 99, y: 9)))
+
+        layout.removeWaypoint(pair: PinPair(p1, p2), index: 0)
+        #expect(layout.waypoints(p1, p2).count == 1)
+        layout.removeWaypoint(pair: PinPair(p1, p2), index: 0)
+        #expect(layout.waypoints(p1, p2).isEmpty)
+        #expect(layout.wireWaypoints == nil)   // empties back to byte-stable nil
+    }
+
+    @Test func removingComponentDropsItsWaypoints() {
+        var layout = SchematicLayout.empty
+        let c = UUID()
+        layout.setWaypoints([Point(x: 1, y: 1)],
+                            a: PinRef(componentId: c, pinKey: "1"),
+                            b: PinRef(componentId: UUID(), pinKey: "2"))
+        layout.remove(componentId: c)
+        #expect(layout.wireWaypoints == nil)
+    }
+
+    @Test func layoutWaypointsBackCompatAndByteStable() throws {
+        let decoded = try JSONDecoder().decode(
+            SchematicLayout.self, from: Data(#"{"positions":[]}"#.utf8))
+        #expect(decoded.wireWaypoints == nil)
+
+        let data = try JSONEncoder().encode(SchematicLayout.empty)
+        #expect(!String(decoding: data, as: UTF8.self).contains("wireWaypoints"))
+    }
+
+    // MARK: - Rail taps vs. wired edges
+
+    @MainActor @Test func railNetRendersAsTaps() {
+        var doc = CircuitDocument.blank()
+        let vac = Component(kind: .vacuumSource, label: "VAC")
+        let q = Component(kind: .transistor, label: "Q1")
+        doc.logic.components = [vac, q]
+        doc.logic.nets = [Net(label: "n", pins: [
+            PinRef(componentId: vac.id, pinKey: "p"),
+            PinRef(componentId: q.id, pinKey: "a"),
+        ])]
+        doc.schematic.setPosition(Point(x: 100, y: 100), for: vac.id)
+        doc.schematic.setPosition(Point(x: 240, y: 220), for: q.id)
+
+        let rendered = SchematicWireGeometry.render(in: doc)
+        #expect(rendered.count == 1)
+        #expect(rendered[0].edges.isEmpty)
+        #expect(rendered[0].taps.count == 2)
+        #expect(rendered[0].taps.allSatisfy { $0.rail == .vacuumSource })
+    }
+
+    @MainActor @Test func railNetWiredWhenTapsOff() {
+        var doc = CircuitDocument.blank()
+        let vac = Component(kind: .vacuumSource, label: "VAC")
+        let q = Component(kind: .transistor, label: "Q1")
+        doc.logic.components = [vac, q]
+        doc.logic.nets = [Net(label: "n", pins: [
+            PinRef(componentId: vac.id, pinKey: "p"),
+            PinRef(componentId: q.id, pinKey: "a"),
+        ])]
+        doc.schematic.setPosition(Point(x: 100, y: 100), for: vac.id)
+        doc.schematic.setPosition(Point(x: 240, y: 220), for: q.id)
+
+        let rendered = SchematicWireGeometry.render(in: doc, railTaps: false)
+        #expect(rendered[0].taps.isEmpty)        // toggled off → wired, not tapped
+        #expect(rendered[0].edges.count == 1)
+    }
+
+    @MainActor @Test func plainNetRendersAsOrthogonalEdges() {
+        var doc = CircuitDocument.blank()
+        let r1 = Component(kind: .resistor, label: "R1", resistorSize: .medium)
+        let r2 = Component(kind: .resistor, label: "R2", resistorSize: .medium)
+        doc.logic.components = [r1, r2]
+        doc.logic.nets = [Net(label: "n", pins: [
+            PinRef(componentId: r1.id, pinKey: "2"),
+            PinRef(componentId: r2.id, pinKey: "1"),
+        ])]
+        doc.schematic.setPosition(Point(x: 100, y: 100), for: r1.id)
+        doc.schematic.setPosition(Point(x: 320, y: 160), for: r2.id)
+
+        let rendered = SchematicWireGeometry.render(in: doc)
+        #expect(rendered[0].taps.isEmpty)
+        #expect(rendered[0].edges.count == 1)
+        expectOrthogonal(rendered[0].edges[0].points)
+    }
+
+    // MARK: - Palette drag payload
+
+    @Test func paletteDragRoundTrips() {
+        let cases: [(ComponentKind, PortDirection?)] = [
+            (.transistor, nil), (.resistor, nil), (.led, nil),
+            (.vacuumSource, nil), (.atmVent, nil), (.connector, nil),
+            (.port, .input), (.port, .output),
+        ]
+        for (kind, dir) in cases {
+            let encoded = SchematicPaletteDrag.primitive(kind, dir).dragString
+            guard case let .primitive(k, d)? = SchematicPaletteDrag(dragString: encoded) else {
+                Issue.record("could not decode \(encoded)")
+                continue
+            }
+            #expect(k == kind)
+            #expect(d == dir)
+        }
+        #expect(SchematicPaletteDrag(dragString: "garbage") == nil)
+        #expect(SchematicPaletteDrag(dragString: "lib:foo.vpcb") == nil)   // library not draggable
+    }
 }

@@ -180,10 +180,10 @@ struct ComponentNodeView: View {
                     let current = document.circuit.schematic.position(for: component.id)
                         ?? Point(x: 200, y: 200)
                     let local = unscaled(value.translation)
-                    let next = Point(
+                    let next = SchematicLayout.snapToGrid(Point(
                         x: current.x + local.width,
                         y: current.y + local.height
-                    )
+                    ))
                     document.circuit.schematic.setPosition(next, for: component.id)
                     dragOffset = .zero
                     selection = .component(component.id)
@@ -214,10 +214,10 @@ struct ComponentNodeView: View {
 
     private func commitMultiDrag(_ multi: SchematicMultiDrag, finalTranslation: CGSize) {
         for (id, original) in multi.originals {
-            let next = Point(
+            let next = SchematicLayout.snapToGrid(Point(
                 x: original.x + finalTranslation.width,
                 y: original.y + finalTranslation.height
-            )
+            ))
             document.circuit.schematic.setPosition(next, for: id)
         }
     }

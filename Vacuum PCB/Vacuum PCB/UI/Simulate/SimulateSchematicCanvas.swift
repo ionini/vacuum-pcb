@@ -63,6 +63,9 @@ struct SimulateSchematicCanvas: View {
 private struct SchematicCanvasLayer: View {
     let document: CircuitDocument
     let state: SimulationState
+    /// Mirrors the schematic editor's rail-tap toggle (same AppStorage key) so
+    /// the Simulate view shows VAC/ATM the same way.
+    @AppStorage("schematicShowRailTaps") private var showRailTaps = true
 
     var body: some View {
         // Snapshot the observable simulation state once per render. Reading
@@ -87,17 +90,37 @@ private struct SchematicCanvasLayer: View {
     /// One stroked line per net edge, coloured by the net's current pressure.
     /// Layout rules live in `NetEdgeBuilder`, so the look matches the editor.
     private func drawNets(in ctx: GraphicsContext, pressures: [UUID: Double], remap: [UUID: UUID]) {
-        for net in document.logic.nets {
-            let pressure = rawNetPressure(net.id, pressures: pressures, remap: remap)
+        for net in SchematicWireGeometry.render(in: document, railTaps: showRailTaps) {
+            let pressure = rawNetPressure(net.netId, pressures: pressures, remap: remap)
             let stroke = PressureColor.strokeColor(for: pressure)
-            for edge in NetEdgeBuilder.edges(for: net, in: document) {
+            for edge in net.edges {
                 ctx.stroke(
-                    edge.roundedPath(),
+                    WireRouter.roundedPath(edge.points, radius: 9),
                     with: .color(stroke),
                     style: StrokeStyle(lineWidth: 2.4, lineCap: .round, lineJoin: .round)
                 )
             }
+            for tap in net.taps {
+                drawSimTap(in: ctx, tap, color: stroke)
+            }
         }
+    }
+
+    /// A rail tap in the simulator, coloured by the net's pressure (stub + bar,
+    /// no label — the editor carries the VAC/ATM text).
+    private func drawSimTap(in ctx: GraphicsContext, _ tap: SchematicWireGeometry.Tap, color: Color) {
+        let stub: CGFloat = 12, half: CGFloat = 7
+        let v = tap.exit.vector
+        let end = CGPoint(x: tap.point.x + v.x * stub, y: tap.point.y + v.y * stub)
+        let perp = tap.exit.isHorizontal ? CGPoint(x: 0, y: 1) : CGPoint(x: 1, y: 0)
+        var stubPath = Path()
+        stubPath.move(to: tap.point)
+        stubPath.addLine(to: end)
+        var bar = Path()
+        bar.move(to: CGPoint(x: end.x - perp.x * half, y: end.y - perp.y * half))
+        bar.addLine(to: CGPoint(x: end.x + perp.x * half, y: end.y + perp.y * half))
+        ctx.stroke(stubPath, with: .color(color), style: StrokeStyle(lineWidth: 2.4, lineCap: .round))
+        ctx.stroke(bar, with: .color(color), style: StrokeStyle(lineWidth: 2.6, lineCap: .round))
     }
 
     /// Mating bus-lines paint on top of the nets in indigo so the user still

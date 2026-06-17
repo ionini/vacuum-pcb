@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The main schematic editor canvas: components positioned by their schematic XY,
 /// net lines drawn underneath, click-to-deselect background, rubber-band line
@@ -13,6 +14,10 @@ struct SchematicCanvasView: View {
     /// Net under the cursor, for the hover highlight. Recomputed as the cursor
     /// moves; cleared when it leaves the canvas or a net draw begins.
     @State private var hoveredNet: UUID?
+    /// Show VAC/ATM rail nets as compact tap symbols (vs. wires to the source).
+    /// Shared with the schematic toolbar toggle and the Simulate canvas via the
+    /// same AppStorage key.
+    @AppStorage("schematicShowRailTaps") private var showRailTaps = true
     /// Shared multi-component drag state. Lives here so every ComponentNodeView
     /// that participates in the same drag reads the same translation and
     /// follows in tandem.
@@ -190,6 +195,15 @@ struct SchematicCanvasView: View {
             }
             .environment(\.canvasLocked, navigateMode)
             .coordinateSpace(name: "schematic-screen")
+            // Drag a palette component from the inspector and drop it here to
+            // place it at the cursor (grid-snapped). Mirrors the physical
+            // parking lot. `info.location` arrives in this view's local space —
+            // the same space `windowToSchematic` inverts.
+            .onDrop(of: [.text], delegate: SchematicPaletteDropDelegate(
+                document: $document,
+                selection: $selection,
+                toSchematic: { windowToSchematic($0) }
+            ))
             .clipped()
             .contentShape(Rectangle())
             .gesture(magnifyGesture(viewSize: geo.size))
@@ -246,7 +260,8 @@ struct SchematicCanvasView: View {
                 // by the high-priority gesture above.
                 .gesture(marqueeGesture, including: navigateMode ? .none : .gesture)
 
-            NetLinesView(document: document.circuit, selection: selection, hoveredNet: hoveredNet)
+            NetLinesView(document: document.circuit, selection: selection,
+                         hoveredNet: hoveredNet, railTaps: showRailTaps)
 
             ForEach(document.circuit.logic.components.filter { $0.kind != .screw }) { component in
                 let pos = document.circuit.schematic.position(for: component.id)
@@ -263,6 +278,15 @@ struct SchematicCanvasView: View {
                     rotationQuarterTurns: document.circuit.schematic.rotation(for: component.id)
                 )
                 .position(x: pos.x, y: pos.y)
+            }
+
+            // Draggable wire waypoints, above the net lines.
+            ForEach(Array(waypointHandles.enumerated()), id: \.offset) { _, h in
+                WaypointHandleView(
+                    point: h.point,
+                    onChanged: { p in waypointDragChanged(pair: h.pair, index: h.index, to: p) },
+                    onEnded: { p in waypointDragEnded(pair: h.pair, index: h.index, to: p) }
+                )
             }
 
             if case .awaitingSecondPin(let firstPin) = netDrawState,
@@ -588,15 +612,18 @@ struct SchematicCanvasView: View {
             if hoveredNet != nil { hoveredNet = nil }
             return
         }
-        let threshold: Double = 10
-        let geometry = NetEdgeBuilder.pinGeometry(in: document.circuit)
+        let threshold = 10.0
         var best: (netId: UUID, distance: Double)?
-        for net in document.circuit.logic.nets {
-            for edge in NetEdgeBuilder.edges(for: net, in: document.circuit, geometry: geometry) {
-                let d = Double(WireRouter.distance(from: pt, to: edge.polyline()))
-                if d <= threshold, d < (best?.distance ?? .greatestFiniteMagnitude) {
-                    best = (net.id, d)
-                }
+        for net in SchematicWireGeometry.render(in: document.circuit, railTaps: showRailTaps) {
+            var d = Double.greatestFiniteMagnitude
+            for edge in net.edges {
+                d = min(d, Double(WireRouter.distance(from: pt, to: edge.points)))
+            }
+            for tap in net.taps {
+                d = min(d, hypot(Double(pt.x - tap.point.x), Double(pt.y - tap.point.y)))
+            }
+            if d <= threshold, d < (best?.distance ?? .greatestFiniteMagnitude) {
+                best = (net.netId, d)
             }
         }
         let next = best?.netId
@@ -606,22 +633,84 @@ struct SchematicCanvasView: View {
     // MARK: - Right-click on a net line
 
     private func handleRightClick(at pt: CGPoint) {
-        let threshold: Double = 8
-        var best: (netId: UUID, pinToRemove: PinRef, distance: Double)?
-        for net in document.circuit.logic.nets {
-            for edge in NetEdgeBuilder.edges(for: net, in: document.circuit) {
-                let d = Double(WireRouter.distance(from: pt, to: edge.polyline()))
-                guard d <= threshold else { continue }
-                if d < (best?.distance ?? .greatestFiniteMagnitude) {
-                    let aDist = hypot(Double(pt.x - edge.a.point.x), Double(pt.y - edge.a.point.y))
-                    let bDist = hypot(Double(pt.x - edge.b.point.x), Double(pt.y - edge.b.point.y))
-                    let pin = aDist < bDist ? edge.a.pin : edge.b.pin
-                    best = (net.id, pin, d)
+        // Contextual: remove a waypoint you clicked; else disconnect a pin you
+        // clicked; else drop a new waypoint on the wire under the cursor.
+        if let hit = waypointHit(at: pt) {
+            document.circuit.schematic.removeWaypoint(pair: hit.pair, index: hit.index)
+            return
+        }
+        if let pin = pinHit(at: pt), let netId = netContaining(pin) {
+            removePin(pin, fromNet: netId)
+            return
+        }
+        addWaypoint(at: pt)
+    }
+
+    /// Nearest existing waypoint within a small slop, for right-click removal.
+    private func waypointHit(at pt: CGPoint) -> (pair: PinPair, index: Int)? {
+        let slop: CGFloat = 10
+        var best: (pair: PinPair, index: Int, d: CGFloat)?
+        for entry in document.circuit.schematic.wireWaypoints ?? [] {
+            for (i, p) in entry.points.enumerated() {
+                let d = hypot(CGFloat(p.x) - pt.x, CGFloat(p.y) - pt.y)
+                if d <= slop, d < (best?.d ?? .greatestFiniteMagnitude) {
+                    best = (entry.pair, i, d)
+                }
+            }
+        }
+        return best.map { ($0.pair, $0.index) }
+    }
+
+    private func netContaining(_ pin: PinRef) -> UUID? {
+        document.circuit.logic.nets.first(where: { $0.pins.contains(pin) })?.id
+    }
+
+    /// Drops a waypoint on the wire nearest the cursor — snapped onto the wire
+    /// and inserted in path order among any existing waypoints, so the wire
+    /// doesn't jump when it appears.
+    private func addWaypoint(at pt: CGPoint) {
+        let slop: CGFloat = 8
+        var best: (a: PinRef, b: PinRef, points: [CGPoint], d: CGFloat)?
+        for net in SchematicWireGeometry.render(in: document.circuit, railTaps: showRailTaps) {
+            for e in net.edges {
+                let d = WireRouter.distance(from: pt, to: e.points)
+                if d <= slop, d < (best?.d ?? .greatestFiniteMagnitude) {
+                    best = (e.a, e.b, e.points, d)
                 }
             }
         }
         guard let hit = best else { return }
-        removePin(hit.pinToRemove, fromNet: hit.netId)
+        let proj = WireRouter.projection(of: pt, onto: hit.points)
+        var entries: [(p: CGPoint, t: CGFloat)] = document.circuit.schematic
+            .waypoints(hit.a, hit.b)
+            .map { wp in
+                let cp = CGPoint(x: wp.x, y: wp.y)
+                return (cp, WireRouter.projection(of: cp, onto: hit.points).arclength)
+            }
+        entries.append((proj.point, proj.arclength))
+        entries.sort { $0.t < $1.t }
+        document.circuit.schematic.setWaypoints(
+            entries.map { Point(x: $0.p.x, y: $0.p.y) }, a: hit.a, b: hit.b
+        )
+    }
+
+    private func waypointDragChanged(pair: PinPair, index: Int, to p: CGPoint) {
+        document.circuit.schematic.moveWaypoint(pair: pair, index: index,
+                                                to: Point(x: p.x, y: p.y))
+    }
+
+    private func waypointDragEnded(pair: PinPair, index: Int, to p: CGPoint) {
+        document.circuit.schematic.moveWaypoint(pair: pair, index: index,
+                                                to: SchematicLayout.snapToGrid(Point(x: p.x, y: p.y)))
+    }
+
+    /// Flattened list of every wire waypoint, for placing its drag handle.
+    private var waypointHandles: [(pair: PinPair, index: Int, point: CGPoint)] {
+        (document.circuit.schematic.wireWaypoints ?? []).flatMap { entry in
+            entry.points.enumerated().map {
+                (entry.pair, $0.offset, CGPoint(x: $0.element.x, y: $0.element.y))
+            }
+        }
     }
 
     private func removePin(_ pin: PinRef, fromNet netId: UUID) {
@@ -647,5 +736,50 @@ struct SchematicCanvasView: View {
     /// same `SchematicActions.rotate` path.
     private func rotateSelection() {
         SchematicActions.rotate(document: &document, selection: selection)
+    }
+}
+
+// MARK: - Drop delegate for palette drag-to-place
+
+/// Accepts a component dragged from the inspector palette and creates it at the
+/// drop point (grid-snapped). Mirrors `ParkingDropDelegate` on the physical
+/// canvas, but the schematic palette ships a kind, not an existing id, so this
+/// makes a new component rather than moving one.
+struct SchematicPaletteDropDelegate: DropDelegate {
+    @Binding var document: VPCBDocument
+    @Binding var selection: SchematicSelection
+    /// Window/local-space point → schematic coordinates (the canvas's
+    /// `windowToSchematic`).
+    let toSchematic: (CGPoint) -> CGPoint
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [.text])
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        guard let provider = info.itemProviders(for: [.text]).first else { return false }
+        let dropPoint = info.location
+        let toSchematic = self.toSchematic
+        provider.loadItem(forTypeIdentifier: UTType.text.identifier, options: nil) { item, _ in
+            guard let raw = Self.string(from: item),
+                  case let .primitive(kind, dir)? = SchematicPaletteDrag(dragString: raw)
+            else { return }
+            DispatchQueue.main.async {
+                let p = toSchematic(dropPoint)
+                let at = SchematicLayout.snapToGrid(Point(x: p.x, y: p.y))
+                let component = SchematicActions.makeComponent(
+                    kind: kind, portDirection: dir, in: document.circuit)
+                document.circuit.logic.components.append(component)
+                document.circuit.schematic.setPosition(at, for: component.id)
+                selection = .component(component.id)
+            }
+        }
+        return true
+    }
+
+    private static func string(from item: NSSecureCoding?) -> String? {
+        if let d = item as? Data { return String(data: d, encoding: .utf8) }
+        if let s = item as? NSString { return s as String }
+        return item as? String
     }
 }

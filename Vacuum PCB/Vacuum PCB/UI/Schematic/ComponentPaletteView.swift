@@ -1,5 +1,28 @@
 import SwiftUI
 
+/// Payload for dragging a palette entry onto the schematic canvas, shipped as a
+/// short string through an `NSItemProvider` — mirrors the physical parking lot,
+/// which ships a component UUID the same way. Only primitives are draggable;
+/// library parts keep their click-to-add path (it runs assembly/layer checks).
+enum SchematicPaletteDrag {
+    case primitive(ComponentKind, PortDirection?)
+
+    var dragString: String {
+        switch self {
+        case .primitive(let kind, let dir):
+            return "prim:\(kind.rawValue):\(dir?.rawValue ?? "")"
+        }
+    }
+
+    init?(dragString: String) {
+        let parts = dragString.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+        guard parts.first == "prim", parts.count == 3,
+              let kind = ComponentKind(rawValue: parts[1]) else { return nil }
+        let dir = parts[2].isEmpty ? nil : PortDirection(rawValue: parts[2])
+        self = .primitive(kind, dir)
+    }
+}
+
 /// Component-spawning palette for the schematic. Lives in the document
 /// inspector now (the right column), so the rows are laid out
 /// horizontally — icon-letter on the left, name on the right — instead
@@ -65,6 +88,12 @@ struct ComponentPaletteView: View {
             )
         }
         .buttonStyle(.plain)
+        // Click still adds at the spawn grid; drag drops it where you release
+        // on the canvas (like the physical parking lot).
+        .onDrag {
+            NSItemProvider(object: SchematicPaletteDrag.primitive(kind, dir).dragString as NSString)
+        }
+        .help("Click to add, or drag onto the canvas to place")
     }
 
     private func libraryButton(part: PartsLibrary.Part) -> some View {

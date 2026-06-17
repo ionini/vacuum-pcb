@@ -13,19 +13,6 @@ struct NetEdge {
     }
     let a: End
     let b: End
-
-    /// Orthogonal polyline this edge renders as — each pin's stub plus the
-    /// minimal-corner bridge between them. Shared by the editor renderer
-    /// (`NetLinesView`), the Simulate canvas, and the right-click hit-test so
-    /// all three agree on the wire's shape.
-    func polyline(stub: CGFloat = 14) -> [CGPoint] {
-        WireRouter.route(from: a.point, a.exit, to: b.point, b.exit, stub: stub)
-    }
-
-    /// The polyline with rounded corners, ready to stroke.
-    func roundedPath(radius: CGFloat = 9, stub: CGFloat = 14) -> Path {
-        WireRouter.roundedPath(polyline(stub: stub), radius: radius)
-    }
 }
 
 /// Shared geometry of a net's rendered "rat's nest". Used both by

@@ -1,5 +1,25 @@
 import Foundation
 
+/// Unordered pair of pins, used to key per-wire routing waypoints. Stores its
+/// two pins in a canonical order so (a, b) and (b, a) compare equal.
+struct PinPair: Codable, Hashable {
+    var a: PinRef
+    var b: PinRef
+    init(_ x: PinRef, _ y: PinRef) {
+        if PinPair.key(x) <= PinPair.key(y) { a = x; b = y } else { a = y; b = x }
+    }
+    private static func key(_ p: PinRef) -> String { p.componentId.uuidString + "#" + p.pinKey }
+}
+
+/// User-placed routing waypoints for one wire (identified by its pin pair).
+/// Purely a drawing hint — it bends the rendered wire through these points
+/// without changing the net's connectivity or simulation. Points are in
+/// schematic coordinates, ordered from `pair.a` toward `pair.b`.
+struct WireWaypoints: Codable, Hashable {
+    var pair: PinPair
+    var points: [Point]
+}
+
 /// Position of one component on the schematic canvas. Mirrors Placement's role on
 /// the physical side, but coordinates here are SwiftUI points (not millimeters) and
 /// have no manufacturing meaning — pure view layout.
@@ -19,11 +39,44 @@ struct SchematicPosition: Codable, Hashable {
 /// next moves it.
 struct SchematicLayout: Codable, Hashable {
     var positions: [SchematicPosition]
+    /// Per-wire routing waypoints, keyed by pin pair. Optional (nil when none)
+    /// so designs saved before waypoints existed decode unchanged and round-trip
+    /// byte-for-byte.
+    var wireWaypoints: [WireWaypoints]? = nil
 
     static let empty = SchematicLayout(positions: [])
 
+    /// Schematic grid pitch (SwiftUI points). Component positions snap to this
+    /// on drag so parts line up in rows/columns and their wires meet cleanly.
+    static let gridStep: Double = 20
+
+    /// Rounds a schematic point to the nearest grid intersection.
+    static func snapToGrid(_ p: Point) -> Point {
+        Point(x: (p.x / gridStep).rounded() * gridStep,
+              y: (p.y / gridStep).rounded() * gridStep)
+    }
+
     func position(for componentId: UUID) -> Point? {
         positions.first(where: { $0.componentId == componentId })?.position
+    }
+
+    /// Routing waypoints for the wire between two pins, oriented to match the
+    /// queried `a → b` direction. Empty when the wire has none.
+    func waypoints(_ a: PinRef, _ b: PinRef) -> [Point] {
+        let pair = PinPair(a, b)
+        guard let entry = wireWaypoints?.first(where: { $0.pair == pair }) else { return [] }
+        return entry.pair.a == a ? entry.points : Array(entry.points.reversed())
+    }
+
+    /// Replaces the waypoints for a wire (points given in `a → b` order).
+    /// Storing an empty list clears them and keeps the file byte-stable.
+    mutating func setWaypoints(_ points: [Point], a: PinRef, b: PinRef) {
+        let pair = PinPair(a, b)
+        let oriented = pair.a == a ? points : Array(points.reversed())
+        var list = wireWaypoints ?? []
+        list.removeAll { $0.pair == pair }
+        if !oriented.isEmpty { list.append(WireWaypoints(pair: pair, points: oriented)) }
+        wireWaypoints = list.isEmpty ? nil : list
     }
 
     /// Current orientation in normalized 90° clockwise quarter-turns (0…3).
@@ -59,7 +112,30 @@ struct SchematicLayout: Codable, Hashable {
         }
     }
 
+    /// Moves one waypoint of a wire to a new point.
+    mutating func moveWaypoint(pair: PinPair, index: Int, to point: Point) {
+        guard let li = wireWaypoints?.firstIndex(where: { $0.pair == pair }),
+              wireWaypoints![li].points.indices.contains(index) else { return }
+        wireWaypoints![li].points[index] = point
+    }
+
+    /// Removes one waypoint of a wire, rejoining the two segments. Drops the
+    /// entry (and the whole list) when it empties, keeping the file byte-stable.
+    mutating func removeWaypoint(pair: PinPair, index: Int) {
+        guard let li = wireWaypoints?.firstIndex(where: { $0.pair == pair }),
+              wireWaypoints![li].points.indices.contains(index) else { return }
+        wireWaypoints![li].points.remove(at: index)
+        if wireWaypoints![li].points.isEmpty { wireWaypoints!.remove(at: li) }
+        if wireWaypoints?.isEmpty == true { wireWaypoints = nil }
+    }
+
     mutating func remove(componentId: UUID) {
         positions.removeAll { $0.componentId == componentId }
+        if var list = wireWaypoints {
+            list.removeAll {
+                $0.pair.a.componentId == componentId || $0.pair.b.componentId == componentId
+            }
+            wireWaypoints = list.isEmpty ? nil : list
+        }
     }
 }

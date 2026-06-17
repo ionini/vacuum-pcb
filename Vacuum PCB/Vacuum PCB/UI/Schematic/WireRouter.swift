@@ -56,14 +56,38 @@ enum WireRouter {
     /// two-point straight line (zero corners).
     static func route(from a: CGPoint, _ da: ExitDir,
                       to b: CGPoint, _ db: ExitDir?,
-                      stub: CGFloat = 14) -> [CGPoint] {
+                      stub: CGFloat = 14,
+                      waypoints: [CGPoint] = [],
+                      obstacles: [CGRect] = [],
+                      laneOffset: CGFloat = 0) -> [CGPoint] {
         let a1 = CGPoint(x: a.x + da.vector.x * stub, y: a.y + da.vector.y * stub)
+
+        // Hand-routed: thread the wire through the user's waypoints. Pins still
+        // stub out along their exit; obstacle/lane logic is skipped because the
+        // path is explicit.
+        if !waypoints.isEmpty {
+            var anchors: [CGPoint] = [a1]
+            anchors.append(contentsOf: waypoints)
+            if let db {
+                anchors.append(CGPoint(x: b.x + db.vector.x * stub, y: b.y + db.vector.y * stub))
+            }
+            var wp: [CGPoint] = [a]
+            for next in anchors {
+                if let last = wp.last,
+                   abs(last.x - next.x) > 0.01, abs(last.y - next.y) > 0.01 {
+                    wp.append(CGPoint(x: next.x, y: last.y))   // one orthogonal corner
+                }
+                wp.append(next)
+            }
+            wp.append(b)
+            return clean(wp)
+        }
 
         var pts: [CGPoint] = [a, a1]
 
         if let db {
             let b1 = CGPoint(x: b.x + db.vector.x * stub, y: b.y + db.vector.y * stub)
-            pts += bridge(a1, da, b1, db)
+            pts += bridge(a1, da, b1, db, obstacles: obstacles, laneOffset: laneOffset)
             pts.append(b1)
             pts.append(b)
         } else {
@@ -93,36 +117,46 @@ enum WireRouter {
     /// don't); mixed exits take the single corner that doesn't cross the body
     /// the wire is leaving.
     private static func bridge(_ p: CGPoint, _ dp: ExitDir,
-                               _ q: CGPoint, _ dq: ExitDir) -> [CGPoint] {
+                               _ q: CGPoint, _ dq: ExitDir,
+                               obstacles: [CGRect], laneOffset: CGFloat) -> [CGPoint] {
         switch (dp.isHorizontal, dq.isHorizontal) {
         case (true, true):
-            let vx = channel(p.x, dp, q.x, dq, fallback: (p.x + q.x) / 2)
+            let vx = channel(p.x, dp, q.x, dq,
+                             preferred: (p.x + q.x) / 2 + laneOffset,
+                             spanMin: min(p.y, q.y), spanMax: max(p.y, q.y),
+                             vertical: true, obstacles: obstacles)
             return [CGPoint(x: vx, y: p.y), CGPoint(x: vx, y: q.y)]
         case (false, false):
-            let hy = channel(p.y, dp, q.y, dq, fallback: (p.y + q.y) / 2)
+            let hy = channel(p.y, dp, q.y, dq,
+                             preferred: (p.y + q.y) / 2 + laneOffset,
+                             spanMin: min(p.x, q.x), spanMax: max(p.x, q.x),
+                             vertical: false, obstacles: obstacles)
             return [CGPoint(x: p.x, y: hy), CGPoint(x: q.x, y: hy)]
         case (true, false):
             // p horizontal, q vertical: leave p horizontally toward q when
             // that heads outward, else turn perpendicular (vertical) first.
-            return leavesOutward(dp, q.x - p.x)
-                ? [CGPoint(x: q.x, y: p.y)]
-                : [CGPoint(x: p.x, y: q.y)]
+            let h = CGPoint(x: q.x, y: p.y), v = CGPoint(x: p.x, y: q.y)
+            let prefer = leavesOutward(dp, q.x - p.x) ? h : v
+            return chooseCorner(p, q, prefer, prefer == h ? v : h, obstacles: obstacles)
         case (false, true):
             // p vertical, q horizontal.
-            return leavesOutward(dp, q.y - p.y)
-                ? [CGPoint(x: p.x, y: q.y)]
-                : [CGPoint(x: q.x, y: p.y)]
+            let v = CGPoint(x: p.x, y: q.y), h = CGPoint(x: q.x, y: p.y)
+            let prefer = leavesOutward(dp, q.y - p.y) ? v : h
+            return chooseCorner(p, q, prefer, prefer == v ? h : v, obstacles: obstacles)
         }
     }
 
     /// Perpendicular channel coordinate for a same-axis bridge. Each pin
     /// constrains the channel to its outward side (`.right`/`.down` need it
-    /// at-or-beyond their stub; `.left`/`.up` at-or-before). A feasible band
-    /// seats the channel at the pins' midpoint clamped into it (a centred Z);
-    /// conflicting constraints fall back to the midpoint.
+    /// at-or-beyond their stub; `.left`/`.up` at-or-before). Within that band
+    /// it seats at `preferred` (pins' midpoint plus the net's lane offset);
+    /// when an obstacle blocks that line it slides to just past the nearest
+    /// obstacle edge that's still in-band.
     private static func channel(_ p: CGFloat, _ dp: ExitDir,
                                 _ q: CGFloat, _ dq: ExitDir,
-                                fallback: CGFloat) -> CGFloat {
+                                preferred: CGFloat,
+                                spanMin: CGFloat, spanMax: CGFloat,
+                                vertical: Bool, obstacles: [CGRect]) -> CGFloat {
         var lo = -CGFloat.greatestFiniteMagnitude
         var hi =  CGFloat.greatestFiniteMagnitude
         for (coord, dir) in [(p, dp), (q, dq)] {
@@ -131,8 +165,52 @@ enum WireRouter {
             case .left, .up:    hi = min(hi, coord)
             }
         }
-        guard lo <= hi else { return fallback }
-        return min(max(fallback, lo), hi)
+        guard lo <= hi else { return preferred }
+        let base = min(max(preferred, lo), hi)
+        guard !obstacles.isEmpty else { return base }
+
+        func blocked(_ c: CGFloat) -> Bool {
+            for r in obstacles {
+                if vertical {
+                    if c > r.minX, c < r.maxX, r.minY < spanMax, r.maxY > spanMin { return true }
+                } else {
+                    if c > r.minY, c < r.maxY, r.minX < spanMax, r.maxX > spanMin { return true }
+                }
+            }
+            return false
+        }
+        if !blocked(base) { return base }
+        let m: CGFloat = 8
+        var candidates: [CGFloat] = []
+        for r in obstacles {
+            if vertical { candidates += [r.minX - m, r.maxX + m] }
+            else        { candidates += [r.minY - m, r.maxY + m] }
+        }
+        let valid = candidates.filter { $0 >= lo && $0 <= hi && !blocked($0) }
+        return valid.min(by: { abs($0 - base) < abs($1 - base) }) ?? base
+    }
+
+    /// For a single-corner (L) bridge, keeps the preferred corner unless one of
+    /// its legs hits an obstacle and the alternate corner is clear.
+    private static func chooseCorner(_ p: CGPoint, _ q: CGPoint,
+                                     _ preferred: CGPoint, _ alternate: CGPoint,
+                                     obstacles: [CGRect]) -> [CGPoint] {
+        if !obstacles.isEmpty,
+           legHitsObstacle(p, preferred, obstacles) || legHitsObstacle(preferred, q, obstacles),
+           !(legHitsObstacle(p, alternate, obstacles) || legHitsObstacle(alternate, q, obstacles)) {
+            return [alternate]
+        }
+        return [preferred]
+    }
+
+    /// Axis-aligned segment vs. obstacle-rect overlap test.
+    private static func legHitsObstacle(_ a: CGPoint, _ b: CGPoint, _ obstacles: [CGRect]) -> Bool {
+        let minX = min(a.x, b.x), maxX = max(a.x, b.x)
+        let minY = min(a.y, b.y), maxY = max(a.y, b.y)
+        for r in obstacles where r.minX < maxX && r.maxX > minX && r.minY < maxY && r.maxY > minY {
+            return true
+        }
+        return false
     }
 
     /// Whether moving by `delta` along `dir`'s axis goes in `dir`'s outward
@@ -193,6 +271,26 @@ enum WireRouter {
             best = min(best, distanceToSegment(p, polyline[i], polyline[i + 1]))
         }
         return best
+    }
+
+    /// Nearest point on the polyline to `p`, plus its arc-length from the
+    /// start. Used to drop a new waypoint onto a wire and order it among any
+    /// existing waypoints along the path.
+    static func projection(of p: CGPoint, onto polyline: [CGPoint]) -> (point: CGPoint, arclength: CGFloat) {
+        guard polyline.count >= 2 else { return (polyline.first ?? p, 0) }
+        var best = (point: polyline[0], arclength: CGFloat(0), dist: CGFloat.greatestFiniteMagnitude)
+        var acc: CGFloat = 0
+        for i in 0..<(polyline.count - 1) {
+            let a = polyline[i], b = polyline[i + 1]
+            let dx = b.x - a.x, dy = b.y - a.y
+            let segLen = (dx * dx + dy * dy).squareRoot()
+            let t = segLen > 0 ? max(0, min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / (segLen * segLen))) : 0
+            let proj = CGPoint(x: a.x + t * dx, y: a.y + t * dy)
+            let d = hypot(p.x - proj.x, p.y - proj.y)
+            if d < best.dist { best = (proj, acc + t * segLen, d) }
+            acc += segLen
+        }
+        return (best.point, best.arclength)
     }
 
     // MARK: - Geometry helpers
