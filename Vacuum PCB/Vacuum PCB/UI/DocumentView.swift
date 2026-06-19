@@ -35,13 +35,20 @@ struct DocumentView: View {
     /// when the user clicks a row in the Volumes inspector; two (in contrasting
     /// colours) when jumped here from a collision in the Validate tab.
     @State private var highlightedVolumeIDs: [String] = []
-    /// Highlight meshes (one per id, with a palette colour index), rebuilt when
-    /// the selection or the build changes; handed to `Scene3DView`.
-    @State private var highlightMeshes: [VolumeHighlight] = []
+    /// Cavity mesh per `Volume.id`, rebuilt off-thread on each `rebuild()` and
+    /// handed to `Scene3DView`, which turns each into a hidden, hit-testable node
+    /// (click-to-select) and glows the highlighted subset.
+    @State private var volumeMeshes: [String: Mesh] = [:]
     @State private var isBuilding = false
     @State private var showExporter = false
     @State private var buildToken = 0
-    @State private var previewMode: PreviewDisplayMode = .both
+    /// Bumped whenever the built geometry (plates + volume cavity meshes) is
+    /// swapped in, so `Scene3DView` rebuilds its scene nodes only then — not on a
+    /// cheap highlight or layer-visibility change.
+    @State private var geometryRevision = 0
+    /// Per-element visibility of the 3D preview (which plates / channels / mold
+    /// parts are shown). Starts on the plates-plus-channels preset.
+    @State private var previewVisibility: PreviewVisibility = .both
     /// Survives the Preview tab being switched away and back: `detail` is a
     /// `switch`, so leaving Preview tears `Scene3DView` (and the camera living
     /// inside its SCNView) down. Holding the pose here lets the rebuilt view
@@ -291,11 +298,14 @@ struct DocumentView: View {
                     stencil: built.stencil,
                     moldFrame: built.moldFrame,
                     boardOutline: document.circuit.physical.boardOutline,
-                    displayMode: previewMode,
-                    highlights: highlightMeshes,
+                    visibility: previewVisibility,
+                    volumeMeshes: volumeMeshes,
+                    highlightedIDs: highlightedVolumeIDs,
+                    geometryRevision: geometryRevision,
+                    onPickVolume: pickVolume,
                     cameraStore: cameraStore
                 )
-                previewModePicker
+                previewControls
                 if isBuilding {
                     ProgressView("Building plates…")
                         .padding(12)
@@ -303,7 +313,6 @@ struct DocumentView: View {
                         .padding(.top, 56)
                 }
             }
-            .onChange(of: highlightedVolumeIDs) { _, _ in updateHighlight() }
         } else if isBuilding {
             ProgressView("Building plates…")
         } else {
@@ -315,18 +324,70 @@ struct DocumentView: View {
         }
     }
 
-    private var previewModePicker: some View {
-        Picker("Show", selection: $previewMode) {
-            ForEach(PreviewDisplayMode.allCases, id: \.self) { mode in
-                Text(mode.label).tag(mode)
+    /// Floating overlay at the top of the 3D preview: the preset segmented
+    /// picker (one-click visibility combinations) plus a "Layers" menu for
+    /// toggling individual plates / channels / mold parts.
+    private var previewControls: some View {
+        HStack(spacing: 8) {
+            Picker("Show", selection: presetSelection) {
+                ForEach(PreviewDisplayMode.allCases, id: \.self) { mode in
+                    Text(mode.label).tag(Optional(mode))
+                }
             }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+
+            Menu {
+                Section("Plates") {
+                    Toggle("Top plate", isOn: visibilityBinding(.topPlate))
+                    Toggle("Bottom plate", isOn: visibilityBinding(.bottomPlate))
+                }
+                Section("Channels") {
+                    Toggle("Top channels", isOn: visibilityBinding(.topChannels))
+                    Toggle("Bottom channels", isOn: visibilityBinding(.bottomChannels))
+                }
+                Section("Casting") {
+                    Toggle("Silicone sheet", isOn: visibilityBinding(.stencil))
+                    Toggle("Casting frame", isOn: visibilityBinding(.mold))
+                }
+            } label: {
+                Label("Layers", systemImage: "square.3.layers.3d")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
         }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .fixedSize()
         .padding(8)
         .glassEffect(in: .rect(cornerRadius: 10))
         .padding(.top, 8)
+    }
+
+    /// Maps the per-element visibility set to/from the named presets. The getter
+    /// returns the matching preset, or nil (no segment selected) once the user
+    /// has toggled individual layers away from any preset.
+    private var presetSelection: Binding<PreviewDisplayMode?> {
+        Binding(
+            get: { PreviewDisplayMode.allCases.first { $0.visibility == previewVisibility } },
+            set: { if let mode = $0 { previewVisibility = mode.visibility } }
+        )
+    }
+
+    /// On/off binding for one `PreviewVisibility` element, used by the Layers menu.
+    private func visibilityBinding(_ element: PreviewVisibility) -> Binding<Bool> {
+        Binding(
+            get: { previewVisibility.contains(element) },
+            set: { on in
+                if on { previewVisibility.insert(element) }
+                else  { previewVisibility.remove(element) }
+            }
+        )
+    }
+
+    /// Click-to-select from the 3D scene: toggle the clicked cavity (matching the
+    /// Volumes inspector's single-select), or clear when the click missed.
+    private func pickVolume(_ id: String?) {
+        guard let id else { highlightedVolumeIDs = []; return }
+        highlightedVolumeIDs = (highlightedVolumeIDs == [id]) ? [] : [id]
     }
 
     // MARK: - Sidebar (navigation + document info)
@@ -698,14 +759,21 @@ struct DocumentView: View {
             // Whole printed board, subparts flattened — matches what prints, so
             // the volume cavities line up with the geometry above.
             let vols = physicalVolumes(snapshot.flattenedForSimulation().document)
+            // Cavity meshes for the scene's per-volume pick / highlight nodes.
+            // Cheap (polygon concatenation, no CSG), so building all of them here
+            // — off the main thread, alongside the volume decomposition — is fine.
+            let m = snapshot.manufacturing
+            let vmeshes = Dictionary(uniqueKeysWithValues:
+                vols.map { ($0.id, PlateBuilder.volumeMesh(for: $0, m)) })
             DispatchQueue.main.async {
                 guard token == buildToken else { return }
                 self.built = result
                 self.volumes = vols
+                self.volumeMeshes = vmeshes
+                self.geometryRevision &+= 1
                 // Drop any highlighted ids the rebuild no longer has.
                 let live = Set(vols.map(\.id))
                 self.highlightedVolumeIDs.removeAll { !live.contains($0) }
-                self.updateHighlight()
                 self.isBuilding = false
                 self.previewDirty = false
                 if let action = self.pendingExportAction {
@@ -713,17 +781,6 @@ struct DocumentView: View {
                     self.perform(action)
                 }
             }
-        }
-    }
-
-    /// Rebuild the highlight meshes for the highlighted volume ids (color index
-    /// = position, so a collision's two cavities get contrasting colours).
-    /// Cheap — each is a concatenation of one cavity's primitives, no CSG.
-    private func updateHighlight() {
-        let m = document.circuit.manufacturing
-        highlightMeshes = highlightedVolumeIDs.enumerated().compactMap { index, id in
-            guard let v = volumes.first(where: { $0.id == id }) else { return nil }
-            return VolumeHighlight(mesh: PlateBuilder.volumeMesh(for: v, m), colorIndex: index)
         }
     }
 }

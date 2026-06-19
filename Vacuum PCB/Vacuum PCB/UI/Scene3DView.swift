@@ -2,8 +2,39 @@ import SwiftUI
 import SceneKit
 import Euclid
 
-/// What to show in the 3D preview. `bodyOnly` is the printable view; the other
-/// two modes peel the plates back to expose the routing solids.
+#if canImport(AppKit)
+typealias PlatformGestureRecognizer = NSGestureRecognizer
+#elseif canImport(UIKit)
+typealias PlatformGestureRecognizer = UIGestureRecognizer
+#endif
+
+/// Per-element visibility of the printed stack in the 3D preview. Each plate
+/// face and its routing channels toggle independently, so the user can peel the
+/// model back element by element; `PreviewDisplayMode` below offers the common
+/// combinations as one-click presets.
+struct PreviewVisibility: OptionSet, Hashable {
+    let rawValue: Int
+
+    static let topPlate       = PreviewVisibility(rawValue: 1 << 0)
+    static let bottomPlate    = PreviewVisibility(rawValue: 1 << 1)
+    static let topChannels    = PreviewVisibility(rawValue: 1 << 2)
+    static let bottomChannels = PreviewVisibility(rawValue: 1 << 3)
+    static let stencil        = PreviewVisibility(rawValue: 1 << 4)
+    static let mold           = PreviewVisibility(rawValue: 1 << 5)
+
+    /// Printable body: both plates + the silicone sheet, channels hidden.
+    static let body: PreviewVisibility     = [.topPlate, .bottomPlate, .stencil]
+    /// Plates + channels — the default working view.
+    static let both: PreviewVisibility     = [.topPlate, .bottomPlate, .topChannels, .bottomChannels, .stencil]
+    /// Routing solids only, plates peeled away.
+    static let channels: PreviewVisibility = [.topChannels, .bottomChannels]
+    /// Casting aid: silicone sheet sitting in its frame.
+    static let moldView: PreviewVisibility = [.stencil, .mold]
+}
+
+/// Named visibility presets surfaced as a segmented picker. Selecting one sets
+/// every element at once; the individual `PreviewVisibility` toggles then let
+/// the user deviate from a preset (e.g. "Both" minus the top plate).
 enum PreviewDisplayMode: String, CaseIterable, Hashable {
     case bodyOnly
     case both
@@ -18,14 +49,15 @@ enum PreviewDisplayMode: String, CaseIterable, Hashable {
         case .mold:         return "Mold"
         }
     }
-}
 
-/// One volume cavity to glow in the scene. `colorIndex` picks from
-/// `Scene3DView`'s palette, so two colliding volumes can be shown in
-/// contrasting colours (index 0 vs 1) without the caller knowing about colours.
-struct VolumeHighlight {
-    var mesh: Mesh
-    var colorIndex: Int
+    var visibility: PreviewVisibility {
+        switch self {
+        case .bodyOnly:     return .body
+        case .both:         return .both
+        case .featuresOnly: return .channels
+        case .mold:         return .moldView
+        }
+    }
 }
 
 /// A saved camera point of view — the orbit angle and orthographic zoom the
@@ -64,16 +96,27 @@ struct Scene3DView {
     var stencil: Mesh
     var moldFrame: Mesh
     var boardOutline: Rect
-    var displayMode: PreviewDisplayMode
-    /// Physical-volume cavities to glow on top of the plates (see the Volumes
-    /// inspector / collision gate). Empty = nothing highlighted.
-    var highlights: [VolumeHighlight] = []
+    /// Which elements of the stack are shown. Drives per-node `isHidden`.
+    var visibility: PreviewVisibility
+    /// Every physical-volume cavity mesh, keyed by `Volume.id`. Each becomes a
+    /// hidden — but hit-testable — node so a click in the scene resolves to a
+    /// volume; the highlighted subset is un-hidden and tinted.
+    var volumeMeshes: [String: Mesh] = [:]
+    /// Volumes to glow, in priority order — the palette colour index is the
+    /// position here, so a collision's two cavities get contrasting colours.
+    var highlightedIDs: [String] = []
+    /// Bumped by the owner whenever `top…/volumeMeshes` change. Lets a cheap
+    /// highlight / visibility refresh skip the per-node geometry rebuild.
+    var geometryRevision: Int = 0
+    /// Invoked on a scene click with the resolved volume id, or nil when the
+    /// click missed every cavity (so the owner can clear the selection).
+    var onPickVolume: (String?) -> Void = { _ in }
     /// Outlives this view (lives in `DocumentView`) so orbit / zoom can be
     /// replayed after a tab switch tears the SCNView down. `nil` falls back to
     /// the default iso framing — fine for previews / tests.
     var cameraStore: Scene3DCameraStore? = nil
 
-    final class Coordinator {
+    final class Coordinator: NSObject {
         let scene = SCNScene()
         let modelRoot = SCNNode()
         let topNode = SCNNode()
@@ -82,8 +125,15 @@ struct Scene3DView {
         let bottomFeaturesNode = SCNNode()
         let stencilNode = SCNNode()
         let moldNode = SCNNode()
-        /// Parent of the per-volume highlight nodes; rebuilt on each refresh.
-        let highlightRoot = SCNNode()
+        /// Parent of the per-volume cavity nodes (one per `Volume.id`). Each is
+        /// hidden but kept hit-testable so a click resolves to a volume; the
+        /// highlighted subset is un-hidden and tinted. Rebuilt only when the
+        /// geometry revision changes.
+        let pickRoot = SCNNode()
+        var volumeNodes: [String: SCNNode] = [:]
+        /// Geometry revision whose nodes are currently live, so a highlight- or
+        /// visibility-only refresh can skip the (costlier) node rebuild.
+        var lastGeometryRevision: Int?
         let camera = SCNCamera()
         let cameraNode = SCNNode()
         var lastOutline: Rect?
@@ -91,6 +141,34 @@ struct Scene3DView {
         /// `dismantle…` hook (which only gets the coordinator) can save the
         /// pose on teardown.
         var cameraStore: Scene3DCameraStore?
+        /// Refreshed from `Scene3DView` each update; invoked on a scene click
+        /// with the resolved volume id (or nil when the click missed).
+        var onPickVolume: (String?) -> Void = { _ in }
+
+        /// Click / tap handler: hit-test the scene — including the hidden cavity
+        /// nodes — and report the front-most volume under the cursor. SceneKit's
+        /// `hitTest` maps the 2-D point through the live camera, so this honours
+        /// the current orbit / zoom / pan for free. `ignoreHiddenNodes: false`
+        /// lets the invisible pick nodes register; `.all` returns every hit
+        /// near→far so we can skip the plate/feature solids in front and land on
+        /// the first volume.
+        @objc func handlePick(_ gr: PlatformGestureRecognizer) {
+            guard let view = gr.view as? SCNView else { return }
+            let p = gr.location(in: view)
+            let hits = view.hitTest(p, options: [
+                .searchMode: SCNHitTestSearchMode.all.rawValue,
+                .ignoreHiddenNodes: false,
+            ])
+            let id = hits.lazy.compactMap { Scene3DView.volumeID(of: $0.node) }.first
+            onPickVolume(id)
+        }
+    }
+
+    /// Extracts a `Volume.id` from a pick node's name (`"vol:<id>"`), or nil for
+    /// any other node (plates, features, lights).
+    static func volumeID(of node: SCNNode) -> String? {
+        guard let name = node.name, name.hasPrefix("vol:") else { return nil }
+        return String(name.dropFirst(4))
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -114,7 +192,7 @@ struct Scene3DView {
         c.modelRoot.addChildNode(c.bottomFeaturesNode)
         c.modelRoot.addChildNode(c.stencilNode)
         c.modelRoot.addChildNode(c.moldNode)
-        c.modelRoot.addChildNode(c.highlightRoot)
+        c.modelRoot.addChildNode(c.pickRoot)
 
         c.camera.usesOrthographicProjection = true
         c.camera.zNear = 0.01
@@ -137,9 +215,23 @@ struct Scene3DView {
 
         addLights(to: c.scene)
         applyGeometries(coordinator: c)
-        applyDisplayMode(coordinator: c)
+        applyVolumeNodes(coordinator: c)
+        c.lastGeometryRevision = geometryRevision
+        applyHighlight(coordinator: c)
+        applyVisibility(coordinator: c)
         applyFraming(coordinator: c, animated: false)
         configureCameraController(view.defaultCameraController, target: SCNVector3Zero)
+
+        // Click / tap to select the volume under the cursor. A single click (no
+        // drag) selects; a drag still orbits via `allowsCameraControl`, since the
+        // recognizer fails the moment the pointer moves.
+        c.onPickVolume = onPickVolume
+        #if canImport(AppKit)
+        let pick = NSClickGestureRecognizer(target: c, action: #selector(Coordinator.handlePick(_:)))
+        #elseif canImport(UIKit)
+        let pick = UITapGestureRecognizer(target: c, action: #selector(Coordinator.handlePick(_:)))
+        #endif
+        view.addGestureRecognizer(pick)
 
         // Replay the orbit / zoom from a previous visit to the Preview tab, if
         // any. `applyFraming` above already recentred `modelRoot` for the
@@ -173,8 +265,18 @@ struct Scene3DView {
     }
 
     fileprivate func refresh(view: SCNView, coordinator c: Coordinator) {
-        applyGeometries(coordinator: c)
-        applyDisplayMode(coordinator: c)
+        // Geometry (plates, features, per-volume cavities) only changes on a
+        // rebuild, flagged by a new revision. A highlight or visibility toggle
+        // reuses the existing nodes, so it skips the rebuild and just re-tints /
+        // re-hides — keeping row clicks and layer toggles cheap on big boards.
+        if c.lastGeometryRevision != geometryRevision {
+            applyGeometries(coordinator: c)
+            applyVolumeNodes(coordinator: c)
+            c.lastGeometryRevision = geometryRevision
+        }
+        applyHighlight(coordinator: c)
+        applyVisibility(coordinator: c)
+        c.onPickVolume = onPickVolume
         if c.lastOutline != boardOutline {
             applyFraming(coordinator: c, animated: true)
         }
@@ -198,33 +300,57 @@ struct Scene3DView {
         c.moldNode.geometry = moldFrame.isEmpty
             ? nil
             : plateGeometry(for: moldFrame, color: .systemOrange)
-        c.highlightRoot.childNodes.forEach { $0.removeFromParentNode() }
-        for h in highlights where !h.mesh.isEmpty {
-            let node = SCNNode(geometry: highlightGeometry(for: h.mesh, color: Self.palette[h.colorIndex % Self.palette.count]))
-            c.highlightRoot.addChildNode(node)
+    }
+
+    /// Rebuild the per-volume cavity nodes from `volumeMeshes`. Each starts
+    /// hidden (so it doesn't render) but is kept in the scene and tagged
+    /// `"vol:<id>"` so a click can resolve back to it via `hitTest`. Only called
+    /// when the geometry revision changes — highlight / visibility toggles reuse
+    /// these nodes.
+    private func applyVolumeNodes(coordinator c: Coordinator) {
+        c.pickRoot.childNodes.forEach { $0.removeFromParentNode() }
+        c.volumeNodes.removeAll(keepingCapacity: true)
+        for (id, mesh) in volumeMeshes where !mesh.isEmpty {
+            let node = SCNNode(geometry: SCNGeometry(mesh))
+            node.name = "vol:" + id
+            node.isHidden = true
+            c.pickRoot.addChildNode(node)
+            c.volumeNodes[id] = node
         }
     }
 
-    /// Contrasting glow colours, indexed by `VolumeHighlight.colorIndex`. Picked
-    /// to stand out against the blue/teal plates and from each other (e.g. the
-    /// two cavities of a collision).
+    /// Glow the highlighted cavities (un-hide + tint by palette index) and hide
+    /// the rest. Cheap — just toggles `isHidden` and swaps a material on existing
+    /// nodes — so it runs on every refresh.
+    private func applyHighlight(coordinator c: Coordinator) {
+        for (id, node) in c.volumeNodes {
+            if let idx = highlightedIDs.firstIndex(of: id) {
+                node.isHidden = false
+                node.geometry?.materials = [Self.highlightMaterial(color: Self.palette[idx % Self.palette.count])]
+            } else {
+                node.isHidden = true
+            }
+        }
+    }
+
+    /// Contrasting glow colours, indexed by a volume's position in
+    /// `highlightedIDs`. Picked to stand out against the blue/teal plates and
+    /// from each other (e.g. the two cavities of a collision).
     static let palette: [PlatformColor] = [.systemPink, .systemGreen, .systemYellow, .systemPurple]
 
-    /// One highlighted cavity, shaded exactly like the feature channels
-    /// (depth-tested, so it picks up the same ambient-occlusion crevices and
-    /// lighting that give the normal channels their form) — just tinted and a
-    /// touch more emissive so it reads as "this is the highlighted cavity".
-    /// Built a hair proud of the real channel, so it sits on top of the matching
-    /// feature geometry rather than z-fighting it.
-    private func highlightGeometry(for mesh: Mesh, color: PlatformColor) -> SCNGeometry {
-        let geometry = SCNGeometry(mesh)
+    /// Material for a highlighted cavity: shaded exactly like the feature
+    /// channels (depth-tested, so it picks up the same ambient-occlusion crevices
+    /// and lighting that give the normal channels their form) — just tinted and a
+    /// touch more emissive so it reads as "this is the highlighted cavity". The
+    /// cavity mesh is built a hair proud of the real channel, so it sits on top
+    /// of the matching feature geometry rather than z-fighting it.
+    private static func highlightMaterial(color: PlatformColor) -> SCNMaterial {
         let material = SCNMaterial()
         material.diffuse.contents = color
         material.emission.contents = color.withAlphaComponent(0.30)
         material.isDoubleSided = false
         material.lightingModel = .blinn
-        geometry.materials = [material]
-        return geometry
+        return material
     }
 
     private func plateGeometry(for mesh: Mesh, color: PlatformColor) -> SCNGeometry {
@@ -254,41 +380,16 @@ struct Scene3DView {
         return geometry
     }
 
-    private func applyDisplayMode(coordinator c: Coordinator) {
-        switch displayMode {
-        case .bodyOnly:
-            c.topNode.isHidden = false
-            c.bottomNode.isHidden = false
-            c.topFeaturesNode.isHidden = true
-            c.bottomFeaturesNode.isHidden = true
-            c.stencilNode.isHidden = false
-            c.moldNode.isHidden = true
-        case .both:
-            c.topNode.isHidden = false
-            c.bottomNode.isHidden = false
-            c.topFeaturesNode.isHidden = false
-            c.bottomFeaturesNode.isHidden = false
-            c.stencilNode.isHidden = false
-            c.moldNode.isHidden = true
-        case .featuresOnly:
-            c.topNode.isHidden = true
-            c.bottomNode.isHidden = true
-            c.topFeaturesNode.isHidden = false
-            c.bottomFeaturesNode.isHidden = false
-            // Channels-only mode hides every printed body so the routing
-            // solids read clearly. The stencil is a body, so it goes too.
-            c.stencilNode.isHidden = true
-            c.moldNode.isHidden = true
-        case .mold:
-            // Assembly-aid view: just the silicone sheet (stencil) sitting in
-            // its casting frame, so the pour cavity and margin read clearly.
-            c.topNode.isHidden = true
-            c.bottomNode.isHidden = true
-            c.topFeaturesNode.isHidden = true
-            c.bottomFeaturesNode.isHidden = true
-            c.stencilNode.isHidden = false
-            c.moldNode.isHidden = false
-        }
+    /// Show / hide each element by its `PreviewVisibility` bit. The per-volume
+    /// pick nodes are independent of this (their visibility tracks the highlight
+    /// set), so a hidden layer never disables click-to-select.
+    private func applyVisibility(coordinator c: Coordinator) {
+        c.topNode.isHidden            = !visibility.contains(.topPlate)
+        c.bottomNode.isHidden         = !visibility.contains(.bottomPlate)
+        c.topFeaturesNode.isHidden    = !visibility.contains(.topChannels)
+        c.bottomFeaturesNode.isHidden = !visibility.contains(.bottomChannels)
+        c.stencilNode.isHidden        = !visibility.contains(.stencil)
+        c.moldNode.isHidden           = !visibility.contains(.mold)
     }
 
     // MARK: - Framing

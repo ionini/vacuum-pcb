@@ -22,7 +22,7 @@ struct VolumeListView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Physical volumes")
                 .font(.headline)
-            Text("Each is one sealed air cavity in a single plate. Select one to glow it in 3D; on the printed plate, plug every hole but one and pull a vacuum on the last — a perfect vacuum confirms that cavity.")
+            Text("Each is one sealed air cavity in a single plate. Select one here — or click it in the 3D view — to glow it; on the printed plate, plug every hole but one and pull a vacuum on the last — a perfect vacuum confirms that cavity.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
