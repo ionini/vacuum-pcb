@@ -13,6 +13,10 @@ struct ComponentNodeView: View {
     /// reads it to apply the same offset so the whole group follows
     /// together.
     @Binding var multiDrag: SchematicMultiDrag?
+    /// Live single-drag displacement published to the canvas so the net lines
+    /// redraw mid-drag. Set only while this node drives a lone drag (group
+    /// drags use `multiDrag`); cleared when the drag ends or is cancelled.
+    @Binding var liveDragShift: SchematicDragShift?
     /// Bumped by the parent canvas whenever a second finger touches down.
     /// We watch this and abort any single-finger drag in flight so the
     /// component snaps back instead of trailing the user's first finger
@@ -116,6 +120,7 @@ struct ComponentNodeView: View {
             if dragOffset != .zero || multiDrag?.participants.contains(component.id) == true {
                 dragOffset = .zero
                 dragCancelled = true
+                liveDragShift = nil
             }
         }
     }
@@ -165,9 +170,13 @@ struct ComponentNodeView: View {
                     multiDrag?.translation = unscaled(value.translation)
                 } else {
                     dragOffset = unscaled(value.translation)
+                    liveDragShift = SchematicDragShift(
+                        participants: [component.id], translation: dragOffset
+                    )
                 }
             }
             .onEnded { value in
+                liveDragShift = nil
                 if dragCancelled {
                     dragCancelled = false
                     dragOffset = .zero

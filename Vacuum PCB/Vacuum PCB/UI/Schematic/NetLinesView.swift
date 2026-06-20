@@ -20,9 +20,31 @@ struct NetLinesView: View {
     var hoveredNet: UUID? = nil
     /// When false, VAC/ATM nets draw as wires instead of tap symbols.
     var railTaps: Bool = true
+    /// Live drag displacement folded into the dragged components' positions so
+    /// the wires follow the moving symbols instead of snapping only on release.
+    /// Nil when nothing is being dragged.
+    var dragShift: SchematicDragShift? = nil
+
+    /// `document` with any in-flight drag displacement applied to the dragged
+    /// components. Copy-on-write means only the positions array is duplicated —
+    /// `librarySnapshots` and everything else stay shared. Returns `document`
+    /// unchanged when no drag is active.
+    private var draggedDocument: CircuitDocument {
+        guard let shift = dragShift, !shift.participants.isEmpty else { return document }
+        var doc = document
+        for id in shift.participants {
+            guard let p = doc.schematic.position(for: id) else { continue }
+            doc.schematic.setPosition(
+                Point(x: p.x + shift.translation.width, y: p.y + shift.translation.height),
+                for: id
+            )
+        }
+        return doc
+    }
 
     var body: some View {
         Canvas { ctx, _ in
+            let document = draggedDocument
             let nets = SchematicWireGeometry.render(in: document, railTaps: railTaps)
 
             // Wires + rail taps.

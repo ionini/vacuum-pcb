@@ -54,3 +54,13 @@ struct SchematicMultiDrag: Equatable {
     var originals: [UUID: Point]
     var translation: CGSize
 }
+
+/// Live, render-only drag displacement for the schematic. Names the
+/// component(s) being moved and how far (unscaled schematic units), so the net
+/// lines and matings can redraw mid-drag instead of snapping only on release.
+/// The authoritative position commit still happens in `ComponentNodeView` on
+/// drag end — this just nudges what's drawn while the finger is down.
+struct SchematicDragShift: Equatable {
+    var participants: Set<UUID>
+    var translation: CGSize
+}

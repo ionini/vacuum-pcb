@@ -22,6 +22,9 @@ struct SchematicCanvasView: View {
     /// that participates in the same drag reads the same translation and
     /// follows in tandem.
     @State private var multiDrag: SchematicMultiDrag?
+    /// Live single-component drag displacement (group drags use `multiDrag`).
+    /// Render-only signal that lets the net lines track a lone symbol mid-drag.
+    @State private var singleDragShift: SchematicDragShift?
     @State private var marquee: MarqueeRect?
 
     // MARK: - Zoom / pan
@@ -66,6 +69,15 @@ struct SchematicCanvasView: View {
     @State private var windowCursor: CGPoint = .zero
 
     enum BackgroundDragMode { case none, marquee, pan }
+
+    /// Whatever drag is in flight, as a render-only shift for the wires: a
+    /// group drag (`multiDrag`) or a single-symbol drag (`singleDragShift`).
+    private var activeDragShift: SchematicDragShift? {
+        if let m = multiDrag {
+            return SchematicDragShift(participants: m.participants, translation: m.translation)
+        }
+        return singleDragShift
+    }
 
     struct MarqueeRect: Equatable {
         var startScreen: CGPoint
@@ -167,6 +179,7 @@ struct SchematicCanvasView: View {
                         // Second finger landed — abort any single-finger
                         // work the first finger started so pan/pinch wins.
                         multiDrag = nil
+                        singleDragShift = nil
                         marquee = nil
                         bgDragMode = .none
                         dragInvalidation &+= 1
@@ -184,6 +197,7 @@ struct SchematicCanvasView: View {
                         // Drop any in-flight selection/drag state so the
                         // mode flip doesn't leave the canvas mid-gesture.
                         multiDrag = nil
+                        singleDragShift = nil
                         marquee = nil
                         bgDragMode = .none
                         if navigateMode { netDrawState = .idle }
@@ -261,7 +275,8 @@ struct SchematicCanvasView: View {
                 .gesture(marqueeGesture, including: navigateMode ? .none : .gesture)
 
             NetLinesView(document: document.circuit, selection: selection,
-                         hoveredNet: hoveredNet, railTaps: showRailTaps)
+                         hoveredNet: hoveredNet, railTaps: showRailTaps,
+                         dragShift: activeDragShift)
 
             ForEach(document.circuit.logic.components.filter { $0.kind != .screw }) { component in
                 let pos = document.circuit.schematic.position(for: component.id)
@@ -272,6 +287,7 @@ struct SchematicCanvasView: View {
                     selection: $selection,
                     netDrawState: $netDrawState,
                     multiDrag: $multiDrag,
+                    liveDragShift: $singleDragShift,
                     dragInvalidation: dragInvalidation,
                     onPinDragChanged: handlePinDragChanged,
                     onPinDragEnded: handlePinDragEnded,
