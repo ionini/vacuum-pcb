@@ -12,10 +12,23 @@ struct InspectorStrip: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 12) {
-                content
-                Spacer()
-                hint
+            // Keep the strip a stable height. When the window is wide enough,
+            // show the controls with the hint pinned right. When it isn't, put
+            // everything on one horizontally-scrollable line instead of letting
+            // the hint wrap onto extra lines and grow the strip (worst for the
+            // connector, whose control row is the widest).
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    content
+                    Spacer(minLength: 8)
+                    hint
+                }
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
+                        content
+                        hint
+                    }
+                }
             }
             matingRows
         }
@@ -94,14 +107,20 @@ struct InspectorStrip: View {
         return Text(text)
             .font(.caption)
             .foregroundStyle(.secondary)
+            // Keep the hint on one line — without this it wraps as the window
+            // narrows, growing the whole strip's height. Lowest priority so it
+            // truncates before the controls give up any width.
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .layoutPriority(-1)
     }
 
     // MARK: - Selected component
 
     private func componentInspector(_ c: Component) -> some View {
         HStack(spacing: 10) {
-            Text(c.label).font(.headline)
-            Text("(\(c.kind.displayName))").foregroundStyle(.secondary)
+            Text(c.label).font(.headline).lineLimit(1).fixedSize()
+            Text("(\(c.kind.displayName))").foregroundStyle(.secondary).lineLimit(1).fixedSize()
             if c.kind == .resistor {
                 Picker("Size", selection: resistorSizeBinding(c)) {
                     Text("S").tag(ResistorSize.small)
@@ -431,14 +450,19 @@ struct MatingRow: View {
             Text(headline)
                 .font(.caption.bold())
                 .foregroundStyle(.indigo)
+                .lineLimit(1)
+                .fixedSize()
             if let mate = current,
                let peer = MatingActions.otherEndpoint(of: mate, from: endpoint),
                let peerLabel = MatingActions.label(for: peer, in: document.circuit) {
                 Text("Mated to")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .fixedSize()
                 Text(peerLabel)
                     .font(.caption.bold())
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                 Button("Unmate") {
                     MatingActions.unmate(endpoint, in: &document.circuit)
                 }
@@ -450,6 +474,9 @@ struct MatingRow: View {
                           systemImage: "exclamationmark.triangle.fill")
                         .font(.caption)
                         .foregroundStyle(.orange)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .layoutPriority(-1)
                 }
             } else {
                 let peers = MatingActions.compatiblePeers(for: endpoint, in: document.circuit)
@@ -457,6 +484,9 @@ struct MatingRow: View {
                     Text("No compatible peer (need opposite role + matching pin count)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .layoutPriority(-1)
                 } else {
                     Menu {
                         ForEach(peers, id: \.0) { peer in
