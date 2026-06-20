@@ -131,6 +131,17 @@ struct InspectorStrip: View {
                         .font(.system(size: 12))
                 }
                 .fixedSize()
+                let maxScrews = ComponentKind.connectorMaxScrewCount(pinCount: c.connectorPinCount ?? 1)
+                Stepper(
+                    value: connectorScrewCountBinding(c),
+                    in: ComponentKind.connectorMinScrewCount...maxScrews
+                ) {
+                    let s = c.connectorScrewCount ?? ComponentKind.connectorMinScrewCount
+                    Text("\(s) screw\(s == 1 ? "" : "s")")
+                        .font(.system(size: 12))
+                }
+                .fixedSize()
+                .help("Clamp screws. 2 keeps one at each end (the default). 3+ split the pins into even groups with a screw between each. Mating halves must use the same screw count.")
                 Picker("Role", selection: connectorRoleBinding(c)) {
                     Text("Carries silicone").tag(ConnectorRole.bottomExtend)
                     Text("Mates with silicone").tag(ConnectorRole.topExtend)
@@ -232,6 +243,14 @@ struct InspectorStrip: View {
                 guard let i = document.circuit.logic.components.firstIndex(where: { $0.id == c.id }) else { return }
                 let oldCount = document.circuit.logic.components[i].connectorPinCount ?? 1
                 document.circuit.logic.components[i].connectorPinCount = clamped
+                // A connector needs one pin per inter-screw group, so fewer
+                // pins can cap the screw count. Clamp it down rather than leave
+                // an impossible layout (the geometry would clamp it anyway).
+                let maxScrews = ComponentKind.connectorMaxScrewCount(pinCount: clamped)
+                if let s = document.circuit.logic.components[i].connectorScrewCount, s > maxScrews {
+                    document.circuit.logic.components[i].connectorScrewCount =
+                        maxScrews == ComponentKind.connectorMinScrewCount ? nil : maxScrews
+                }
                 // Drop net memberships for any pin whose index exceeds the
                 // new count — otherwise stepping down leaves orphan PinRefs
                 // pointing at pins that no longer exist in the footprint.
@@ -253,6 +272,22 @@ struct InspectorStrip: View {
                     }
                     document.circuit.logic.nets.removeAll { $0.pins.count < 2 }
                 }
+            }
+        )
+    }
+
+    private func connectorScrewCountBinding(_ c: Component) -> Binding<Int> {
+        Binding(
+            get: { c.connectorScrewCount ?? ComponentKind.connectorMinScrewCount },
+            set: { newCount in
+                guard let i = document.circuit.logic.components.firstIndex(where: { $0.id == c.id }) else { return }
+                let pinCount = document.circuit.logic.components[i].connectorPinCount ?? 1
+                let clamped = min(max(ComponentKind.connectorMinScrewCount, newCount),
+                                  ComponentKind.connectorMaxScrewCount(pinCount: pinCount))
+                // Store nil for the default two-end-cap layout so connectors
+                // the user never re-screwed stay byte-identical on save.
+                document.circuit.logic.components[i].connectorScrewCount =
+                    clamped == ComponentKind.connectorMinScrewCount ? nil : clamped
             }
         )
     }
@@ -408,6 +443,14 @@ struct MatingRow: View {
                     MatingActions.unmate(endpoint, in: &document.circuit)
                 }
                 .controlSize(.small)
+                if let mineS = MatingActions.screwCount(for: endpoint, in: document.circuit),
+                   let peerS = MatingActions.screwCount(for: peer, in: document.circuit),
+                   mineS != peerS {
+                    Label("Screw counts differ (\(mineS) vs \(peerS)) — bolts won't line up",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
             } else {
                 let peers = MatingActions.compatiblePeers(for: endpoint, in: document.circuit)
                 if peers.isEmpty {
@@ -475,6 +518,13 @@ enum MatingActions {
         }
     }
 
+    /// Clamp-screw count for an endpoint's connector (`?? 2` applied), or nil
+    /// when the endpoint can't be resolved.
+    static func screwCount(for endpoint: ConnectorEndpoint, in circuit: CircuitDocument) -> Int? {
+        guard let c = resolveConnector(endpoint, in: circuit) else { return nil }
+        return c.connectorScrewCount ?? ComponentKind.connectorMinScrewCount
+    }
+
     /// Endpoints compatible with the given one: opposite role, matching
     /// pin count, not the same endpoint, and either un-mated or already
     /// mated to *this* endpoint (so the picker shows the current mate as
@@ -487,8 +537,15 @@ enum MatingActions {
               let myRole = mine.connectorRole,
               let myCount = mine.connectorPinCount
         else { return [] }
+        let myScrews = mine.connectorScrewCount ?? ComponentKind.connectorMinScrewCount
         let myMatingId = mating(for: endpoint, in: circuit)?.id
         var candidates: [(ConnectorEndpoint, String)] = []
+        // Screw count is a *soft* match: a mismatched peer still mates (the
+        // pins line up) but the menu flags it so the user sees the bolt
+        // pattern won't, matching the DRC warning.
+        func peerLabel(_ base: String, theirScrews: Int) -> String {
+            theirScrews == myScrews ? base : "\(base)  ⚠ \(theirScrews) screws"
+        }
         // Top-level connector candidates.
         for c in circuit.logic.components where c.kind == .connector {
             let other: ConnectorEndpoint = .topLevel(componentId: c.id)
@@ -497,7 +554,8 @@ enum MatingActions {
                   c.connectorPinCount == myCount
             else { continue }
             if let existing = mating(for: other, in: circuit), existing.id != myMatingId { continue }
-            candidates.append((other, c.label))
+            candidates.append((other, peerLabel(c.label,
+                theirScrews: c.connectorScrewCount ?? ComponentKind.connectorMinScrewCount)))
         }
         // Subpart socket candidates.
         for c in circuit.logic.components where c.kind == .subpart {
@@ -509,7 +567,8 @@ enum MatingActions {
                       socket.pinCount == myCount
                 else { continue }
                 if let existing = mating(for: other, in: circuit), existing.id != myMatingId { continue }
-                candidates.append((other, "\(c.label).\(socket.label)"))
+                candidates.append((other, peerLabel("\(c.label).\(socket.label)",
+                    theirScrews: socket.screwCount)))
             }
         }
         candidates.sort { $0.1 < $1.1 }

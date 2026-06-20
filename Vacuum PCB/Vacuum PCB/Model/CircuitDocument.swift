@@ -29,7 +29,10 @@ struct CircuitDocument: Codable, Hashable {
     /// a sub-part (its outline isn't a real outer face). Optional / nil-default
     /// and omitted when off, so a v7 doc round-trips byte-identical and its
     /// content/effective hashes are unchanged (v7 → v8 is a no-op).
-    static let currentSchemaVersion = 8
+    /// v9: adds `connectorScrewCount` on `Component` — the number of clamp
+    /// screws on a connector. Optional / decodeIfPresent and nil for the
+    /// legacy "two end caps" layout, so v8 → v9 is a no-op for existing docs.
+    static let currentSchemaVersion = 9
 
     var schemaVersion: Int
     var manufacturing: ManufacturingConstants
@@ -256,6 +259,7 @@ extension CircuitDocument {
                     resistorSize: internalComp.resistorSize,
                     portDirection: internalComp.portDirection,
                     connectorPinCount: internalComp.connectorPinCount,
+                    connectorScrewCount: internalComp.connectorScrewCount,
                     connectorRole: internalComp.connectorRole
                 ))
                 if internalComp.kind == .connector {

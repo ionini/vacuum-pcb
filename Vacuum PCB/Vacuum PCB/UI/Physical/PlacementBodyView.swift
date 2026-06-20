@@ -114,14 +114,15 @@ struct PlacementBodyView: View {
                                    width: 2 * tubeR, height: 2 * tubeR)
                     ctx.stroke(Path(ellipseIn: r), with: .color(strokeColor), lineWidth: 1.0)
                 }
-                let endCapY = ComponentKind.connectorEndCapLocalY(
-                    pinCount: component.connectorPinCount ?? 1
-                ) * transform.ptsPerMm
+                let screwYs = ComponentKind.connectorScrewLocalYs(
+                    pinCount: component.connectorPinCount ?? 1,
+                    screwCount: component.connectorScrewCount ?? ComponentKind.connectorMinScrewCount
+                )
                 let endX = (fp.exclusionRect.origin.x + fp.exclusionRect.size.width / 2)
                     * transform.ptsPerMm
                 let throughR = ScrewGeometry.throughDiameter / 2 * transform.ptsPerMm
-                for ySign in [-1.0, 1.0] {
-                    let cy = ySign * endCapY
+                for sy in screwYs {
+                    let cy = sy * transform.ptsPerMm
                     let r = CGRect(x: endX - throughR, y: cy - throughR,
                                    width: 2 * throughR, height: 2 * throughR)
                     ctx.stroke(Path(ellipseIn: r), with: .color(strokeColor), lineWidth: 1.0)
@@ -341,13 +342,16 @@ struct PlacementBodyView: View {
         // (`.bottomExtend`) sized to the actual cavity, plus the clearance
         // through-bore in the centre so users can tell head vs nut at a
         // glance.
-        let endCapY = ComponentKind.connectorEndCapLocalY(pinCount: component.connectorPinCount ?? 1) * transform.ptsPerMm
+        let screwYs = ComponentKind.connectorScrewLocalYs(
+            pinCount: component.connectorPinCount ?? 1,
+            screwCount: component.connectorScrewCount ?? ComponentKind.connectorMinScrewCount
+        )
         let endX = (fp.exclusionRect.origin.x + fp.exclusionRect.size.width / 2) * transform.ptsPerMm
         let throughR = ScrewGeometry.throughDiameter / 2 * transform.ptsPerMm
         let headR = ScrewGeometry.headDiameter / 2 * transform.ptsPerMm
         let hexCircumR = (ScrewGeometry.hexAcrossFlats / sqrt(3.0)) * transform.ptsPerMm
-        for ySign in [-1.0, 1.0] {
-            let cy = ySign * endCapY
+        for sy in screwYs {
+            let cy = sy * transform.ptsPerMm
             switch role {
             case .topExtend:
                 let headRect = CGRect(x: endX - headR, y: cy - headR,

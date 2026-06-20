@@ -370,9 +370,12 @@ enum PlateBuilder {
                 // the other half. Through-bore spans the full assembly
                 // either way so the M2 shaft slips through. `protrusion`
                 // is 0 — heads and nuts sit flush with the outer face.
-                let endCapY = ComponentKind.connectorEndCapLocalY(pinCount: component.connectorPinCount ?? 1)
-                for ySign in [-1.0, 1.0] {
-                    let endLocal = Point(x: halfExt, y: ySign * endCapY)
+                let screwYs = ComponentKind.connectorScrewLocalYs(
+                    pinCount: component.connectorPinCount ?? 1,
+                    screwCount: component.connectorScrewCount ?? ComponentKind.connectorMinScrewCount
+                )
+                for sy in screwYs {
+                    let endLocal = Point(x: halfExt, y: sy)
                     let endWorld = placement.worldPosition(of: FootprintPin(
                         key: "_endcap", offset: endLocal, relativeLayer: .same
                     ))
@@ -517,9 +520,12 @@ enum PlateBuilder {
             // only the through-bore (not the nut pocket — that's in the
             // bottom plate proper, not in the silicone gasket).
             let halfExt = fp.exclusionRect.size.width / 2
-            let endCapY = ComponentKind.connectorEndCapLocalY(pinCount: component.connectorPinCount ?? 1)
-            for ySign in [-1.0, 1.0] {
-                let endLocal = Point(x: halfExt, y: ySign * endCapY)
+            let screwYs = ComponentKind.connectorScrewLocalYs(
+                pinCount: component.connectorPinCount ?? 1,
+                screwCount: component.connectorScrewCount ?? ComponentKind.connectorMinScrewCount
+            )
+            for sy in screwYs {
+                let endLocal = Point(x: halfExt, y: sy)
                 let endWorld = placement.worldPosition(of: FootprintPin(
                     key: "_endcap", offset: endLocal, relativeLayer: .same
                 ))

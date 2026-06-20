@@ -223,15 +223,75 @@ extension ComponentKind {
     /// "hardcoded for now" caveat as `connectorTubePitch`.
     static let connectorEndCapOffset: Double = 8.0
 
-    /// |y| of the end-cap screw centre relative to the row's anchor
-    /// (local origin). Both end-caps sit at ±this value along the
-    /// connector's tangent axis. Used by `PlateBuilder` (when placing
-    /// cutters) and `PlacementBodyView` (when drawing the symbol) so the
-    /// layout stays consistent across the model and CSG pipeline.
-    static func connectorEndCapLocalY(pinCount: Int) -> Double {
+    /// Lowest legal screw count: two end caps always clamp the joint, which
+    /// is also the legacy (pre-screw-count) layout.
+    static let connectorMinScrewCount = 2
+
+    /// Highest screw count that still leaves at least one pin in every
+    /// inter-screw group (`screwCount - 1` groups, each ≥ 1 pin).
+    static func connectorMaxScrewCount(pinCount: Int) -> Int {
+        max(connectorMinScrewCount, max(1, pinCount) + 1)
+    }
+
+    /// Pin and screw centres along a connector's tangent axis (local Y), both
+    /// sorted ascending and symmetric about the anchor at 0.
+    struct ConnectorRow {
+        /// One entry per pin, in slot order (index 0 = smallest Y).
+        var pinYs: [Double]
+        /// One entry per clamp screw.
+        var screwYs: [Double]
+    }
+
+    /// Single source of truth for a connector's 1-D layout, shared by the
+    /// footprint, the CAD cutters, the 2-D symbols, and the outline geometry
+    /// so every surface agrees on where pins and screws land.
+    ///
+    /// `screwCount == 2` puts both screws `connectorEndCapOffset` past the
+    /// outermost pins — the exact legacy geometry. Three or more splits the
+    /// pins into `screwCount - 1` contiguous groups, as even as possible with
+    /// any remainder going to the trailing groups (7 pins, 3 screws → 3 | 4),
+    /// and drops one extra screw between each pair of groups. Every screw —
+    /// end cap or interior — keeps `connectorEndCapOffset` clearance to its
+    /// neighbouring pins, so an interior screw gets the same head room the end
+    /// caps were tuned for; the trade-off is a longer connector. `screwCount`
+    /// is clamped to keep every group non-empty.
+    static func connectorRow(pinCount: Int, screwCount: Int) -> ConnectorRow {
         let n = max(1, pinCount)
-        let halfPinSpan = Double(n - 1) / 2 * connectorTubePitch
-        return halfPinSpan + connectorEndCapOffset
+        let s = min(max(connectorMinScrewCount, screwCount),
+                    connectorMaxScrewCount(pinCount: n))
+        let groupCount = s - 1                       // pin groups between screws
+        let base = n / groupCount
+        let remainder = n % groupCount
+        // Leading groups get `base` pins; the trailing `remainder` groups get
+        // one more, so the larger half lands last (matches 7 pins → 3 | 4).
+        let groupSizes = (0..<groupCount).map { $0 < groupCount - remainder ? base : base + 1 }
+
+        var pinYs: [Double] = []
+        var screwYs: [Double] = []
+        var cursor = 0.0
+        screwYs.append(cursor)                       // first end cap
+        for size in groupSizes {
+            cursor += connectorEndCapOffset          // clearance before the group
+            for k in 0..<size {
+                if k > 0 { cursor += connectorTubePitch }
+                pinYs.append(cursor)
+            }
+            cursor += connectorEndCapOffset          // clearance after the group
+            screwYs.append(cursor)                   // screw closing this group
+        }
+        // Centre the row on the anchor (local origin).
+        let centre = cursor / 2
+        return ConnectorRow(
+            pinYs: pinYs.map { $0 - centre },
+            screwYs: screwYs.map { $0 - centre }
+        )
+    }
+
+    /// Local-Y centres of a connector's clamp screws, ascending. Used by
+    /// `PlateBuilder` (cutters), `PlacementBodyView` (symbol), and the
+    /// stencil / outline geometry. See `connectorRow`.
+    static func connectorScrewLocalYs(pinCount: Int, screwCount: Int) -> [Double] {
+        connectorRow(pinCount: pinCount, screwCount: screwCount).screwYs
     }
 
     /// Outward extent (perpendicular to the row) of the connector
@@ -248,12 +308,13 @@ extension ComponentKind {
 
     static func connectorFootprint(
         pinCount: Int,
+        screwCount: Int = connectorMinScrewCount,
         role: ConnectorRole,
         manufacturing m: ManufacturingConstants
     ) -> Footprint {
         let n = max(1, pinCount)
-        let halfPinSpan = Double(n - 1) / 2 * connectorTubePitch
-        let endCapY = connectorEndCapLocalY(pinCount: n)
+        let row = connectorRow(pinCount: n, screwCount: screwCount)
+        let endCapY = row.screwYs.last ?? 0      // outermost screw |y| (symmetric)
         // Row extends `headRadius + minWallThickness` past each end-cap so
         // the screw head face has plate material around it. That sets the
         // exclusion / bounding rect's tangent extent.
@@ -286,7 +347,7 @@ extension ComponentKind {
             case .topExtend:    step = i               // pin 1 at smallest y
             case .bottomExtend: step = (n - 1) - i     // pin 1 at largest y
             }
-            let y = -halfPinSpan + Double(step) * connectorTubePitch
+            let y = row.pinYs[step]
             pins.append(FootprintPin(
                 key: "\(pinIndex)",
                 offset: Point(x: outwardExtent / 2, y: y),
@@ -351,6 +412,7 @@ extension Component {
         if kind == .connector {
             return ComponentKind.connectorFootprint(
                 pinCount: connectorPinCount ?? 1,
+                screwCount: connectorScrewCount ?? ComponentKind.connectorMinScrewCount,
                 role: connectorRole ?? .bottomExtend,
                 manufacturing: m
             )
@@ -368,6 +430,7 @@ extension Component {
         if kind == .connector {
             return ComponentKind.connectorFootprint(
                 pinCount: connectorPinCount ?? 1,
+                screwCount: connectorScrewCount ?? ComponentKind.connectorMinScrewCount,
                 role: connectorRole ?? .bottomExtend,
                 manufacturing: .defaults
             )

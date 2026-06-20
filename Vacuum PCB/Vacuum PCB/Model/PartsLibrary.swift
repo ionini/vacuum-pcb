@@ -34,6 +34,11 @@ struct BoundarySocket: Hashable {
     /// User-visible connector label inside the library (e.g., "J1").
     let label: String
     let pinCount: Int
+    /// Clamp-screw count of the library connector (`?? 2` already applied).
+    /// Two mating halves with different screw counts won't bolt together;
+    /// that's surfaced as a warning rather than blocked, so a mismatched
+    /// socket still appears as a candidate peer.
+    let screwCount: Int
     /// Resolved display name of each pin, in pin order (index `i` = pin
     /// `i + 1`), already falling back to the bare number for unnamed pins.
     /// Baked from the library connector's `connectorPinNames` so the parent
@@ -391,6 +396,7 @@ final class PartsLibrary: ObservableObject {
                 connectorId: c.id,
                 label: c.label,
                 pinCount: pinCount,
+                screwCount: c.connectorScrewCount ?? ComponentKind.connectorMinScrewCount,
                 pinNames: (1...pinCount).map { c.connectorPinName(String($0)) },
                 role: c.connectorRole ?? .bottomExtend,
                 side: side,

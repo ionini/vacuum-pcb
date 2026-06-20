@@ -366,8 +366,9 @@ struct ComponentSymbolView: View {
             }
             if component.kind == .connector {
                 let n = component.connectorPinCount ?? 1
+                let s = component.connectorScrewCount ?? ComponentKind.connectorMinScrewCount
                 let roleTag = (component.connectorRole ?? .bottomExtend) == .bottomExtend ? "▼" : "▲"
-                Text("\(n)P \(roleTag)").font(.system(size: 9)).foregroundStyle(.secondary)
+                Text("\(n)P · \(s)S \(roleTag)").font(.system(size: 9)).foregroundStyle(.secondary)
             }
         }
     }

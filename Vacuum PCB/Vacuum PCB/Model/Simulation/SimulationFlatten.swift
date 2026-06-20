@@ -169,6 +169,7 @@ extension CircuitDocument {
                     resistorSize: c.resistorSize,
                     portDirection: c.portDirection,
                     connectorPinCount: c.connectorPinCount,
+                    connectorScrewCount: c.connectorScrewCount,
                     connectorRole: c.connectorRole,
                     connectorSignal: c.connectorSignal,
                     connectorPinNames: c.connectorPinNames

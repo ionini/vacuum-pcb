@@ -101,6 +101,14 @@ struct Component: Codable, Identifiable, Hashable {
     /// Pin count for `.connector` instances. Drives the footprint pin list
     /// and the physical protrusion's slot count. Nil for non-connector kinds.
     var connectorPinCount: Int?
+    /// Number of clamp screws for `.connector` instances. Nil means the
+    /// legacy "two end caps" layout — so connectors saved before this axis
+    /// existed keep their exact geometry. Read via `?? 2`, never directly.
+    /// Three or more splits the pins into `count - 1` near-even groups with a
+    /// screw between each (see `ComponentKind.connectorScrewLocalYs`). A
+    /// different screw count makes two halves mechanically incompatible (the
+    /// bolt pattern won't line up) — mating them is allowed but flagged.
+    var connectorScrewCount: Int?
     /// Role for `.connector` instances. See `ConnectorRole`. Nil for
     /// non-connector kinds.
     var connectorRole: ConnectorRole?
@@ -127,6 +135,7 @@ struct Component: Codable, Identifiable, Hashable {
         partRef: String? = nil,
         partRefHash: String? = nil,
         connectorPinCount: Int? = nil,
+        connectorScrewCount: Int? = nil,
         connectorRole: ConnectorRole? = nil,
         connectorSignal: ConnectorSignal? = nil,
         connectorPinNames: [String]? = nil
@@ -139,6 +148,7 @@ struct Component: Codable, Identifiable, Hashable {
         self.partRef = partRef
         self.partRefHash = partRefHash
         self.connectorPinCount = connectorPinCount
+        self.connectorScrewCount = connectorScrewCount
         self.connectorRole = connectorRole
         self.connectorSignal = connectorSignal
         self.connectorPinNames = connectorPinNames

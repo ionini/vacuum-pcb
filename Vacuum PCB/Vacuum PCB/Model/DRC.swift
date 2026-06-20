@@ -855,6 +855,17 @@ enum DRC {
                     kind: .matingIncompatible(reason: "pin counts don't match (\(aPins) vs \(bPins))")
                 ))
             }
+            // Mechanical, not electrical: the pins still line up, but a
+            // different screw count means the bolt holes don't. Allowed
+            // (the mate is created) but flagged so the user notices.
+            let aScrews = a.component.connectorScrewCount ?? ComponentKind.connectorMinScrewCount
+            let bScrews = b.component.connectorScrewCount ?? ComponentKind.connectorMinScrewCount
+            if aScrews != bScrews {
+                issues.append(Issue(
+                    netId: mating.id, netLabel: label,
+                    kind: .matingIncompatible(reason: "screw counts don't match (\(aScrews) vs \(bScrews)); the bolt pattern won't line up")
+                ))
+            }
         }
         for (endpoint, count) in endpointSeen where count > 1 {
             let label = resolveEndpoint(endpoint, in: document)?.label ?? "?"
@@ -1633,7 +1644,10 @@ enum DRC {
                   let anchor = placement.edgeAnchor
             else { continue }
             let n = max(1, comp.connectorPinCount ?? 1)
-            let endCapY = ComponentKind.connectorEndCapLocalY(pinCount: n)
+            let endCapY = ComponentKind.connectorScrewLocalYs(
+                pinCount: n,
+                screwCount: comp.connectorScrewCount ?? ComponentKind.connectorMinScrewCount
+            ).last ?? 0
             let headRadius = ScrewGeometry.headDiameter / 2
             let halfRow = endCapY + headRadius + m.minWallThickness
             let outward = ComponentKind.connectorOutwardExtent(manufacturing: m)
