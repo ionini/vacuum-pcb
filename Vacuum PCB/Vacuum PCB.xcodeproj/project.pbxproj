@@ -129,6 +129,7 @@
 				F9B05BD82FB671F10071BB7F /* Sources */,
 				F9B05BD92FB671F10071BB7F /* Frameworks */,
 				F9B05BDA2FB671F10071BB7F /* Resources */,
+				F9F0D9ED2FE307E70026B90E /* Copy to Applications Folder */,
 			);
 			buildRules = (
 			);
@@ -203,6 +204,27 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		F9F0D9ED2FE307E70026B90E /* Copy to Applications Folder */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Copy to Applications Folder";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# macOS-only: never install an iOS .app bundle into the Mac's /Applications.\nif [ \"$PLATFORM_NAME\" != \"macosx\" ]; then exit 0; fi\n# Opt out for compile-check / CI builds: xcodebuild ... VPCB_SKIP_INSTALL=1\nif [ -n \"$VPCB_SKIP_INSTALL\" ]; then echo \"note: VPCB_SKIP_INSTALL set, skipping /Applications install\"; exit 0; fi\nrm -rf \"/Applications/${WRAPPER_NAME}\"\nditto \"${TARGET_BUILD_DIR}/${WRAPPER_NAME}\" \"/Applications/${WRAPPER_NAME}\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		F91D77EB2FCB5C37007B609C /* Sources */ = {

@@ -306,7 +306,7 @@ struct ValidateView: View {
                         }
                     }
                 }
-                .toggleStyle(.checkbox)
+                .checklistToggleStyle()
                 .disabled(model.isRunning)
             }
             Text("Unchecked gates are skipped — their card shows as “skipped” rather than running. Skip Robustness for a fast pass; it re-runs the sweep across many ±20% corners.")

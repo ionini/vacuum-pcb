@@ -32,6 +32,20 @@ extension Color {
     }
 }
 
+extension View {
+    /// Checkbox toggle style for dense, leading-aligned check lists. `.checkbox`
+    /// is macOS-only; on iPad it's unavailable, so fall back to the standard
+    /// switch (the closest "on/off per row" affordance touch users expect).
+    @ViewBuilder
+    func checklistToggleStyle() -> some View {
+        #if canImport(AppKit)
+        self.toggleStyle(.checkbox)
+        #else
+        self.toggleStyle(.switch)
+        #endif
+    }
+}
+
 /// True when the platform's primary input is a finger rather than a
 /// cursor. Used by views that need to grow hit targets, drop hover-only
 /// affordances, or raise drag thresholds on iPad.
