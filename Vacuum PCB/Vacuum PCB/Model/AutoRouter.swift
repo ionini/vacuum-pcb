@@ -211,7 +211,8 @@ enum AutoRouter {
     /// them renegotiate around everything left in place. The caller is
     /// responsible for removing the ripped nets' old routes before adding the
     /// returned segments.
-    static func planNegotiated(_ doc: CircuitDocument, ripUp: Set<UUID>? = nil, rounds: Int = 14)
+    static func planNegotiated(_ doc: CircuitDocument, ripUp: Set<UUID>? = nil, rounds: Int = 14,
+                               bendPenalty: Double = 0.5)
         -> [(netId: UUID, segment: Segment)] {
         let pitch = doc.manufacturing.gridPitch
         let outline = doc.physical.boardOutline
@@ -287,7 +288,8 @@ enum AutoRouter {
                         blocked: blockedArr, noVias: noVias, layers: layers,
                         cols: cols, rows: rows, cellCount: cellCount,
                         stamp: stamp, history: history, pFactor: pFactor,
-                        from: conn.a, fromLayer: conn.aL, to: conn.b, toLayer: conn.bL
+                        from: conn.a, fromLayer: conn.aL, to: conn.b, toLayer: conn.bL,
+                        bendPenalty: bendPenalty
                     ) else { continue }
                     results.append((path, conn.a, conn.b))
                     for (pt, lay) in path {
@@ -729,13 +731,16 @@ final class OccupancyGrid {
 
 // MARK: - Multi-layer A*
 
-/// A* over a (cell, layer) state space, where `layer` is a full plate + depth.
-/// Same-layer 4-connected steps cost 1; a via costs `viaCost` (default 6) so
-/// plain runs are preferred and the planner only changes layer when it pays
-/// off. A via may either cross the silicone (top↔bottom at depth 0) or step
-/// between adjacent depths inside one plate. Vias are forbidden where the
-/// `noVias` mask is set (under component bodies) or where the destination
-/// layer's cell is already occupied by another channel.
+/// A* over a (cell, layer, arrival-direction) state space, where `layer` is a
+/// full plate + depth. Same-layer 4-connected steps cost 1; a step that *turns*
+/// costs an extra `bendPenalty`, so among equal-length grid paths the planner
+/// prefers the one with the fewest corners — a straight run instead of a
+/// staircase. A via costs `viaCost` (default 6) so plain runs are preferred and
+/// the planner only changes layer when it pays off. A via may either cross the
+/// silicone (top↔bottom at depth 0) or step between adjacent depths inside one
+/// plate. Vias are forbidden where the `noVias` mask is set (under component
+/// bodies) or where the destination layer's cell is already occupied by another
+/// channel.
 enum AStarML {
     static func run(
         grids: [Layer: OccupancyGrid],
@@ -743,7 +748,8 @@ enum AStarML {
         layers: [Layer],
         from start: Point, fromLayer: Layer,
         to goal: Point, toLayer: Layer,
-        viaCost: Int = 6
+        viaCost: Int = 6,
+        bendPenalty: Int = 1
     ) -> [(point: Point, layer: Layer)]? {
         guard let startLayer = layers.firstIndex(of: fromLayer),
               let goalLayer = layers.firstIndex(of: toLayer),
@@ -773,45 +779,56 @@ enum AStarML {
             }
         }
 
-        func stateIdx(_ i: Int, _ j: Int, _ l: Int) -> Int { l * cells + j * cols + i }
+        // The arrival direction (which of the 4 neighbours we stepped from) is
+        // part of the state so a turn can be priced. Direction 4 = "none": the
+        // start, and the cell just after a via, have no incoming heading, so
+        // their next move is free in any direction.
+        let dirCount = 5
+        let noneDir = 4
+        let neighbours = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+
+        func base(_ i: Int, _ j: Int, _ l: Int) -> Int { l * cells + j * cols + i }
+        func stateIdx(_ i: Int, _ j: Int, _ l: Int, _ d: Int) -> Int { base(i, j, l) * dirCount + d }
         func heuristic(_ i: Int, _ j: Int, _ l: Int) -> Int {
             abs(i - gx) + abs(j - gy) + (l == goalLayer ? 0 : viaCost)
         }
 
-        let total = cells * layerCount
+        let goalBase = base(gx, gy, goalLayer)
+        let total = cells * layerCount * dirCount
         var gScore = Array(repeating: Int.max, count: total)
         var parent = Array(repeating: -1, count: total)
         var visited = Array(repeating: false, count: total)
-        let startIdx = stateIdx(sx, sy, startLayer)
-        let goalIdx = stateIdx(gx, gy, goalLayer)
+        let startIdx = stateIdx(sx, sy, startLayer, noneDir)
         gScore[startIdx] = 0
 
         var open = MinHeap()
         open.push(f: heuristic(sx, sy, startLayer), state: startIdx)
-        let neighbours = [(1, 0), (-1, 0), (0, 1), (0, -1)]
 
         while let popped = open.pop() {
             let current = popped.state
             if visited[current] { continue }   // stale duplicate (lazy deletion)
             visited[current] = true
-            if current == goalIdx {
-                return reconstruct(parent: parent, goalIdx: goalIdx,
-                                   cells: cells, cols: cols,
+            let b = current / dirCount
+            if b == goalBase {
+                return reconstruct(parent: parent, goalIdx: current,
+                                   cells: cells, cols: cols, dirCount: dirCount,
                                    layers: layers, gridForLayer: gridForLayer)
             }
-            let l = current / cells
-            let rem = current % cells
+            let curDir = current % dirCount
+            let l = b / cells
+            let rem = b % cells
             let ci = rem % cols, cj = rem / cols
 
-            // Same-layer 4-connected moves.
+            // Same-layer 4-connected moves; a change of heading costs `bendPenalty`.
             let curGrid = gridForLayer[l]
-            for (dx, dy) in neighbours {
+            for (dirIndex, (dx, dy)) in neighbours.enumerated() {
                 let ni = ci + dx, nj = cj + dy
                 guard curGrid.inBounds(ni, nj) else { continue }
                 let isGoalCell = (ni == gx && nj == gy && l == goalLayer)
                 if curGrid.isBlocked(ni, nj), !isGoalCell { continue }
-                let nIdx = stateIdx(ni, nj, l)
-                let tentative = gScore[current] + 1
+                let bend = curDir != noneDir && curDir != dirIndex
+                let nIdx = stateIdx(ni, nj, l, dirIndex)
+                let tentative = gScore[current] + 1 + (bend ? bendPenalty : 0)
                 if tentative < gScore[nIdx] {
                     gScore[nIdx] = tentative
                     parent[nIdx] = current
@@ -821,12 +838,14 @@ enum AStarML {
             // Via to an adjacent layer at this cell. The destination cell must
             // be free (don't punch through an existing channel there) and the
             // cell must be outside the no-via mask (no bores under component
-            // bodies — transistor dimples, resistors, port bores).
+            // bodies — transistor dimples, resistors, port bores). The via
+            // carries the current heading through unchanged — going straight
+            // across a via isn't a corner, but turning after it is.
             if !noVias.isBlocked(ci, cj) {
                 for nl in viaAdj[l] {
                     let isGoalCell = (ci == gx && cj == gy && nl == goalLayer)
                     if gridForLayer[nl].isBlocked(ci, cj), !isGoalCell { continue }
-                    let nIdx = stateIdx(ci, cj, nl)
+                    let nIdx = stateIdx(ci, cj, nl, curDir)
                     let tentative = gScore[current] + viaCost
                     if tentative < gScore[nIdx] {
                         gScore[nIdx] = tentative
@@ -840,14 +859,15 @@ enum AStarML {
     }
 
     private static func reconstruct(
-        parent: [Int], goalIdx: Int, cells: Int, cols: Int,
+        parent: [Int], goalIdx: Int, cells: Int, cols: Int, dirCount: Int,
         layers: [Layer], gridForLayer: [OccupancyGrid]
     ) -> [(point: Point, layer: Layer)] {
         var result: [(Point, Layer)] = []
         var idx = goalIdx
         while idx >= 0 {
-            let l = idx / cells
-            let rem = idx % cells
+            let b = idx / dirCount
+            let l = b / cells
+            let rem = b % cells
             let i = rem % cols
             let j = rem / cols
             result.append((gridForLayer[l].toWorld(i, j), layers[l]))
@@ -864,9 +884,11 @@ enum AStarML {
 /// Like `AStarML` but over a real-valued cost field: each step's cost is
 /// `1 + history[cell] + pFactor·stamp[cell]` (vias use `viaCost` as the base),
 /// so a path is steered away from congested cells without ever being blocked
-/// by them. Only sub-part bodies / resistor serpentines (the `blocked` grids)
-/// and the no-via mask are hard constraints. `stamp` / `history` are flat
-/// arrays indexed `layer·cellCount + j·cols + i`, matching `planNegotiated`.
+/// by them. A step that *turns* additionally costs `bendPenalty`, so the path
+/// stays straight wherever congestion doesn't force a detour. Only sub-part
+/// bodies / resistor serpentines (the `blocked` grids) and the no-via mask are
+/// hard constraints. `stamp` / `history` are flat arrays indexed
+/// `layer·cellCount + j·cols + i`, matching `planNegotiated`.
 enum AStarCost {
     static func run(
         blocked: [OccupancyGrid], noVias: OccupancyGrid, layers: [Layer],
@@ -874,7 +896,8 @@ enum AStarCost {
         stamp: [Int], history: [Double], pFactor: Double,
         from start: Point, fromLayer: Int,
         to goal: Point, toLayer: Int,
-        viaCost: Double = 6
+        viaCost: Double = 6,
+        bendPenalty: Double = 0.5
     ) -> [(point: Point, layer: Layer)]? {
         let anyGrid = blocked[0]
         let (sx, sy) = anyGrid.toGrid(start)
@@ -891,46 +914,56 @@ enum AStarCost {
             }
         }
 
-        func stateIdx(_ i: Int, _ j: Int, _ l: Int) -> Int { l * cellCount + j * cols + i }
+        // Arrival direction is part of the state so a turn can be priced (see
+        // `AStarML`). Direction 4 = "none": the start and the cell just after a
+        // via have no incoming heading, so their next move is penalty-free.
+        let dirCount = 5
+        let noneDir = 4
+        let neighbours = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+
+        func base(_ i: Int, _ j: Int, _ l: Int) -> Int { l * cellCount + j * cols + i }
+        func stateIdx(_ i: Int, _ j: Int, _ l: Int, _ d: Int) -> Int { base(i, j, l) * dirCount + d }
         func heuristic(_ i: Int, _ j: Int, _ l: Int) -> Double {
             Double(abs(i - gx) + abs(j - gy)) + (l == toLayer ? 0 : viaCost)
         }
 
-        let total = cellCount * layerCount
+        let goalBase = base(gx, gy, toLayer)
+        let total = cellCount * layerCount * dirCount
         var gScore = [Double](repeating: .infinity, count: total)
         var parent = [Int](repeating: -1, count: total)
         var visited = [Bool](repeating: false, count: total)
-        let startIdx = stateIdx(sx, sy, fromLayer)
-        let goalIdx = stateIdx(gx, gy, toLayer)
+        let startIdx = stateIdx(sx, sy, fromLayer, noneDir)
         gScore[startIdx] = 0
 
         var open = DoubleHeap()
         open.push(f: heuristic(sx, sy, fromLayer), state: startIdx)
-        let neighbours = [(1, 0), (-1, 0), (0, 1), (0, -1)]
 
         while let popped = open.pop() {
             let current = popped.state
             if visited[current] { continue }
             visited[current] = true
-            if current == goalIdx {
-                return reconstruct(parent: parent, goalIdx: goalIdx,
-                                   cellCount: cellCount, cols: cols,
+            let b = current / dirCount
+            if b == goalBase {
+                return reconstruct(parent: parent, goalIdx: current,
+                                   cellCount: cellCount, cols: cols, dirCount: dirCount,
                                    layers: layers, grids: blocked)
             }
-            let l = current / cellCount
-            let rem = current % cellCount
+            let curDir = current % dirCount
+            let l = b / cellCount
+            let rem = b % cellCount
             let ci = rem % cols, cj = rem / cols
             let curGrid = blocked[l]
 
-            for (dx, dy) in neighbours {
+            for (dirIndex, (dx, dy)) in neighbours.enumerated() {
                 let ni = ci + dx, nj = cj + dy
                 guard curGrid.inBounds(ni, nj) else { continue }
                 let isGoalCell = (ni == gx && nj == gy && l == toLayer)
                 if curGrid.isBlocked(ni, nj), !isGoalCell { continue }
                 let flat = l * cellCount + nj * cols + ni
-                let step = 1 + history[flat] + pFactor * Double(stamp[flat])
+                let bend = curDir != noneDir && curDir != dirIndex
+                let step = 1 + history[flat] + pFactor * Double(stamp[flat]) + (bend ? bendPenalty : 0)
                 let tentative = gScore[current] + step
-                let nIdx = stateIdx(ni, nj, l)
+                let nIdx = stateIdx(ni, nj, l, dirIndex)
                 if tentative < gScore[nIdx] {
                     gScore[nIdx] = tentative
                     parent[nIdx] = current
@@ -944,7 +977,7 @@ enum AStarCost {
                     let flat = nl * cellCount + cj * cols + ci
                     let step = viaCost + history[flat] + pFactor * Double(stamp[flat])
                     let tentative = gScore[current] + step
-                    let nIdx = stateIdx(ci, cj, nl)
+                    let nIdx = stateIdx(ci, cj, nl, curDir)
                     if tentative < gScore[nIdx] {
                         gScore[nIdx] = tentative
                         parent[nIdx] = current
@@ -957,14 +990,15 @@ enum AStarCost {
     }
 
     private static func reconstruct(
-        parent: [Int], goalIdx: Int, cellCount: Int, cols: Int,
+        parent: [Int], goalIdx: Int, cellCount: Int, cols: Int, dirCount: Int,
         layers: [Layer], grids: [OccupancyGrid]
     ) -> [(point: Point, layer: Layer)] {
         var result: [(Point, Layer)] = []
         var idx = goalIdx
         while idx >= 0 {
-            let l = idx / cellCount
-            let rem = idx % cellCount
+            let b = idx / dirCount
+            let l = b / cellCount
+            let rem = b % cellCount
             let i = rem % cols, j = rem / cols
             result.append((grids[l].toWorld(i, j), layers[l]))
             let next = parent[idx]

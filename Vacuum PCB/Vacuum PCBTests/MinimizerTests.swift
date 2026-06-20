@@ -181,7 +181,12 @@ struct MinimizerTests {
             Placement(componentId: vac.id, position: Point(x: 12, y: 12), rotation: .r180, layer: .top),
             Placement(componentId: r1.id, position: Point(x: 26, y: 16), rotation: .r0, layer: .top),
             Placement(componentId: r2.id, position: Point(x: 22, y: 30), rotation: .r0, layer: .top),
-            Placement(componentId: out.id, position: Point(x: 34, y: 20), rotation: .r0, layer: .top),
+            // OUT1 sits clear of the R1→R2 (n2) route corridor: at y=20 its
+            // outlet bore — which sweeps to a board edge — would cross n2's
+            // vertical run and trip portBoreClearance. Keep it north of the
+            // cluster so the outlet exits into empty space (same reasoning as
+            // VAC's orientation above).
+            Placement(componentId: out.id, position: Point(x: 40, y: 44), rotation: .r0, layer: .top),
         ]
         route(&doc)
         return doc
