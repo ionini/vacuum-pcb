@@ -52,8 +52,14 @@ extension View {
 enum InputPlatform {
     #if canImport(AppKit)
     static let isTouch = false
+    /// System double-click speed, so hand-rolled double-tap detection matches
+    /// what the user set in System Settings.
+    static var doubleTapInterval: TimeInterval { NSEvent.doubleClickInterval }
     #else
     static let isTouch = true
+    /// iPadOS exposes no public double-tap interval; ~300 ms matches the
+    /// platform default closely enough.
+    static var doubleTapInterval: TimeInterval { 0.35 }
     #endif
 }
 

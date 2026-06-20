@@ -38,6 +38,10 @@ struct ComponentNodeView: View {
     @State private var dragCancelled: Bool = false
     @State private var isRenaming = false
     @State private var renameDraft: String = ""
+    /// Timestamp of this node's last plain tap, for hand-rolled double-tap
+    /// detection. Per-node `@State`, so a quick tap on *this* component opens
+    /// rename while a quick tap moving between two components just reselects.
+    @State private var lastTapTime: Date = .distantPast
     @FocusState private var renameFieldFocused: Bool
 
     /// Scale factor the canvas applies via .scaleEffect. We divide every
@@ -74,12 +78,12 @@ struct ComponentNodeView: View {
         return ZStack {
             ComponentSymbolView(component: component, isSelected: isSelected,
                                 rotationQuarterTurns: rotationQuarterTurns)
+                // A single tap gesture only — it fires immediately on tap-up.
+                // Rename (the old double-tap) is detected by hand inside
+                // `handleSymbolTap`, so selection isn't held back waiting to
+                // rule out a second tap.
                 .onTapGesture {
                     handleSymbolTap()
-                }
-                .onTapGesture(count: 2) {
-                    renameDraft = component.label
-                    isRenaming = true
                 }
                 // `.gesture(_, including: .none)` keeps the modifier
                 // wired in the view tree (so SwiftUI preserves the
@@ -127,7 +131,8 @@ struct ComponentNodeView: View {
 
     private func handleSymbolTap() {
         if ModifierKeys.commandHeld {
-            // Cmd-click toggles in/out of the multi-selection.
+            // Cmd-click toggles in/out of the multi-selection (never renames).
+            lastTapTime = .distantPast
             var next = selection
             next.net = nil
             if next.components.contains(component.id) {
@@ -136,9 +141,20 @@ struct ComponentNodeView: View {
                 next.components.insert(component.id)
             }
             selection = next
-        } else {
-            selection = .component(component.id)
+            return
         }
+        // A second plain tap on the same component within the system
+        // double-click window opens rename; the first tap already selected it.
+        let now = Date()
+        if now.timeIntervalSince(lastTapTime) < InputPlatform.doubleTapInterval {
+            lastTapTime = .distantPast
+            renameDraft = component.label
+            isRenaming = true
+            return
+        }
+        // First tap: select right away.
+        lastTapTime = now
+        selection = .component(component.id)
     }
 
     // MARK: - Drag
