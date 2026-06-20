@@ -1795,11 +1795,24 @@ struct PhysicalCanvasView: View {
     /// Suppressed while a route is in progress — the user's next click is
     /// meant to extend that route, not pop a menu.
     private var disambigGesture: some Gesture {
+        // Sequence a zero-distance drag after the long press purely to recover
+        // the press location. `LongPressGesture` doesn't report it, and on pure
+        // touch there's no hover keeping `mouseLocation` current — so without
+        // this the menu never opened on an iPad without a pointer.
+        // `.named("canvas")` is the space `mouseLocation` and
+        // `collectDisambigCandidates` already work in.
         LongPressGesture(minimumDuration: 0.45, maximumDistance: 6)
-            .onEnded { _ in
+            .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .named("canvas")))
+            .onEnded { value in
                 guard !routingState.inProgress else { return }
-                guard mouseLocation != .zero else { return }
-                let pt = mouseLocation
+                let pt: CGPoint
+                if case .second(_, let drag?) = value {
+                    pt = drag.location            // touch or pointer: actual press point
+                } else if mouseLocation != .zero {
+                    pt = mouseLocation            // fallback to last hover
+                } else {
+                    return
+                }
                 let candidates = collectDisambigCandidates(at: pt)
                 guard !candidates.isEmpty else { return }
                 disambiguator = DisambigState(screenPoint: pt, candidates: candidates)
@@ -1884,6 +1897,47 @@ struct PhysicalCanvasView: View {
                     }
                 ))
             }
+        }
+
+        // --- Route waypoints (interior bends): remove ---
+        // The touch/long-press equivalent of right-clicking a bend handle on
+        // macOS. Endpoints (on pins) and vias are skipped — vias have their own
+        // entry above, and removing an endpoint would silently shorten the
+        // route. Threshold matches the handle's hit area.
+        let removeThreshold: Double = InputPlatform.isTouch ? 14 : 11
+        for route in document.circuit.physical.routes {
+            for (segIdx, segment) in route.segments.enumerated() {
+                guard visible.contains(segment.layer) else { continue }
+                let n = segment.waypoints.count
+                for (wIdx, wp) in segment.waypoints.enumerated() {
+                    guard wIdx > 0, wIdx < n - 1, wp.kind != .via else { continue }
+                    let screen = transform.toScreen(wp.position)
+                    let d = hypot(Double(pt.x - screen.x), Double(pt.y - screen.y))
+                    guard d <= removeThreshold else { continue }
+                    out.append(DisambigCandidate(
+                        label: "Remove point (\(netLabel(for: route.netId)))",
+                        systemImage: "minus.circle",
+                        color: LayerPalette.color(for: segment.layer),
+                        apply: {
+                            deleteWaypoint(netId: route.netId, segIdx: segIdx, waypointIndex: wIdx)
+                            selection = .routeSegment(netId: route.netId, segmentIndex: segIdx)
+                        }
+                    ))
+                }
+            }
+        }
+
+        // --- Route segment: add a point here ---
+        // Offered whenever the press is on a route (a segment was hit above).
+        // `insertWaypointFromRightClick` re-finds the nearest segment and drops
+        // a grid-snapped bend at the projected point.
+        if !seenSegments.isEmpty {
+            out.append(DisambigCandidate(
+                label: "Add point here",
+                systemImage: "plus.circle",
+                color: .accentColor,
+                apply: { insertWaypointFromRightClick(at: pt) }
+            ))
         }
 
         // --- Placements ---
