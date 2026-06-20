@@ -3,12 +3,15 @@ import SwiftUI
 /// A draggable handle for one wire waypoint. Lives in the scaled schematic
 /// subtree (so its coordinates are schematic units) above the net lines.
 /// Dragging reports the new schematic point live (the wire bends as you drag)
-/// and again on release (where the canvas snaps it to the grid). Right-clicking
-/// a handle removes it — handled by the canvas's right-click catcher, not here.
+/// and again on release (where the canvas snaps it to the grid). On macOS,
+/// right-clicking a handle removes it via the canvas's right-click catcher; the
+/// `.contextMenu` below is the touch path (long-press → "Remove Point") and is
+/// dormant on macOS, where the catcher consumes the right-click first.
 struct WaypointHandleView: View {
     let point: CGPoint
     var onChanged: (CGPoint) -> Void
     var onEnded: (CGPoint) -> Void
+    var onRemove: () -> Void = {}
 
     @Environment(\.schematicZoom) private var zoom: Double
     @Environment(\.canvasLocked) private var locked: Bool
@@ -23,7 +26,12 @@ struct WaypointHandleView: View {
             .background(Circle().fill(Color.white.opacity(0.001)).frame(width: 22, height: 22))
             .position(point)
             .gesture(drag, including: locked ? .none : .gesture)
-            .help("Drag to route · right-click to remove")
+            .contextMenu {
+                Button(role: .destructive, action: onRemove) {
+                    Label("Remove Point", systemImage: "trash")
+                }
+            }
+            .help("Drag to route · right-click or long-press to remove")
     }
 
     private var drag: some Gesture {

@@ -273,6 +273,11 @@ struct SchematicCanvasView: View {
                 // so this needs to be off explicitly — not just shadowed
                 // by the high-priority gesture above.
                 .gesture(marqueeGesture, including: navigateMode ? .none : .gesture)
+                // Touch-only: long-press a wire to drop a waypoint (the macOS
+                // right-click-to-add path). Off on macOS (right-click handles
+                // it) and in lock/pan mode.
+                .gesture(addPointGesture,
+                         including: (InputPlatform.isTouch && !navigateMode) ? .gesture : .none)
 
             NetLinesView(document: document.circuit, selection: selection,
                          hoveredNet: hoveredNet, railTaps: showRailTaps,
@@ -301,7 +306,8 @@ struct SchematicCanvasView: View {
                 WaypointHandleView(
                     point: h.point,
                     onChanged: { p in waypointDragChanged(pair: h.pair, index: h.index, to: p) },
-                    onEnded: { p in waypointDragEnded(pair: h.pair, index: h.index, to: p) }
+                    onEnded: { p in waypointDragEnded(pair: h.pair, index: h.index, to: p) },
+                    onRemove: { document.circuit.schematic.removeWaypoint(pair: h.pair, index: h.index) }
                 )
             }
 
@@ -478,6 +484,22 @@ struct SchematicCanvasView: View {
                 .position(x: m.rect.midX, y: m.rect.midY)
                 .allowsHitTesting(false)
         }
+    }
+
+    /// Touch equivalent of macOS right-click-to-add-waypoint: long-press a wire
+    /// to drop a point there. `LongPressGesture` alone doesn't report where the
+    /// press landed, so we sequence a zero-distance drag purely to recover the
+    /// location; `.local` is the scaled-content space, i.e. schematic coords —
+    /// exactly what `addWaypoint` expects. Removal on touch is the waypoint
+    /// dot's context menu (`WaypointHandleView`).
+    private var addPointGesture: some Gesture {
+        LongPressGesture(minimumDuration: 0.4, maximumDistance: 10)
+            .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .local))
+            .onEnded { value in
+                if case .second(true, let drag?) = value {
+                    addWaypoint(at: drag.location)
+                }
+            }
     }
 
     private var marqueeGesture: some Gesture {
