@@ -232,7 +232,12 @@ struct SubpartExpandedView: View {
                             manufacturing: part.document.manufacturing,
                             transform: transform,
                             visible: visible,
-                            isSelected: false
+                            isSelected: false,
+                            // Composited through `.drawingGroup()` below, where
+                            // `.regularMaterial` degrades to an opaque (black on
+                            // iOS) solid — use the colour-scheme-aware chip so the
+                            // label stays legible.
+                            rasterizedLabelBackground: true
                         )
                     }
                 }

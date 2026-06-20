@@ -11,6 +11,13 @@ struct PlacementBodyView: View {
     let transform: CanvasTransform
     let visible: LayerVisibility
     let isSelected: Bool
+    /// When true, the label uses a solid colour-scheme-aware chip instead of
+    /// `.regularMaterial`. Material can't render inside a `.drawingGroup()` — it
+    /// degrades to an opaque solid (dark on iOS), which the black `.primary`
+    /// label text then vanishes into. Subpart internal placements are composited
+    /// through a drawingGroup (see `SubpartExpandedView`), so they opt in.
+    var rasterizedLabelBackground: Bool = false
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -142,7 +149,7 @@ struct PlacementBodyView: View {
             .foregroundStyle(.primary)
             .padding(.horizontal, 3)
             .padding(.vertical, 1)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 3))
+            .labelChip(solidColorScheme: rasterizedLabelBackground ? colorScheme : nil)
             .fixedSize()
             .position(x: screen.x, y: screen.y + offset)
     }
@@ -378,5 +385,23 @@ struct PlacementBodyView: View {
     /// plate. Multi-layer depth tinting only applies to routes.
     private func plateColor(_ plate: Plate) -> Color {
         LayerPalette.color(for: Layer(plate: plate, depth: 0))
+    }
+}
+
+private extension View {
+    /// Backdrop chip for a canvas label. Passing `nil` keeps the translucent
+    /// `.regularMaterial`; passing a colour scheme swaps to a solid fill that
+    /// tracks it (the same light/dark chip the subpart pin labels use), so the
+    /// label survives `.drawingGroup()` rasterisation where Material can't.
+    @ViewBuilder
+    func labelChip(solidColorScheme scheme: ColorScheme?) -> some View {
+        if let scheme {
+            background(
+                (scheme == .dark ? Color(white: 0.18) : Color(white: 0.95)).opacity(0.85),
+                in: RoundedRectangle(cornerRadius: 3)
+            )
+        } else {
+            background(.regularMaterial, in: RoundedRectangle(cornerRadius: 3))
+        }
     }
 }
