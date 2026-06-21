@@ -422,15 +422,15 @@ enum DRC {
 
     // MARK: - Stencil cutting-sheet crowding
 
-    /// Flags places where the silicone cutting *stencil* would tear: a via
-    /// through-hole (enlarged by `stencilViaPadding`) sits within
-    /// `minWallThickness` of another through-hole in the sheet (another via, a
-    /// screw clearance bore, a connector pin) or a transistor / LED dimple
-    /// (where the silicone has to flex). Stencil-only — the printed plate bores
-    /// are unaffected by the padding, so this never duplicates the plate
-    /// checks. Runs on the *flattened* design because the stencil itself is
-    /// built flattened (it punches sub-part vias too), so a top-level-only pass
-    /// would miss almost every hole.
+    /// Flags places where the silicone cutting *stencil* would tear: a padded
+    /// through-hole (a cross-silicone via or a bottom-extend connector pin, both
+    /// enlarged by `stencilViaPadding`) sits within `minWallThickness` of another
+    /// hole in the sheet — another padded hole, a screw clearance bore, or a
+    /// transistor / LED dimple (where the silicone has to flex). Stencil-only —
+    /// the printed plate bores are unaffected by the padding, so this never
+    /// duplicates the plate checks. Runs on the *flattened* design because the
+    /// stencil itself is built flattened (it punches sub-part vias too), so a
+    /// top-level-only pass would miss almost every hole.
     private static func stencilHoleIssues(in doc: CircuitDocument) -> [Issue] {
         let flat = doc.flattened()
         let m = flat.manufacturing
@@ -438,18 +438,19 @@ enum DRC {
         let threshold = m.minWallThickness
 
         struct Hole { let pos: Point; let radius: Double; let label: String }
-        // The padded via through-holes are the only holes the padding changes —
-        // the check is centred on them.
-        let viaRadius = (m.channelDiameter + m.stencilViaPadding) / 2
-        let vias = flat.physical.crossSiliconeViaPositions().map {
-            Hole(pos: $0, radius: viaRadius, label: "via")
-        }
-        guard !vias.isEmpty else { return [] }
-
-        // Neighbours that share the silicone sheet: other through-holes (screw
-        // shafts, bottom-extend connector pins) and the transistor / LED
-        // dimples the silicone deflects into.
+        // Holes the padding enlarges: cross-silicone vias and bottom-extend
+        // connector pins both carry fluid through the sheet, so both get the
+        // `stencilViaPadding` oversize. The tear check is centred on these —
+        // they're the holes the padding parameter grows.
+        let paddedRadius = (m.channelDiameter + m.stencilViaPadding) / 2
         let comps = Dictionary(flat.logic.components.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+
+        var padded = flat.physical.crossSiliconeViaPositions().map {
+            Hole(pos: $0, radius: paddedRadius, label: "via")
+        }
+        // Fixed-size neighbours that share the sheet but the padding leaves
+        // alone: screw clearance shafts and the transistor / LED dimples the
+        // silicone deflects into.
         var others: [Hole] = []
         for pl in flat.physical.placements {
             guard let c = comps[pl.componentId] else { continue }
@@ -459,7 +460,7 @@ enum DRC {
                                    label: "screw"))
             case .connector where (c.connectorRole ?? .bottomExtend) == .bottomExtend:
                 for pin in c.footprint(m, snapshots: flat.librarySnapshots).pins {
-                    others.append(Hole(pos: pl.worldPosition(of: pin), radius: m.channelDiameter / 2,
+                    padded.append(Hole(pos: pl.worldPosition(of: pin), radius: paddedRadius,
                                        label: "connector pin"))
                 }
             case .transistor:
@@ -470,6 +471,7 @@ enum DRC {
                 break
             }
         }
+        guard !padded.isEmpty else { return [] }
 
         func dist(_ a: Point, _ b: Point) -> Double {
             ((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y)).squareRoot()
@@ -480,14 +482,17 @@ enum DRC {
                                 kind: .stencilHole(position: pos, gap: max(0, gap), detail: detail)))
         }
 
-        for i in 0..<vias.count {
-            for j in (i + 1)..<vias.count {
-                let wall = dist(vias[i].pos, vias[j].pos) - vias[i].radius - vias[j].radius
-                if wall < threshold { emit(midpoint(vias[i].pos, vias[j].pos), wall, "two via holes") }
+        for i in 0..<padded.count {
+            for j in (i + 1)..<padded.count {
+                let wall = dist(padded[i].pos, padded[j].pos) - padded[i].radius - padded[j].radius
+                if wall < threshold {
+                    emit(midpoint(padded[i].pos, padded[j].pos), wall,
+                         "\(padded[i].label) hole ↔ \(padded[j].label) hole")
+                }
             }
             for o in others {
-                let wall = dist(vias[i].pos, o.pos) - vias[i].radius - o.radius
-                if wall < threshold { emit(midpoint(vias[i].pos, o.pos), wall, "via hole ↔ \(o.label)") }
+                let wall = dist(padded[i].pos, o.pos) - padded[i].radius - o.radius
+                if wall < threshold { emit(midpoint(padded[i].pos, o.pos), wall, "\(padded[i].label) hole ↔ \(o.label)") }
             }
         }
         return issues

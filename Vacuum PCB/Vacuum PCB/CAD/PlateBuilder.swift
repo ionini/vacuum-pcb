@@ -489,9 +489,10 @@ enum PlateBuilder {
         // two-plate parallelism above already saturates the typical Euclid
         // pass that costs anything.
         var stencilCutters: [(position: Point, diameter: Double)] = []
-        // Oversize the via holes in the cutting template: the cut silicone
-        // plug contracts once the plates squeeze it, so the seated plug needs
-        // a wider hole to still clear the via. Padding adds to the diameter.
+        // Oversize the fluid through-holes in the cutting template — vias and
+        // bottom-extend connector pins alike: the cut silicone plug contracts
+        // once the plates squeeze it, so the seated plug needs a wider hole to
+        // still clear the channel. Padding adds to the diameter.
         let stencilViaDiameter = m.channelDiameter + m.stencilViaPadding
         for position in doc.physical.crossSiliconeViaPositions() {
             stencilCutters.append((position, stencilViaDiameter))
@@ -504,7 +505,10 @@ enum PlateBuilder {
         }
         // `.bottomExtend` connector tubes and end-caps pass through the
         // extended silicone region — punch the same holes in the stencil so
-        // the cutting template lines up with the printed protrusion.
+        // the cutting template lines up with the printed protrusion. A pin
+        // carries fluid through the sheet exactly like a via, so its hole gets
+        // the same shrink padding (`stencilViaDiameter`); the end-cap screw
+        // bores below are rigid clearance holes and stay unpadded, like screws.
         for placement in doc.physical.placements {
             guard let component = componentsById[placement.componentId],
                   component.kind == .connector,
@@ -513,7 +517,7 @@ enum PlateBuilder {
             let fp = component.footprint(m)
             for pin in fp.pins {
                 let pinWorld = placement.worldPosition(of: pin)
-                stencilCutters.append((pinWorld, m.channelDiameter))
+                stencilCutters.append((pinWorld, stencilViaDiameter))
             }
             // End-cap screw clearance holes — same layout as the bottom
             // plate's end-cap bores so the stencil punches match. Punches
