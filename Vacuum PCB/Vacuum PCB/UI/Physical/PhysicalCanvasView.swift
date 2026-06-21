@@ -220,7 +220,8 @@ struct PhysicalCanvasView: View {
                     routingState: routingState,
                     mouseLocation: mouseLocation,
                     transform: transform,
-                    gridMm: grid
+                    gridMm: grid,
+                    directRoute: ModifierKeys.commandHeld
                 )
 
                 if let focus = issueFocus, visible.contains(focus.layer) {
@@ -1431,6 +1432,9 @@ struct PhysicalCanvasView: View {
                 selection = .none
             }
         case .routing(let netId, var wps, let layer, let startsAtVia):
+            // Cmd held → run each segment straight to the target instead of
+            // inserting a Manhattan corner.
+            let directRoute = ModifierKeys.commandHeld
             // Click an existing via to close the in-progress route into it —
             // mirrors clicking a pin, but the closing waypoint is marked
             // `.via` so the via XY stays a via in both segments.
@@ -1446,7 +1450,7 @@ struct PhysicalCanvasView: View {
                 }
                 var finalPath = wps
                 if let last = finalPath.last {
-                    let elbow = elbow(from: last, to: via.position)
+                    let elbow = elbow(from: last, to: via.position, direct: directRoute)
                     if !approximatelyEqual(elbow, last) { finalPath.append(elbow) }
                     if !approximatelyEqual(via.position, finalPath.last ?? last) {
                         finalPath.append(via.position)
@@ -1461,7 +1465,7 @@ struct PhysicalCanvasView: View {
             }
             let world = transform.snap(transform.toWorld(pt), grid: grid)
             guard let last = wps.last else { return }
-            let elbow = elbow(from: last, to: world)
+            let elbow = elbow(from: last, to: world, direct: directRoute)
             if !approximatelyEqual(elbow, last) { wps.append(elbow) }
             if !approximatelyEqual(world, wps.last ?? last) { wps.append(world) }
             routingState = .routing(netId: netId, waypoints: wps, layer: layer, startsAtVia: startsAtVia)
@@ -1666,11 +1670,12 @@ struct PhysicalCanvasView: View {
                 routingState = .idle
                 return
             }
-            // Commit a segment to the route.
-            // Append Manhattan path from last waypoint to this pin.
+            // Commit a segment to the route. Manhattan path from the last
+            // waypoint to this pin, unless Cmd is held — then run straight.
+            let directRoute = ModifierKeys.commandHeld
             var finalPath = wps
             if let last = finalPath.last {
-                let elbow = elbow(from: last, to: world)
+                let elbow = elbow(from: last, to: world, direct: directRoute)
                 if !approximatelyEqual(elbow, last) { finalPath.append(elbow) }
                 if !approximatelyEqual(world, finalPath.last ?? last) { finalPath.append(world) }
             }
@@ -2020,7 +2025,13 @@ struct PhysicalCanvasView: View {
         document.circuit.logic.components.first(where: { $0.id == id })
     }
 
-    private func elbow(from a: Point, to b: Point) -> Point {
+    /// The Manhattan corner between `a` and `b`: the route runs along the
+    /// longer axis first, then turns. When `direct` is true (the user is
+    /// holding Cmd while routing) there's no corner — it returns `a`, which
+    /// every call site's degenerate-elbow guard drops, so the segment runs
+    /// straight (diagonally) to `b`.
+    private func elbow(from a: Point, to b: Point, direct: Bool = false) -> Point {
+        if direct { return a }
         let dx = abs(b.x - a.x)
         let dy = abs(b.y - a.y)
         return dx >= dy ? Point(x: b.x, y: a.y) : Point(x: a.x, y: b.y)

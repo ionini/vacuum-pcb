@@ -262,26 +262,31 @@ struct SiliconeSheetViasOverlay: View {
 }
 
 /// Overlay showing the in-progress polyline while the user is routing.
-/// Drawn as a dashed line; previews the auto-elbow that will be inserted on next click.
+/// Drawn as a dashed line; previews the auto-elbow that will be inserted on
+/// next click — or, when `directRoute` is set (Cmd held), the straight run
+/// that will be committed instead.
 struct RoutingPreviewOverlay: View {
     let routingState: RoutingState
     let mouseLocation: CGPoint
     let transform: CanvasTransform
     let gridMm: Double
+    /// Cmd held: preview a straight diagonal to the cursor, no corner.
+    let directRoute: Bool
 
     var body: some View {
         Canvas { ctx, _ in
             guard case let .routing(_, waypoints, layer, _) = routingState,
                   let lastWorld = waypoints.last else { return }
             let mouseWorld = transform.snap(transform.toWorld(mouseLocation), grid: gridMm)
-            let elbow = elbowPoint(from: lastWorld, to: mouseWorld)
 
             let a = transform.toScreen(lastWorld)
-            let b = transform.toScreen(elbow)
             let c = transform.toScreen(mouseWorld)
             var path = Path()
             path.move(to: a)
-            path.addLine(to: b)
+            if !directRoute {
+                let elbow = elbowPoint(from: lastWorld, to: mouseWorld)
+                path.addLine(to: transform.toScreen(elbow))
+            }
             path.addLine(to: c)
             ctx.stroke(
                 path,
