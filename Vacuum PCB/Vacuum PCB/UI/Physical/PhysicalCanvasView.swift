@@ -36,6 +36,11 @@ struct PhysicalCanvasView: View {
 
     @State private var transform: CanvasTransform = .default
     @State private var mouseLocation: CGPoint = .zero
+    /// Whether the pointer is currently hovering over the canvas. Gates the
+    /// bottom-left coordinate readout so it shows a live position rather than
+    /// a stale one once the cursor leaves (and so it stays hidden on pure
+    /// touch input, which produces no hover events).
+    @State private var pointerHovering: Bool = false
     @State private var draggingWaypoint: DraggingWaypoint?
     @State private var draggingPlacement: DraggingPlacement?
     /// Click-and-hold disambiguator state. When non-nil, a popover anchored
@@ -317,13 +322,29 @@ struct PhysicalCanvasView: View {
                 .padding(8)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                 .allowsHitTesting(true)
+
+                // Live pointer position in board mm, bottom-left. Only while
+                // the pointer is hovering the canvas — see `pointerHovering`.
+                if pointerHovering {
+                    PointerCoordinateReadout(world: transform.toWorld(mouseLocation))
+                        .padding(8)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity,
+                               alignment: .bottomLeading)
+                        .allowsHitTesting(false)
+                }
             }
             .environment(\.canvasLocked, navigateMode)
             .coordinateSpace(name: "canvas")
             .clipped()
             .background(Color.canvasBackground)
             .onContinuousHover { phase in
-                if case .active(let p) = phase { mouseLocation = p }
+                switch phase {
+                case .active(let p):
+                    mouseLocation = p
+                    pointerHovering = true
+                case .ended:
+                    pointerHovering = false
+                }
             }
             // Open-hand cursor whenever the pointer is over a draggable
             // object (placement, pin, via, or route). The discrete hit
