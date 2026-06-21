@@ -17,6 +17,17 @@ enum ExitDir {
         return offset.y >= 0 ? .down : .up   // +y is down on screen
     }
 
+    /// Edge a pin sits on for a symbol of the given `size`. Normalizing the
+    /// offset by the half-extents (instead of comparing raw x/y) keeps a pin on
+    /// the *long* edge of a high-aspect-ratio symbol — e.g. the top/bottom pins
+    /// of a tall bus connector — exiting perpendicular to that edge, instead of
+    /// being misread as a top/bottom pin just because its vertical offset
+    /// exceeds the (small) half-width.
+    static func from(_ offset: CGPoint, in size: CGSize) -> ExitDir {
+        from(CGPoint(x: offset.x / max(size.width / 2, 0.001),
+                     y: offset.y / max(size.height / 2, 0.001)))
+    }
+
     /// Exit perpendicular to a symbol edge — used to route mating bus-lines
     /// out of subpart connector sockets.
     init(side: SymbolSide) {

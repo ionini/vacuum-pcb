@@ -71,7 +71,7 @@ enum NetEdgeBuilder {
                 let off = metrics.pinOffset(key)
                 out[PinRef(componentId: component.id, pinKey: key)] = PinGeometry(
                     point: CGPoint(x: center.x + off.x, y: center.y + off.y),
-                    exit: ExitDir.from(off)
+                    exit: ExitDir.from(off, in: metrics.size)
                 )
             }
         }
