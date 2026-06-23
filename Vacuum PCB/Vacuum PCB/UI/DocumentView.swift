@@ -92,6 +92,12 @@ struct DocumentView: View {
     /// design changes.
     @State private var validationModel = ValidationModel()
 
+    /// DSL test runner state for the Simulate tab's bottom drawer (pasted
+    /// script, pin mapping, polarity, results). Owned here — like
+    /// `validationModel` — so it survives leaving and returning to Simulate.
+    /// Not persisted into the `.vpcb` (matches the v1 simulation-state scope).
+    @State private var testModel = SimTestModel()
+
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebar
@@ -258,6 +264,7 @@ struct DocumentView: View {
             SimulateView(
                 document: $document,
                 state: state,
+                testModel: testModel,
                 showInspector: $showInspector,
                 exportMenu: exportMenu
             )

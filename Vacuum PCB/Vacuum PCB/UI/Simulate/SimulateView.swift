@@ -13,6 +13,9 @@ import UniformTypeIdentifiers
 struct SimulateView: View {
     @Binding var document: VPCBDocument
     @Bindable var state: SimulationState
+    /// DSL test runner state (script source, pin mapping, results). Owned by
+    /// DocumentView so it survives leaving and returning to the Simulate tab.
+    @Bindable var testModel: SimTestModel
     /// Threaded down so this view can plant the Inspector toolbar toggle as
     /// the rightmost toolbar item.
     @Binding var showInspector: Bool
@@ -29,7 +32,7 @@ struct SimulateView: View {
     enum ViewMode: Hashable { case schematic, physical }
 
     var body: some View {
-        content
+        splitContent
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .onChange(of: document.circuit) { _, new in
                 // Rebuild the network whenever the document changes so newly
@@ -37,6 +40,31 @@ struct SimulateView: View {
                 state.rebuild(from: new)
             }
             .toolbar { simulateToolbar }
+    }
+
+    /// Canvas on top, the DSL test drawer below when shown. A vertical split so
+    /// the heatmap stays visible (and keeps reacting) while a script runs.
+    @ViewBuilder private var splitContent: some View {
+        if testModel.showPanel {
+            #if os(macOS)
+            // VSplitView gives the native, drag-to-resize horizontal divider —
+            // the Xcode debug-area feel. macOS-only, so iPad falls back below.
+            VSplitView {
+                content
+                SimulateTestPanel(model: testModel, state: state)
+                    .frame(minHeight: 160, idealHeight: 280)
+            }
+            #else
+            VStack(spacing: 0) {
+                content
+                Divider()
+                SimulateTestPanel(model: testModel, state: state)
+                    .frame(height: 280)
+            }
+            #endif
+        } else {
+            content
+        }
     }
 
     @ViewBuilder private var content: some View {
@@ -49,6 +77,7 @@ struct SimulateView: View {
                                        visible: visible)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background { SimulationClock(state: state) }
     }
 
@@ -101,6 +130,17 @@ struct SimulateView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+        }
+
+        // Test drawer toggle — Xcode's "show debug area" affordance. Sits just
+        // left of the Export / Inspector trailing group.
+        ToolbarItem(placement: .automatic) {
+            Button {
+                testModel.showPanel.toggle()
+            } label: {
+                Label("Tests", systemImage: "square.bottomthird.inset.filled")
+            }
+            .help(testModel.showPanel ? "Hide the test panel" : "Show the test panel")
         }
 
         // Layer visibility is only relevant on the physical heatmap.

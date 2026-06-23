@@ -54,6 +54,13 @@ final class SimulationState {
     /// it changes.
     @ObservationIgnored private var simAccumulator: Double = 0
 
+    /// Monotonic count of *simulated* seconds integrated since the last
+    /// `reset()`. The DSL test runner polls this to implement `wait` / `waitfor`
+    /// in sim-time (so a `wait 300ms` honours the time-scale slider — a faster
+    /// sim finishes the wait sooner in wall-clock). `@ObservationIgnored`: it
+    /// advances every frame and nothing should re-render off it.
+    @ObservationIgnored private(set) var elapsedSimSeconds: Double = 0
+
     /// Non-observable working copies the integrator steps into between UI
     /// publications. Seeded from the published dictionaries on first use and
     /// after `reset()` / `rebuild(...)` clear them. Keeping the fine-grained
@@ -140,6 +147,7 @@ final class SimulationState {
         pressureByNet = initialPressures(for: network)
         transistorOpenness = [:]
         simAccumulator = 0
+        elapsedSimSeconds = 0
         workingPressures = nil
         workingTransistors = nil
         sincePublish = 0
@@ -204,6 +212,10 @@ final class SimulationState {
             // Drop the rest of the backlog instead of catching up forever.
             simAccumulator = 0
         }
+        // Account the sim-time we actually integrated this frame so the test
+        // runner's sim-time waits track real integration progress (and pause
+        // when the sim is paused / starved).
+        elapsedSimSeconds += Double(steps) * dt
         workingPressures = localPressures
         workingTransistors = localTransistors
 
