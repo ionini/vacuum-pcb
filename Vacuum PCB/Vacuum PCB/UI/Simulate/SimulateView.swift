@@ -51,14 +51,14 @@ struct SimulateView: View {
             // the Xcode debug-area feel. macOS-only, so iPad falls back below.
             VSplitView {
                 content
-                SimulateTestPanel(model: testModel, state: state)
+                SimulateTestPanel(model: testModel, state: state, source: scriptBinding)
                     .frame(minHeight: 160, idealHeight: 280)
             }
             #else
             VStack(spacing: 0) {
                 content
                 Divider()
-                SimulateTestPanel(model: testModel, state: state)
+                SimulateTestPanel(model: testModel, state: state, source: scriptBinding)
                     .frame(height: 280)
             }
             #endif
@@ -166,6 +166,16 @@ struct SimulateView: View {
         ToolbarItem(placement: .primaryAction) {
             InspectorToggleButton(showInspector: $showInspector)
         }
+    }
+
+    /// The test script is stored on the document (`CircuitDocument.tests`) so it
+    /// persists with the design. A file that's never had tests shows the starter
+    /// example until the user edits it (the first edit writes through and saves).
+    private var scriptBinding: Binding<String> {
+        Binding(
+            get: { document.circuit.tests ?? SimTestModel.exampleScript },
+            set: { document.circuit.tests = $0 }
+        )
     }
 
     /// All layers currently configured on the board, in T0…Tn, B0…Bm order.

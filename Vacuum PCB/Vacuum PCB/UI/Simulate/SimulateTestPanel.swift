@@ -14,9 +14,11 @@ import SwiftUI
 struct SimulateTestPanel: View {
     @Bindable var model: SimTestModel
     @Bindable var state: SimulationState
+    /// The DSL script, stored on the document so it persists with the design.
+    @Binding var source: String
 
     var body: some View {
-        let parsed = TestParser.parse(model.source)
+        let parsed = TestParser.parse(source)
         HStack(alignment: .top, spacing: 0) {
             editorColumn(parsed)
                 .frame(minWidth: 170, idealWidth: 360, maxWidth: 460)
@@ -45,7 +47,7 @@ struct SimulateTestPanel: View {
                 runButton(parsed)
             }
 
-            TextEditor(text: $model.source)
+            TextEditor(text: $source)
                 .font(.system(.body, design: .monospaced))
                 .scrollContentBackground(.hidden)
                 .frame(maxHeight: .infinity)

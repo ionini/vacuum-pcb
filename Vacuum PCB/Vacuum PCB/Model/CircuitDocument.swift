@@ -55,6 +55,17 @@ struct CircuitDocument: Codable, Hashable {
     /// nil-default and stripped from `contentHash`/`effectiveHash`, so toggling
     /// it is a pure annotation that never churns snapshot keys or staleness.
     var skipEdgeWallDRC: Bool?
+    /// Optional Simulate-tab test suite: the DSL script (see `TestDSL`) the user
+    /// pasted/edited for this design, persisted so reopening the file restores
+    /// it. A pure annotation with no geometric/logical/behavioural effect, so it
+    /// is excluded from `contentHash`/`effectiveHash` (storing or editing tests
+    /// never re-pins a parent's snapshot or flags "library has changes") *and*
+    /// from `==`/`hash` (a keystroke in the test editor must not churn the
+    /// preview, validation, or the live sim network — `SimulateView` rebuilds
+    /// the network on any `document.circuit` change). Optional / nil-default /
+    /// `decodeIfPresent` and omitted when nil, so it needs no schema bump: a doc
+    /// without tests round-trips byte-identical and an older build ignores the key.
+    var tests: String?
 
     init(
         schemaVersion: Int = Self.currentSchemaVersion,
@@ -63,7 +74,8 @@ struct CircuitDocument: Codable, Hashable {
         schematic: SchematicLayout = .empty,
         physical: PhysicalLayout,
         librarySnapshots: [String: CircuitDocument] = [:],
-        skipEdgeWallDRC: Bool? = nil
+        skipEdgeWallDRC: Bool? = nil,
+        tests: String? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.manufacturing = manufacturing
@@ -72,11 +84,12 @@ struct CircuitDocument: Codable, Hashable {
         self.physical = physical
         self.librarySnapshots = librarySnapshots
         self.skipEdgeWallDRC = skipEdgeWallDRC
+        self.tests = tests
     }
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, manufacturing, logic, schematic, physical, librarySnapshots
-        case skipEdgeWallDRC
+        case skipEdgeWallDRC, tests
     }
 
     init(from decoder: Decoder) throws {
@@ -91,6 +104,8 @@ struct CircuitDocument: Codable, Hashable {
         self.librarySnapshots = try c.decodeIfPresent([String: CircuitDocument].self, forKey: .librarySnapshots) ?? [:]
         // v8: absent in v7-and-earlier files; nil means "off" everywhere.
         self.skipEdgeWallDRC = try c.decodeIfPresent(Bool.self, forKey: .skipEdgeWallDRC)
+        // Optional test-suite annotation; absent in files that never stored one.
+        self.tests = try c.decodeIfPresent(String.self, forKey: .tests)
     }
 }
 
@@ -477,6 +492,7 @@ extension CircuitDocument {
         stripped.librarySnapshots = [:]
         stripped.schemaVersion = 0
         stripped.skipEdgeWallDRC = nil
+        stripped.tests = nil
         for i in stripped.logic.components.indices {
             stripped.logic.components[i].partRefHash = nil
         }
@@ -499,6 +515,7 @@ extension CircuitDocument {
         // No flatten/CAD effect, so it can't make this doc behave differently —
         // exclude it (matches `contentHash`) to avoid phantom staleness.
         stripped.skipEdgeWallDRC = nil
+        stripped.tests = nil
         let data = (try? Self.jsonEncoder.encode(stripped)) ?? Data()
         let digest = SHA256.hash(data: data)
         return digest.map { String(format: "%02x", $0) }.joined()

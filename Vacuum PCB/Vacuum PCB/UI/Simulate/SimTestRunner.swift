@@ -26,10 +26,9 @@ import Observation
 @MainActor
 @Observable
 final class SimTestModel {
-    /// The DSL script the user pastes / edits.
-    var source: String = SimTestModel.exampleScript
-
-    /// Whether the bottom test drawer is shown.
+    /// Whether the bottom test drawer is shown. The script itself lives on the
+    /// document (`CircuitDocument.tests`) so it persists with the design; the
+    /// panel binds to it directly. This model just holds transient run state.
     var showPanel: Bool = false
 
     /// User overrides of the positional auto-map (`out<N>` → input id,
