@@ -804,19 +804,26 @@ private struct DRCSummarySection: View {
     let onFocus: (DRC.Issue) -> Void
 
     @State private var issues: [DRC.Issue] = []
+    /// Partially-routed nets — some legs drawn, at least one connection still
+    /// missing. `DRC.check` only flags a net with *zero* routes ("no route
+    /// drawn"), so without this the sidebar would call a half-routed net
+    /// "routed" and stay green while the Validate tab's connectivity gate
+    /// (which also reads the ratsnest) flags it.
+    @State private var unrouted: [RatsnestEdge] = []
 
     var body: some View {
-        let netsWithIssues = Set(issues.map(\.netId)).count
+        // Nets carrying any problem — a DRC issue or an unrouted connection.
+        let problemNetIds = Set(issues.map(\.netId)).union(unrouted.map(\.netId))
         let totalNets = circuit.logic.nets.count
         Group {
             if totalNets == 0 {
                 Label("No nets defined", systemImage: "circle.dashed")
                     .foregroundStyle(.secondary)
-            } else if issues.isEmpty {
+            } else if problemNetIds.isEmpty {
                 Label("All \(totalNets) nets routed", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
             } else {
-                Label("\(netsWithIssues) of \(totalNets) nets have issues",
+                Label("\(problemNetIds.count) of \(totalNets) nets have issues",
                       systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
                 ForEach(issues.prefix(6)) { issue in
@@ -832,15 +839,32 @@ private struct DRCSummarySection: View {
                     }
                     .buttonStyle(.plain)
                 }
-                if issues.count > 6 {
-                    Text("… and \(issues.count - 6) more")
+                // Unrouted-connection rows. Not focusable (a ratsnest edge isn't
+                // a DRC.Issue), but they surface the same warning the Validate
+                // tab raises so the sidebar can't read green on a routing gap.
+                ForEach(Array(unrouted.prefix(6).enumerated()), id: \.offset) { _, edge in
+                    Text("\(edge.netLabel): connection not routed")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                let extra = max(0, issues.count - 6) + max(0, unrouted.count - 6)
+                if extra > 0 {
+                    Text("… and \(extra) more")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
             }
         }
-        .onAppear { issues = DRC.check(circuit) }
-        .onChange(of: circuit) { _, new in issues = DRC.check(new) }
+        .onAppear { recompute(circuit) }
+        .onChange(of: circuit) { _, new in recompute(new) }
+    }
+
+    private func recompute(_ doc: CircuitDocument) {
+        issues = DRC.check(doc)
+        unrouted = Ratsnest.missingEdges(doc)
     }
 }
 
