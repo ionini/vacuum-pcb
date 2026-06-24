@@ -138,4 +138,20 @@ struct SchematicLayout: Codable, Hashable {
             wireWaypoints = list.isEmpty ? nil : list
         }
     }
+
+    /// Drops waypoints whose pin pair is no longer a connected wire — a
+    /// waypoint only has a wire to bend if both its pins still exist *and*
+    /// share a net. Call after any edit that removes a net, component, or pin
+    /// so stale waypoint handles don't linger on the canvas (and don't ride
+    /// along into the saved file). Keeps the file byte-stable when nothing
+    /// changes.
+    mutating func pruneWaypoints(connectedIn nets: [Net]) {
+        guard var list = wireWaypoints else { return }
+        let before = list.count
+        list.removeAll { wp in
+            !nets.contains { $0.pins.contains(wp.pair.a) && $0.pins.contains(wp.pair.b) }
+        }
+        guard list.count != before else { return }
+        wireWaypoints = list.isEmpty ? nil : list
+    }
 }

@@ -249,61 +249,14 @@ struct ComponentNodeView: View {
 
     // MARK: - Pin tap
 
-    /// User-facing pin label. Primitive pin keys are already friendly
-    /// ("gate", "a", "1", "p"); subpart instance pin keys are port UUIDs, so
-    /// we resolve them back to the boundary component's label via the
-    /// library lookup.
+    /// User-facing pin label and short type, shared with the net-endpoint
+    /// tooltips via `SchematicPinDescriptor` so both read the same.
     private func pinDisplayLabel(_ key: String) -> String {
-        if let pin = component.subpartBoundaryPin(key: key, snapshots: document.circuit.librarySnapshots) {
-            return pin.label
-        }
-        if component.kind == .connector {
-            return component.connectorPinName(key)
-        }
-        return key
+        SchematicPinDescriptor.name(component, key: key, snapshots: document.circuit.librarySnapshots)
     }
 
-    /// Short description of what the pin is for, used in the hover chip.
-    /// Returns nil when the type would be redundant with the key (e.g. a
-    /// resistor terminal already named "1" / "2").
     private func pinTypeLabel(_ key: String) -> String? {
-        switch component.kind {
-        case .transistor:
-            switch key {
-            case "gate": return "Gate"
-            case "a", "b": return "Source/Drain"
-            default: return nil
-            }
-        case .resistor: return nil
-        case .vacuumSource: return "Vacuum rail"
-        case .atmVent: return "Atm vent"
-        case .port:
-            switch component.portDirection {
-            case .input:  return "Input port"
-            case .output: return "Output port"
-            case nil:     return "Port"
-            }
-        case .subpart:
-            guard let pin = component.subpartBoundaryPin(key: key, snapshots: document.circuit.librarySnapshots)
-            else { return nil }
-            switch pin.kind {
-            case .port:
-                return pin.label.uppercased().hasPrefix("IN")  ? "Input port"
-                     : pin.label.uppercased().hasPrefix("OUT") ? "Output port"
-                     : "Port"
-            case .vacuumSource: return "Vacuum rail"
-            case .atmVent:      return "Atm vent"
-            default:            return nil
-            }
-        case .screw:
-            // Screws never reach the schematic-side pin tooltip path
-            // (filtered out of the canvas) — guarded for switch exhaustiveness.
-            return nil
-        case .led:
-            return "Indicator"
-        case .connector:
-            return "Connector pin \(key)"
-        }
+        SchematicPinDescriptor.type(component, key: key, snapshots: document.circuit.librarySnapshots)
     }
 
     private func isFirstPin(_ key: String) -> Bool {

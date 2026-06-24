@@ -342,6 +342,9 @@ enum SchematicActions {
         if let netId = selection.net {
             deleteNet(netId, in: &document)
         }
+        // Cascade: drop any waypoints whose wire no longer exists (the net was
+        // deleted, or a component deletion dissolved it).
+        document.circuit.schematic.pruneWaypoints(connectedIn: document.circuit.logic.nets)
         selection = .none
     }
 

@@ -186,6 +186,18 @@ struct SchematicCanvasView: View {
                     }
                 )
 
+                // Floating labels at both ends of the hovered net. Lives
+                // outside the scaled subtree so chips stay readable at any
+                // zoom and clamp cleanly to the viewport edge when an
+                // endpoint is off-screen.
+                if hoveredNet != nil {
+                    SchematicNetEndpointTooltips(
+                        endpoints: hoveredNetEndpoints,
+                        zoom: zoom, pan: pan, viewSize: geo.size
+                    )
+                    .allowsHitTesting(false)
+                }
+
                 ZoomToolbar(
                     zoomPercent: zoom,
                     onZoomOut: { zoomBy(1 / 1.25, atWindowPoint: windowCursor, viewSize: geo.size) },
@@ -305,6 +317,7 @@ struct SchematicCanvasView: View {
             ForEach(Array(waypointHandles.enumerated()), id: \.offset) { _, h in
                 WaypointHandleView(
                     point: h.point,
+                    highlighted: isWaypointHighlighted(h.pair),
                     onChanged: { p in waypointDragChanged(pair: h.pair, index: h.index, to: p) },
                     onEnded: { p in waypointDragEnded(pair: h.pair, index: h.index, to: p) },
                     onRemove: { document.circuit.schematic.removeWaypoint(pair: h.pair, index: h.index) }
@@ -641,6 +654,36 @@ struct SchematicCanvasView: View {
 
     // MARK: - Hover highlight
 
+    /// Endpoint labels for the hovered net, one per pin. Resolved from the same
+    /// pin-geometry the wires are routed from so the chips land exactly on the
+    /// wire ends. Empty when nothing is hovered (the view isn't built then).
+    private var hoveredNetEndpoints: [SchematicNetEndpointTooltips.Endpoint] {
+        guard let netId = hoveredNet,
+              let net = document.circuit.logic.nets.first(where: { $0.id == netId })
+        else { return [] }
+        let snapshots = document.circuit.librarySnapshots
+        let geometry = NetEdgeBuilder.pinGeometry(in: document.circuit)
+        return net.pins.compactMap { ref in
+            guard let g = geometry[ref],
+                  let comp = document.circuit.logic.components.first(where: { $0.id == ref.componentId })
+            else { return nil }
+            let name = SchematicPinDescriptor.name(comp, key: ref.pinKey, snapshots: snapshots)
+            let type = SchematicPinDescriptor.type(comp, key: ref.pinKey, snapshots: snapshots)
+            // Title is the component (the disambiguator across the board).
+            // Subtitle is the pin's own name when it carries real information —
+            // a connector's per-pin name or a subpart boundary label, which
+            // differ from both the component label and the bare key. Otherwise
+            // fall back to the generic role/type ("Gate", "Output port"), or
+            // the key itself (resistor terminal "1") when there's no type.
+            let subtitle: String? = (name != comp.label && name != ref.pinKey)
+                ? name
+                : (type ?? (name != comp.label ? name : nil))
+            return SchematicNetEndpointTooltips.Endpoint(
+                id: ref, title: comp.label, subtitle: subtitle, point: g.point
+            )
+        }
+    }
+
     /// Highlights the net nearest the cursor (within a small slop) by storing
     /// its id; `NetLinesView` strokes it brighter. Skipped while drawing a net
     /// — the rubber band owns the cursor then. Builds the pin-geometry map once
@@ -742,6 +785,16 @@ struct SchematicCanvasView: View {
                                                 to: SchematicLayout.snapToGrid(Point(x: p.x, y: p.y)))
     }
 
+    /// Whether a waypoint's owning wire (the net both its pins belong to) is
+    /// currently hovered or selected — drives the dot's accent highlight so it
+    /// tracks the wire it bends.
+    private func isWaypointHighlighted(_ pair: PinPair) -> Bool {
+        guard let net = document.circuit.logic.nets.first(where: {
+            $0.pins.contains(pair.a) && $0.pins.contains(pair.b)
+        }) else { return false }
+        return selection.contains(net: net.id) || hoveredNet == net.id
+    }
+
     /// Flattened list of every wire waypoint, for placing its drag handle.
     private var waypointHandles: [(pair: PinPair, index: Int, point: CGPoint)] {
         (document.circuit.schematic.wireWaypoints ?? []).flatMap { entry in
@@ -761,6 +814,9 @@ struct SchematicCanvasView: View {
             document.circuit.physical.routes.removeAll { $0.netId == killed }
             if selection.contains(net: killed) { selection.net = nil }
         }
+        // Disconnecting a pin can orphan waypoints on wires that no longer
+        // exist — drop them so stale handles don't linger.
+        document.circuit.schematic.pruneWaypoints(connectedIn: document.circuit.logic.nets)
     }
 
     // MARK: - Deletion

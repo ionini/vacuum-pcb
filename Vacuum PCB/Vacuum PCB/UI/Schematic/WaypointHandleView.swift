@@ -9,6 +9,10 @@ import SwiftUI
 /// dormant on macOS, where the catcher consumes the right-click first.
 struct WaypointHandleView: View {
     let point: CGPoint
+    /// Matches the owning wire's state: grey at rest (like the resting net
+    /// line) and accent when that net is hovered or selected, so the dot
+    /// reads as part of the wire rather than a stray blue marker.
+    var highlighted: Bool = false
     var onChanged: (CGPoint) -> Void
     var onEnded: (CGPoint) -> Void
     var onRemove: () -> Void = {}
@@ -19,8 +23,11 @@ struct WaypointHandleView: View {
 
     var body: some View {
         Circle()
-            .fill(Color.accentColor)
-            .overlay(Circle().stroke(Color.white.opacity(0.85), lineWidth: 1))
+            .fill(highlighted ? Color.accentColor : Color.secondary)
+            .overlay(Circle().stroke(
+                highlighted ? Color.white.opacity(0.85) : Color.primary.opacity(0.3),
+                lineWidth: 1
+            ))
             .frame(width: 9, height: 9)
             // Generous invisible hit target so the small dot is easy to grab.
             .background(Circle().fill(Color.white.opacity(0.001)).frame(width: 22, height: 22))
