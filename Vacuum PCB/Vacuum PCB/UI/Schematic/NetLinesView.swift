@@ -1,5 +1,22 @@
 import SwiftUI
 
+/// Drawing-bounds headroom for the schematic wire `Canvas`es (the editor's
+/// `NetLinesView` and the Simulate `SchematicCanvasLayer`).
+///
+/// A SwiftUI `Canvas` clips its drawing to its own frame. Components can be
+/// dragged to *negative* schematic coordinates (drag one left of the origin),
+/// and they keep rendering because they're positioned views — but a wire drawn
+/// at a negative coordinate would be clipped at the canvas's top-left edge and
+/// vanish even though both its pins are on screen. So we give the canvas a big
+/// frame centred on the schematic origin via `.offset` (a render-time transform
+/// that doesn't grow the layout) and translate the drawing context by `origin`
+/// to compensate. The net effect: schematic point (x, y) still draws at (x, y),
+/// but the drawable region now spans ±`origin` in both axes.
+enum SchematicCanvasBounds {
+    static let extent: CGFloat = 200_000
+    static var origin: CGFloat { extent / 2 }
+}
+
 /// Renders nets as one line per edge in a hybrid layout: nets that have a
 /// natural endpoint (a port or a rail) get drawn as a star anchored on that
 /// pin; nets that connect only components fall back to a minimum spanning
@@ -44,6 +61,10 @@ struct NetLinesView: View {
 
     var body: some View {
         Canvas { ctx, _ in
+            // Centre the drawing on the schematic origin so wires to pins at
+            // negative coordinates aren't clipped at the canvas edge. See
+            // `SchematicCanvasBounds`.
+            ctx.translateBy(x: SchematicCanvasBounds.origin, y: SchematicCanvasBounds.origin)
             let document = draggedDocument
             let nets = SchematicWireGeometry.render(in: document, railTaps: railTaps)
 
@@ -81,6 +102,11 @@ struct NetLinesView: View {
                 )
             }
         }
+        // Oversized, origin-centred frame so the canvas can draw into negative
+        // schematic space without clipping (see `SchematicCanvasBounds`). The
+        // `.offset` is render-only, so it doesn't blow up the layout frame.
+        .frame(width: SchematicCanvasBounds.extent, height: SchematicCanvasBounds.extent)
+        .offset(x: -SchematicCanvasBounds.origin, y: -SchematicCanvasBounds.origin)
         .allowsHitTesting(false)
     }
 

@@ -87,6 +87,10 @@ struct PinHandleView: View {
             }
             .animation(.easeOut(duration: 0.08), value: hovered)
             .animation(.easeOut(duration: 0.12), value: touchChipUntil)
+            // Raise the hovered pin above its sibling pins so the floating
+            // chip draws on top of neighbouring dots instead of being covered
+            // by whichever pin is later in the parent's ForEach.
+            .zIndex(showChip ? 1 : 0)
     }
 
     private var showChip: Bool {

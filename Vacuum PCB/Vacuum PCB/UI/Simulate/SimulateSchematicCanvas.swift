@@ -78,10 +78,18 @@ private struct SchematicCanvasLayer: View {
         let openness = state.transistorOpenness
 
         return Canvas { ctx, _ in
+            // Centre the drawing on the schematic origin so symbols/wires at
+            // negative coordinates aren't clipped at the canvas edge — same fix
+            // as the editor's `NetLinesView`. See `SchematicCanvasBounds`.
+            ctx.translateBy(x: SchematicCanvasBounds.origin, y: SchematicCanvasBounds.origin)
             drawNets(in: ctx, pressures: pressures, remap: remap)
             drawMatings(in: ctx)
             drawComponents(in: ctx, pressures: pressures, remap: remap, openness: openness)
         }
+        // Oversized, origin-centred frame so negative schematic space is drawn
+        // rather than clipped. The `.offset` is render-only.
+        .frame(width: SchematicCanvasBounds.extent, height: SchematicCanvasBounds.extent)
+        .offset(x: -SchematicCanvasBounds.origin, y: -SchematicCanvasBounds.origin)
         .allowsHitTesting(false)
     }
 
