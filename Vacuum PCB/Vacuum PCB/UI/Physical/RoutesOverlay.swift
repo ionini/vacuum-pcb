@@ -194,6 +194,16 @@ struct ViasOverlay: View {
             var seen: [Point] = []
             let outerRadius = max(5, manufacturing.channelDiameter * transform.ptsPerMm * 0.75)
             let innerRadius = outerRadius * 0.5
+            // Vias that pierce the silicone (a T0↔B0 transition) are the
+            // structurally significant ones, so they keep the full "target"
+            // symbol — outer ring around the dot. Same-plate vias (e.g. T0→T1)
+            // stay within one stack and read as a quieter plain dot, no ring.
+            let crossSilicone = document.physical.crossSiliconeViaPositions()
+            func crossesSilicone(_ p: Point) -> Bool {
+                crossSilicone.contains {
+                    abs($0.x - p.x) < 0.05 && abs($0.y - p.y) < 0.05
+                }
+            }
             for route in document.physical.routes {
                 for segment in route.segments {
                     guard visible.contains(segment.layer) else { continue }
@@ -203,18 +213,23 @@ struct ViasOverlay: View {
                         }) { continue }
                         seen.append(wp.position)
                         let center = transform.toScreen(wp.position)
-                        let outer = CGRect(
-                            x: center.x - outerRadius, y: center.y - outerRadius,
-                            width: outerRadius * 2, height: outerRadius * 2
-                        )
                         let inner = CGRect(
                             x: center.x - innerRadius, y: center.y - innerRadius,
                             width: innerRadius * 2, height: innerRadius * 2
                         )
-                        ctx.fill(Path(ellipseIn: outer), with: .color(Color.primary.opacity(0.18)))
-                        ctx.stroke(Path(ellipseIn: outer),
-                                   with: .color(Color.primary.opacity(0.85)), lineWidth: 1.5)
-                        ctx.fill(Path(ellipseIn: inner), with: .color(Color.primary.opacity(0.85)))
+                        if crossesSilicone(wp.position) {
+                            let outer = CGRect(
+                                x: center.x - outerRadius, y: center.y - outerRadius,
+                                width: outerRadius * 2, height: outerRadius * 2
+                            )
+                            ctx.fill(Path(ellipseIn: outer), with: .color(Color.primary.opacity(0.18)))
+                            ctx.stroke(Path(ellipseIn: outer),
+                                       with: .color(Color.primary.opacity(0.85)), lineWidth: 1.5)
+                            ctx.fill(Path(ellipseIn: inner), with: .color(Color.primary.opacity(0.85)))
+                        } else {
+                            // Same-plate via: quiet dot, no surrounding ring.
+                            ctx.fill(Path(ellipseIn: inner), with: .color(Color.primary.opacity(0.55)))
+                        }
                     }
                 }
             }
