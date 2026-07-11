@@ -37,6 +37,9 @@ struct NetLinesView: View {
     var hoveredNet: UUID? = nil
     /// When false, VAC/ATM nets draw as wires instead of tap symbols.
     var railTaps: Bool = true
+    /// When true, draw a small marker + name on each net that has a physical
+    /// testing point. Hideable via the schematic toolbar toggle.
+    var showTestPoints: Bool = true
     /// Live drag displacement folded into the dragged components' positions so
     /// the wires follow the moving symbols instead of snapping only on release.
     /// Nil when nothing is being dragged.
@@ -87,6 +90,7 @@ struct NetLinesView: View {
             // don't connect, then dot the real junctions.
             drawHops(ctx, nets)
             drawJunctionDots(ctx, nets)
+            drawTestPoints(ctx, nets)
 
             // Connector matings: chunky indigo bus-lines on top.
             for mating in document.logic.matings {
@@ -152,6 +156,81 @@ struct NetLinesView: View {
             .font(.system(size: 9, weight: .medium)))
         text.shading = .color(railColor)
         ctx.draw(text, at: CGPoint(x: end.x + v.x * 9, y: end.y + v.y * 9), anchor: .center)
+    }
+
+    // MARK: - Testing points
+
+    /// Draws a small marker + name for every physical testing point, anchored
+    /// on the tapped net's wire. The physical mid-route position has no
+    /// correspondence in schematic space, so the anchor is cosmetic: markers
+    /// sit along the net's longest edge, spread out when a net has several.
+    private func drawTestPoints(_ ctx: GraphicsContext, _ nets: [SchematicWireGeometry.NetRender]) {
+        guard showTestPoints, !document.physical.testPoints.isEmpty else { return }
+        var byNet: [UUID: [TestPoint]] = [:]
+        for tp in document.physical.testPoints { byNet[tp.netId, default: []].append(tp) }
+        let renderByNet = Dictionary(nets.map { ($0.netId, $0) }, uniquingKeysWith: { a, _ in a })
+        for (netId, tps) in byNet {
+            guard let net = renderByNet[netId],
+                  let edge = net.edges.max(by: { polylineLength($0.points) < polylineLength($1.points) }),
+                  edge.points.count >= 2 else { continue }
+            for (idx, tp) in tps.enumerated() {
+                let frac = tps.count == 1
+                    ? 0.5
+                    : 0.3 + 0.4 * Double(idx) / Double(tps.count - 1)
+                let (pt, dir) = pointAndDirection(along: edge.points, fraction: frac)
+                let perp = CGPoint(x: -dir.y, y: dir.x)
+                let center = CGPoint(x: pt.x + perp.x * 11, y: pt.y + perp.y * 11)
+                drawTestPointMarker(ctx, at: center, stubFrom: pt,
+                                    name: tp.name, highlighted: isHighlighted(netId))
+            }
+        }
+    }
+
+    private func drawTestPointMarker(
+        _ ctx: GraphicsContext, at c: CGPoint, stubFrom p: CGPoint,
+        name: String, highlighted: Bool
+    ) {
+        let color: Color = highlighted ? .accentColor : .orange
+        var stub = Path()
+        stub.move(to: p)
+        stub.addLine(to: c)
+        ctx.stroke(stub, with: .color(color.opacity(0.7)),
+                   style: StrokeStyle(lineWidth: 1.2, lineCap: .round))
+        let r: CGFloat = 4
+        ctx.stroke(Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)),
+                   with: .color(color), style: StrokeStyle(lineWidth: 1.6))
+        ctx.fill(Path(ellipseIn: CGRect(x: c.x - 1, y: c.y - 1, width: 2, height: 2)),
+                 with: .color(color))
+        var text = ctx.resolve(Text(name).font(.system(size: 8, weight: .medium)))
+        text.shading = .color(color)
+        ctx.draw(text, at: CGPoint(x: c.x, y: c.y - r - 6), anchor: .center)
+    }
+
+    private func polylineLength(_ pts: [CGPoint]) -> CGFloat {
+        guard pts.count >= 2 else { return 0 }
+        var total: CGFloat = 0
+        for i in 0..<(pts.count - 1) { total += hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y) }
+        return total
+    }
+
+    /// Point and unit direction at `fraction` of the polyline's length.
+    private func pointAndDirection(along pts: [CGPoint], fraction: Double) -> (CGPoint, CGPoint) {
+        let target = polylineLength(pts) * CGFloat(fraction)
+        var acc: CGFloat = 0
+        for i in 0..<(pts.count - 1) {
+            let a = pts[i], b = pts[i + 1]
+            let len = hypot(b.x - a.x, b.y - a.y)
+            if len <= 0 { continue }
+            if acc + len >= target {
+                let t = (target - acc) / len
+                return (CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t),
+                        CGPoint(x: (b.x - a.x) / len, y: (b.y - a.y) / len))
+            }
+            acc += len
+        }
+        let a = pts[pts.count - 2], b = pts[pts.count - 1]
+        let len = max(hypot(b.x - a.x, b.y - a.y), 0.0001)
+        return (b, CGPoint(x: (b.x - a.x) / len, y: (b.y - a.y) / len))
     }
 
     // MARK: - Junction dots

@@ -124,6 +124,21 @@ enum PlateBuilder {
             }
         }
 
+        // 1b. Testing points — vertical tapered bores from a tapped channel
+        // straight out to the plate's outer face. Purely subtractive and
+        // logically inert (they never reach the simulator export). The bead's
+        // XY is resolved live from the segment it rides.
+        for tp in doc.physical.testPoints {
+            guard let world = doc.physical.testPointWorld(tp) else { continue }
+            let bore = testPointBoreMesh(
+                testPoint: tp, world: world, m: m,
+                topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ,
+                topThickness: topThickness, bottomThickness: bottomThickness
+            )
+            appendCutter(bore, plate: tp.plate,
+                         top: &topCutters, bottom: &bottomCutters)
+        }
+
         // 2. Component features. All components anchor at depth 0; geometry
         // unchanged from single-layer.
 
@@ -1596,6 +1611,51 @@ enum PlateBuilder {
             .rotated(by: Euclid.Rotation.roll(.radians(yawAroundZ)))
             .translated(by: Vector(p.x, p.y, bz))
         return bore
+    }
+
+    // MARK: - Testing points
+
+    /// Testing-point bore. Reuses the edge port's tapered socket profile
+    /// (`taperedBoreSolid` — narrow at the channel, widening to the mouth) but
+    /// oriented **vertically**: it runs from the tapped channel's midline Z
+    /// straight out to the plate's *outer* face (the surface opposite the
+    /// silicone sheet). A top-plate point bores up (+Z), a bottom-plate point
+    /// bores down (−Z). `depth` (cycled by F) picks which channel layer the
+    /// narrow end starts from; `world` is the bead's resolved XY on the rail.
+    static func testPointBoreMesh(
+        testPoint tp: TestPoint, world: Point, m: ManufacturingConstants,
+        topInnerZ: Double, bottomInnerZ: Double,
+        topThickness: Double, bottomThickness: Double
+    ) -> Mesh {
+        let routeR = m.portBoreDiameter / 2
+        let taperRad = m.portBoreTaperDegrees * .pi / 180
+        let midZ = m.midZ(for: Layer(plate: tp.plate, depth: tp.depth))
+        let innerOvershoot = 0.05   // bite into the channel for a clean opening
+        let outerOvershoot = 0.1    // overshoot the outer face for clean CSG
+
+        // Distance from the channel midline out to the plate's outer face.
+        let outerFaceZ = tp.plate == .top
+            ? topInnerZ + topThickness
+            : bottomInnerZ - bottomThickness
+        let length = abs(outerFaceZ - midZ) + innerOvershoot + outerOvershoot
+        let edgeR = routeR + length * tan(taperRad)
+
+        // `taperedBoreSolid` is authored along +Y (narrow pole at Y=0, wide
+        // mouth at Y=length). `Rotation.pitch(θ)` rotates by −θ about +X, so
+        // pitch(−π/2) maps +Y → +Z (top) and pitch(+π/2) maps +Y → −Z (bottom).
+        // Translate the narrow pole just inside the channel so the mouth lands
+        // a hair past the outer face.
+        let bore = taperedBoreSolid(routeEndR: routeR, edgeR: edgeR, length: length)
+        switch tp.plate {
+        case .top:
+            return bore
+                .rotated(by: Euclid.Rotation.pitch(.radians(-.pi / 2)))
+                .translated(by: Vector(world.x, world.y, midZ - innerOvershoot))
+        case .bottom:
+            return bore
+                .rotated(by: Euclid.Rotation.pitch(.radians(.pi / 2)))
+                .translated(by: Vector(world.x, world.y, midZ + innerOvershoot))
+        }
     }
 
     /// Trapezoidal lathe profile revolved into a frustum aligned along the

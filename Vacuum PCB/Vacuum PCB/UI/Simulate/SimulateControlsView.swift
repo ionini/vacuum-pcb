@@ -304,7 +304,9 @@ private struct ProbeRow: View {
     var body: some View {
         let pressure = state.pressure(probe: probe)
         HStack(spacing: 8) {
-            Image(systemName: probe.kind == .led ? "lightbulb" : "dot.circle")
+            Image(systemName: probe.isTestPoint
+                    ? "scope"
+                    : (probe.kind == .led ? "lightbulb" : "dot.circle"))
                 .foregroundStyle(.secondary)
                 .frame(width: 14)
             Text(probe.label)

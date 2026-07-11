@@ -39,6 +39,18 @@ enum PortBoreNeighbor: String, Hashable {
     case outlet
 }
 
+/// What a testing point's vertical bore is too close to. The bore is a hole
+/// straight out to the plate's outer face — it exists only in the 3D plate
+/// geometry (like a port outlet), so neither side of the clash is drawn on the
+/// 2D physical layer.
+enum TestPointNeighbor: String, Hashable {
+    /// A foreign net's routed channel whose Z band the vertical bore passes
+    /// through on the same plate.
+    case channel
+    /// Another testing point's bore on the same plate.
+    case testPoint
+}
+
 /// Topology checks on the physical projection.
 ///
 /// The schematic owns the netlist; the physical layout is a projection that
@@ -201,6 +213,22 @@ enum DRC {
                 wall: Double,
                 position: Point
             )
+            /// A testing point's vertical bore (channel midline → plate outer
+            /// face) passes within `minWallThickness` of a foreign net's
+            /// channel or another testing point on the same plate. The bore
+            /// exists only in the 3D geometry, so — like `portBoreClearance` —
+            /// the clash is invisible on the 2D layer. `testPointId` is the
+            /// offending point (for canvas selection); `otherLabel` is the
+            /// foreign net's label (channel) or the other point's name.
+            case testPointClearance(
+                testPointId: UUID,
+                testPointName: String,
+                neighbor: TestPointNeighbor,
+                otherLabel: String,
+                layer: Layer,
+                wall: Double,
+                position: Point
+            )
         }
 
         var summary: String {
@@ -257,6 +285,10 @@ enum DRC {
                 let what = neighbor == .channel ? "channel \(otherLabel)" : "\(otherLabel) outlet"
                 let wallTxt = wall < 0.01 ? "touching" : "\(String(format: "%.2f", wall)) mm wall"
                 return "\(portLabel) outlet → \(what) on \(layer.uiLabel): \(wallTxt)"
+            case let .testPointClearance(_, tpName, neighbor, otherLabel, layer, wall, _):
+                let what = neighbor == .channel ? "channel \(otherLabel)" : "test point \(otherLabel)"
+                let wallTxt = wall < 0.01 ? "touching" : "\(String(format: "%.2f", wall)) mm wall"
+                return "\(tpName) → \(what) on \(layer.uiLabel): \(wallTxt)"
             }
         }
     }
@@ -353,6 +385,10 @@ enum DRC {
                 sel.placements.formUnion(net.pins.map(\.componentId))
             }
             return sel.isEmpty ? nil : sel
+        case let .testPointClearance(testPointId, _, _, _, _, _, _):
+            // Select the offending testing point so the user can drag it along
+            // its rail (or press F) to clear the wall.
+            return .testPoint(testPointId)
         }
     }
 
@@ -399,6 +435,8 @@ enum DRC {
             return (pos, Layer(plate: .top, depth: 0))
         case let .portBoreClearance(_, _, _, _, _, _, layer, _, pos):
             return (pos, layer)
+        case let .testPointClearance(_, _, _, _, layer, _, pos):
+            return (pos, layer)
         case .unplacedPin, .noRouteDrawn, .matingIncompatible, .matingDoubleBooked:
             return nil
         }
@@ -417,6 +455,7 @@ enum DRC {
         issues.append(contentsOf: viaClearanceIssues(in: document))
         issues.append(contentsOf: stencilHoleIssues(in: document))
         issues.append(contentsOf: portBoreClearanceIssues(in: document))
+        issues.append(contentsOf: testPointClearanceIssues(in: document))
         return issues
     }
 
@@ -1303,6 +1342,93 @@ enum DRC {
                         otherNetId: b.netId, otherLabel: b.label,
                         layer: a.layer, wall: max(0, wall),
                         position: approachPoint(a.a, a.b, b.a, b.b)
+                    )
+                ))
+            }
+        }
+        return issues
+    }
+
+    // MARK: - Testing-point clearance
+
+    /// Each testing point's vertical bore (tapped channel midline → plate
+    /// outer face) checked against foreign-net channels and other testing
+    /// points on the same plate. Like `portBoreClearanceIssues`, the bore is
+    /// pure 3D geometry invisible on the 2D layer. Unlike the flat port
+    /// outlet, the bore is vertical and spans a Z band `[zLo, zHi]`, so the
+    /// channel check is depth-aware (a depth-0 bore can pass the Z level of a
+    /// laterally-near depth-1 foreign channel on its way out) — it mirrors the
+    /// depth-aware thin-wall bore branch. One issue per test point (its worst
+    /// offence) keeps the sidebar from spamming.
+    private static func testPointClearanceIssues(in doc: CircuitDocument) -> [Issue] {
+        let m = doc.manufacturing
+        let threshold = m.minWallThickness
+        guard threshold > 0, !doc.physical.testPoints.isEmpty else { return [] }
+        let boreR = m.portBoreDiameter / 2
+        let channelR = m.channelDiameter / 2
+        let labels = Dictionary(uniqueKeysWithValues: doc.logic.nets.map { ($0.id, $0.label) })
+
+        // Per-plate outer-face Z, matching `PlateBuilder.build`.
+        let topInnerZ = m.siliconeThickness / 2
+        let bottomInnerZ = -m.siliconeThickness / 2
+        let topOuterZ = topInnerZ + m.plateThickness(forLayerCount: doc.physical.topLayers)
+        let bottomOuterZ = bottomInnerZ - m.plateThickness(forLayerCount: doc.physical.bottomLayers)
+
+        struct TPBore { let tp: TestPoint; let pos: Point; let zLo: Double; let zHi: Double }
+        var bores: [TPBore] = []
+        for tp in doc.physical.testPoints {
+            guard let pos = doc.physical.testPointWorld(tp) else { continue }
+            let midZ = m.midZ(for: doc.physical.testPointLayer(tp))
+            let outerZ = tp.plate == .top ? topOuterZ : bottomOuterZ
+            bores.append(TPBore(tp: tp, pos: pos,
+                                zLo: min(midZ, outerZ), zHi: max(midZ, outerZ)))
+        }
+        guard !bores.isEmpty else { return [] }
+
+        let edges = collectRouteEdges(in: doc)
+        var issues: [Issue] = []
+
+        // 1. Against foreign-net channels (Z-band aware).
+        for bore in bores {
+            var worst: (wall: Double, layer: Layer, otherLabel: String)?
+            for edge in edges where edge.layer.plate == bore.tp.plate {
+                if edge.netId == bore.tp.netId { continue }   // its own tapped net
+                let dxy = pointSegmentDistance(bore.pos, edge.a, edge.b)
+                let cz = m.midZ(for: edge.layer)
+                let dz = max(0, max(bore.zLo - cz, cz - bore.zHi))
+                let centre = (dxy * dxy + dz * dz).squareRoot()
+                let wall = centre - channelR - boreR
+                if wall < threshold, worst == nil || wall < worst!.wall {
+                    worst = (max(0, wall), edge.layer, edge.netLabel)
+                }
+            }
+            if let w = worst {
+                issues.append(Issue(
+                    netId: bore.tp.netId, netLabel: labels[bore.tp.netId] ?? "?",
+                    kind: .testPointClearance(
+                        testPointId: bore.tp.id, testPointName: bore.tp.name,
+                        neighbor: .channel, otherLabel: w.otherLabel,
+                        layer: w.layer, wall: w.wall, position: bore.pos
+                    )
+                ))
+            }
+        }
+
+        // 2. Against other testing points on the same plate. Both bore out to
+        // the same outer face, so the wall is just the XY gap minus both radii.
+        for i in 0..<bores.count {
+            for j in (i + 1)..<bores.count {
+                let a = bores[i], b = bores[j]
+                guard a.tp.plate == b.tp.plate else { continue }
+                let wall = hypot(a.pos.x - b.pos.x, a.pos.y - b.pos.y) - 2 * boreR
+                guard wall < threshold else { continue }
+                issues.append(Issue(
+                    netId: a.tp.netId, netLabel: labels[a.tp.netId] ?? "?",
+                    kind: .testPointClearance(
+                        testPointId: a.tp.id, testPointName: a.tp.name,
+                        neighbor: .testPoint, otherLabel: b.tp.name,
+                        layer: doc.physical.testPointLayer(a.tp),
+                        wall: max(0, wall), position: a.pos
                     )
                 ))
             }

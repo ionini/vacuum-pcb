@@ -18,6 +18,7 @@ struct SchematicCanvasView: View {
     /// Shared with the schematic toolbar toggle and the Simulate canvas via the
     /// same AppStorage key.
     @AppStorage("schematicShowRailTaps") private var showRailTaps = true
+    @AppStorage("schematicShowTestPoints") private var showTestPoints = true
     /// Shared multi-component drag state. Lives here so every ComponentNodeView
     /// that participates in the same drag reads the same translation and
     /// follows in tandem.
@@ -293,6 +294,7 @@ struct SchematicCanvasView: View {
 
             NetLinesView(document: document.circuit, selection: selection,
                          hoveredNet: hoveredNet, railTaps: showRailTaps,
+                         showTestPoints: showTestPoints,
                          dragShift: activeDragShift)
 
             ForEach(document.circuit.logic.components.filter { $0.kind != .screw }) { component in

@@ -16,6 +16,9 @@ struct SchematicView: View {
     /// Draw VAC/ATM rail nets as compact tap symbols (vs. wires). Shared with
     /// the canvas + Simulate view through the same AppStorage key.
     @AppStorage("schematicShowRailTaps") private var showRailTaps = true
+    /// Show a small hideable marker on each net that has a physical testing
+    /// point. Shared with the canvas through the same AppStorage key.
+    @AppStorage("schematicShowTestPoints") private var showTestPoints = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -34,6 +37,13 @@ struct SchematicView: View {
                 }
                 .toggleStyle(.button)
                 .help("Show VAC/ATM rail nets as compact tap symbols instead of wires")
+            }
+            ToolbarItem(placement: .automatic) {
+                Toggle(isOn: $showTestPoints) {
+                    Label("Test points", systemImage: "scope")
+                }
+                .toggleStyle(.button)
+                .help("Show a marker on nets that have a physical testing point")
             }
             ToolbarItem(placement: .primaryAction) { exportMenu }
             ToolbarItem(placement: .primaryAction) {

@@ -609,6 +609,8 @@ struct PhysicalContextSection: View {
                 container { placementActions }
             } else if selection.routeSegment != nil {
                 container { routeSegmentActions }
+            } else if selection.testPoint != nil {
+                container { testPointActions }
             }
         }
     }
@@ -679,6 +681,52 @@ struct PhysicalContextSection: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .buttonStyle(.bordered)
+    }
+
+    @ViewBuilder private var testPointActions: some View {
+        if let tpId = selection.testPoint,
+           let tp = document.circuit.physical.testPoints.first(where: { $0.id == tpId }) {
+            Text("Testing point")
+                .font(.caption.bold())
+                .foregroundStyle(.secondary)
+            TextField("Name", text: testPointNameBinding(id: tpId))
+                .textFieldStyle(.roundedBorder)
+            Text("Net \(netLabel(for: tp.netId)) · \(document.circuit.physical.testPointLayer(tp).uiLabel)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                Button {
+                    PhysicalActions.flipLayer(document: &document, selection: selection)
+                } label: {
+                    Label("Layer", systemImage: "arrow.up.arrow.down")
+                        .frame(maxWidth: .infinity)
+                }
+                .help("Cycle channel layer on this plate (F)")
+                .disabled(document.circuit.physical.layerCount(for: tp.plate) <= 1)
+                Button(role: .destructive) {
+                    PhysicalActions.delete(document: &document, selection: &selection)
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            .buttonStyle(.bordered)
+        }
+    }
+
+    private func testPointNameBinding(id: UUID) -> Binding<String> {
+        Binding(
+            get: { document.circuit.physical.testPoints.first(where: { $0.id == id })?.name ?? "" },
+            set: { newValue in
+                if let i = document.circuit.physical.testPoints.firstIndex(where: { $0.id == id }) {
+                    document.circuit.physical.testPoints[i].name = newValue
+                }
+            }
+        )
+    }
+
+    private func netLabel(for netId: UUID) -> String {
+        document.circuit.logic.nets.first(where: { $0.id == netId })?.label ?? "?"
     }
 
     private var placementHeader: String {
@@ -911,6 +959,18 @@ enum PhysicalActions {
     /// opposite plate at depth 0 since their geometry is pinned to the
     /// silicone face.
     static func flipLayer(document: inout VPCBDocument, selection: PhysicalSelection) {
+        // A selected testing point cycles its depth within its own plate only
+        // (F never flips the plate, so the bore keeps exiting the same face).
+        if let tpId = selection.testPoint {
+            guard let i = document.circuit.physical.testPoints.firstIndex(where: { $0.id == tpId })
+            else { return }
+            let plate = document.circuit.physical.testPoints[i].plate
+            let count = document.circuit.physical.layerCount(for: plate)
+            guard count > 1 else { return }
+            document.circuit.physical.testPoints[i].depth =
+                (document.circuit.physical.testPoints[i].depth + 1) % count
+            return
+        }
         guard !selection.placements.isEmpty else { return }
         let cycle = document.circuit.physical.layers(in: .top)
             + document.circuit.physical.layers(in: .bottom)
@@ -945,6 +1005,9 @@ enum PhysicalActions {
     /// route segment, and every segment that contains a marquee-selected
     /// waypoint. Selection is cleared to `.none` once done.
     static func delete(document: inout VPCBDocument, selection: inout PhysicalSelection) {
+        if let tpId = selection.testPoint {
+            document.circuit.physical.testPoints.removeAll { $0.id == tpId }
+        }
         if !selection.placements.isEmpty {
             for id in selection.placements {
                 document.circuit.physical.placements.removeAll { $0.componentId == id }
@@ -965,12 +1028,24 @@ enum PhysicalActions {
             for sIdx in segIndices.sorted(by: >) {
                 if sIdx < document.circuit.physical.routes[rIdx].segments.count {
                     document.circuit.physical.routes[rIdx].segments.remove(at: sIdx)
+                    // Keep test points riding this net's route aligned: drop
+                    // those on the removed segment, shift down those after it.
+                    document.circuit.physical.testPoints.removeAll {
+                        $0.netId == netId && $0.segmentIndex == sIdx
+                    }
+                    for tIdx in document.circuit.physical.testPoints.indices
+                    where document.circuit.physical.testPoints[tIdx].netId == netId
+                        && document.circuit.physical.testPoints[tIdx].segmentIndex > sIdx {
+                        document.circuit.physical.testPoints[tIdx].segmentIndex -= 1
+                    }
                 }
             }
             if document.circuit.physical.routes[rIdx].segments.isEmpty {
                 document.circuit.physical.routes.remove(at: rIdx)
             }
         }
+        // Drop any test points whose route/segment no longer resolves.
+        document.circuit.physical.pruneTestPoints()
         selection = .none
     }
 }

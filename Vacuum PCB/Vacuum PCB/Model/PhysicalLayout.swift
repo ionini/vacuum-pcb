@@ -157,6 +157,112 @@ struct Route: Codable, Hashable {
     var segments: [Segment]
 }
 
+extension Segment {
+    /// Total length (mm) of the waypoint polyline.
+    var polylineLength: Double {
+        let pts = waypoints.map(\.position)
+        guard pts.count >= 2 else { return 0 }
+        var total = 0.0
+        for i in 0..<(pts.count - 1) {
+            total += hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y)
+        }
+        return total
+    }
+
+    /// World point at arc-length `offset` along the polyline, clamped to
+    /// `[0, polylineLength]`. The bead-on-rail evaluation for a test point.
+    func point(atOffset offset: Double) -> Point {
+        let pts = waypoints.map(\.position)
+        guard let first = pts.first else { return .zero }
+        guard pts.count >= 2 else { return first }
+        var remaining = max(0, offset)
+        for i in 0..<(pts.count - 1) {
+            let a = pts[i], b = pts[i + 1]
+            let len = hypot(b.x - a.x, b.y - a.y)
+            if len <= 0 { continue }
+            if remaining <= len {
+                let t = remaining / len
+                return Point(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t)
+            }
+            remaining -= len
+        }
+        return pts.last ?? first
+    }
+
+    /// Project `p` onto the polyline; returns the closest point and its
+    /// arc-length from the segment start. Inverse of `point(atOffset:)`, used
+    /// to drop and drag a test point along the rail.
+    func projection(of p: Point) -> (point: Point, offset: Double) {
+        let pts = waypoints.map(\.position)
+        guard pts.count >= 2 else { return (pts.first ?? .zero, 0) }
+        var best: (point: Point, offset: Double, dist: Double)?
+        var base = 0.0
+        for i in 0..<(pts.count - 1) {
+            let a = pts[i], b = pts[i + 1]
+            let dx = b.x - a.x, dy = b.y - a.y
+            let len2 = dx * dx + dy * dy
+            let t: Double = len2 <= 0
+                ? 0
+                : max(0, min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2))
+            let proj = Point(x: a.x + dx * t, y: a.y + dy * t)
+            let d = hypot(p.x - proj.x, p.y - proj.y)
+            let segLen = len2.squareRoot()
+            if best == nil || d < best!.dist {
+                best = (proj, base + segLen * t, d)
+            }
+            base += segLen
+        }
+        return (best!.point, best!.offset)
+    }
+}
+
+/// A **testing point**: a probe/gauge tap that bores vertically from a route
+/// segment's channel out to the plate's outer face (the surface opposite the
+/// silicone sheet) — the same tapered socket geometry as an edge port, but
+/// pointing straight out instead of sideways to a board edge.
+///
+/// Physical-view-only: it has no schematic symbol or logic pin. It rides a
+/// single route segment like a bead on a rail (`segmentIndex` + arc-length
+/// `offset`) and is logically inert in simulation — it only surfaces as a
+/// read-only pressure probe on the net it taps.
+struct TestPoint: Codable, Hashable, Identifiable {
+    var id: UUID
+    /// User-editable designator ("TP1"…). Cosmetic — stripped from the
+    /// document geometry hashes so renaming never churns library snapshots.
+    var name: String
+    /// The net whose route this point taps (drives the schematic annotation
+    /// and the DRC / probe labels).
+    var netId: UUID
+    /// Which segment of `netId`'s route the bead rides — the XY rail.
+    var segmentIndex: Int
+    /// Arc-length (mm) of the bead along that segment's waypoint polyline.
+    var offset: Double
+    /// Plate the bore exits. Fixed at creation (= the clicked segment's plate);
+    /// `F` never flips it, so the hole always opens on the same outer face as
+    /// the tapped route.
+    var plate: Plate
+    /// Channel depth the bore starts from inside `plate`. Initialised to the
+    /// clicked segment's depth, then cycled by `F` within the plate's layers;
+    /// may differ from the ridden segment's depth after `F`.
+    var depth: Int
+    /// Cached world XY. Treated as derived — consumers resolve the live
+    /// position from the ridden segment via `PhysicalLayout.testPointWorld(_:)`
+    /// and fall back to this only when the route has gone missing.
+    var position: Point
+
+    init(id: UUID = UUID(), name: String, netId: UUID, segmentIndex: Int,
+         offset: Double, plate: Plate, depth: Int, position: Point) {
+        self.id = id
+        self.name = name
+        self.netId = netId
+        self.segmentIndex = segmentIndex
+        self.offset = max(0, offset)
+        self.plate = plate
+        self.depth = max(0, depth)
+        self.position = position
+    }
+}
+
 struct PhysicalLayout: Codable, Hashable {
     var placements: [Placement]
     var routes: [Route]
@@ -167,9 +273,13 @@ struct PhysicalLayout: Codable, Hashable {
     var topLayers: Int
     /// Same as `topLayers`, but for the bottom plate.
     var bottomLayers: Int
+    /// Physical-view testing points (probe taps to the outer surface). New in
+    /// schema v10; omitted from the encoding when empty so pre-v10 docs
+    /// round-trip byte-identically.
+    var testPoints: [TestPoint]
 
     private enum CodingKeys: String, CodingKey {
-        case placements, routes, boardOutline, topLayers, bottomLayers
+        case placements, routes, boardOutline, topLayers, bottomLayers, testPoints
     }
 
     init(
@@ -177,13 +287,15 @@ struct PhysicalLayout: Codable, Hashable {
         routes: [Route],
         boardOutline: Rect,
         topLayers: Int = 1,
-        bottomLayers: Int = 1
+        bottomLayers: Int = 1,
+        testPoints: [TestPoint] = []
     ) {
         self.placements = placements
         self.routes = routes
         self.boardOutline = boardOutline
         self.topLayers = max(1, topLayers)
         self.bottomLayers = max(1, bottomLayers)
+        self.testPoints = testPoints
     }
 
     init(from decoder: Decoder) throws {
@@ -194,6 +306,22 @@ struct PhysicalLayout: Codable, Hashable {
         // Older files predate multi-layer; default both to 1.
         topLayers = max(1, try c.decodeIfPresent(Int.self, forKey: .topLayers) ?? 1)
         bottomLayers = max(1, try c.decodeIfPresent(Int.self, forKey: .bottomLayers) ?? 1)
+        // Older files predate testing points.
+        testPoints = try c.decodeIfPresent([TestPoint].self, forKey: .testPoints) ?? []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(placements, forKey: .placements)
+        try c.encode(routes, forKey: .routes)
+        try c.encode(boardOutline, forKey: .boardOutline)
+        try c.encode(topLayers, forKey: .topLayers)
+        try c.encode(bottomLayers, forKey: .bottomLayers)
+        // Omit when empty so documents without testing points (every doc
+        // written before schema v10) encode byte-identically to before.
+        if !testPoints.isEmpty {
+            try c.encode(testPoints, forKey: .testPoints)
+        }
     }
 
     /// Number of channel layers configured for a given plate.
@@ -207,6 +335,46 @@ struct PhysicalLayout: Codable, Hashable {
     /// All in-use `Layer` values for a given plate, in depth order.
     func layers(in plate: Plate) -> [Layer] {
         (0..<layerCount(for: plate)).map { Layer(plate: plate, depth: $0) }
+    }
+
+    // MARK: - Testing points
+
+    /// The route segment a test point rides, if it still exists. Test points
+    /// are addressed like route selections — by `(netId, segmentIndex)` into
+    /// the net's route (see `PhysicalSelection.RouteSegmentRef`).
+    func testPointSegment(_ tp: TestPoint) -> Segment? {
+        guard let route = routes.first(where: { $0.netId == tp.netId }),
+              tp.segmentIndex >= 0, tp.segmentIndex < route.segments.count
+        else { return nil }
+        return route.segments[tp.segmentIndex]
+    }
+
+    /// Live world XY of a test point, resolved from the segment it rides.
+    /// `nil` when its route/segment no longer exists (the point should be
+    /// pruned). Consumers use this rather than the cached `position` so a
+    /// dragged/edited route carries its test points along automatically.
+    func testPointWorld(_ tp: TestPoint) -> Point? {
+        testPointSegment(tp)?.point(atOffset: tp.offset)
+    }
+
+    /// The `Layer` a test point bores from (its fixed plate + `F`-cycled depth).
+    func testPointLayer(_ tp: TestPoint) -> Layer {
+        Layer(plate: tp.plate, depth: min(tp.depth, max(0, layerCount(for: tp.plate) - 1)))
+    }
+
+    /// Drop orphaned test points whose ridden route/segment has been deleted.
+    mutating func pruneTestPoints() {
+        let kept = testPoints.filter { testPointSegment($0) != nil }
+        if kept.count != testPoints.count { testPoints = kept }
+    }
+
+    /// First free `"TP\(n)"` designator (test points aren't in `logic`, so
+    /// this mirrors `LogicGraph.nextLabel` locally).
+    func nextTestPointName() -> String {
+        let used = Set(testPoints.map(\.name))
+        var n = 1
+        while used.contains("TP\(n)") { n += 1 }
+        return "TP\(n)"
     }
 
     /// Via XYs that pair a T0 segment with a B0 segment on the *same net* —

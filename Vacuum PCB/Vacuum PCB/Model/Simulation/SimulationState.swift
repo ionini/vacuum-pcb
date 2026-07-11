@@ -247,9 +247,11 @@ final class SimulationState {
     }
 
     /// Convenience: pressure observed at a component's first fluid pin via
-    /// its net id (used by probe rendering for output ports / LEDs).
+    /// its net id (used by probe rendering for output ports / LEDs). Test-point
+    /// probes store this level's pre-merge net id, so resolve them through the
+    /// flatten remap (`rawNet`); other probes already store flattened ids.
     func pressure(probe: PneumaticNetwork.Probe) -> Double {
-        pressure(net: probe.netId)
+        probe.isTestPoint ? pressure(rawNet: probe.netId) : pressure(net: probe.netId)
     }
 
     private func initialPressures(for network: PneumaticNetwork) -> [UUID: Double] {

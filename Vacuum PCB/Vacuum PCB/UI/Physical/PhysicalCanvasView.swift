@@ -43,6 +43,11 @@ struct PhysicalCanvasView: View {
     @State private var pointerHovering: Bool = false
     @State private var draggingWaypoint: DraggingWaypoint?
     @State private var draggingPlacement: DraggingPlacement?
+    /// Live state for a testing-point bead drag. Held in-view so the document
+    /// isn't rewritten each tick (which would rebuild DRC / 3D). The bead is
+    /// constrained to the segment it rides, so we carry the projected
+    /// arc-length `offset` and world `position`, committed on release.
+    @State private var draggingTestPoint: DraggingTestPoint?
     /// Click-and-hold disambiguator state. When non-nil, a popover anchored
     /// at `screenPoint` lists every selectable element under that point so
     /// the user can pick through a stack (a placement covering a route, a
@@ -119,6 +124,12 @@ struct PhysicalCanvasView: View {
     /// the document isn't mutated on every gesture tick (which would kick
     /// off a 3D-preview CSG rebuild per frame). On release we apply the
     /// grid-snapped delta to the document once.
+    struct DraggingTestPoint: Equatable {
+        let id: UUID
+        var offset: Double
+        var position: Point
+    }
+
     struct DraggingWaypoint: Equatable {
         let netId: UUID
         let segmentIndex: Int
@@ -218,6 +229,7 @@ struct PhysicalCanvasView: View {
                 pinHandles
                 routeHandles
                 selectedWaypointMarkers
+                testPointOverlay
 
                 marqueeOverlay
 
@@ -1057,6 +1069,98 @@ struct PhysicalCanvasView: View {
         }
     }
 
+    // MARK: - Testing points
+
+    /// Draggable bead + name label for each testing point, shown whenever the
+    /// segment it rides is visible. The bead slides along that segment only
+    /// (the rail never reshapes); its bore direction is fixed at creation.
+    @ViewBuilder private var testPointOverlay: some View {
+        ForEach(document.circuit.physical.testPoints) { tp in
+            if let segment = document.circuit.physical.testPointSegment(tp),
+               visible.contains(segment.layer) {
+                let world = testPointDisplayPosition(tp)
+                let screen = transform.toScreen(world)
+                let selected = selection.contains(testPoint: tp.id)
+                TestPointGlyph(selected: selected)
+                    .position(screen)
+                    .gesture(testPointDragGesture(tp), including: navigateMode ? .none : .gesture)
+                    .onTapGesture { selection = .testPoint(tp.id) }
+                Text(tp.name)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(selected ? Color.accentColor : .primary)
+                    .padding(.horizontal, 3)
+                    .padding(.vertical, 1)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 3))
+                    .fixedSize()
+                    .position(x: screen.x, y: screen.y - 14)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    /// World XY to draw a test point at — the live drag position while it's
+    /// being dragged, otherwise resolved from the segment it rides.
+    private func testPointDisplayPosition(_ tp: TestPoint) -> Point {
+        if let drag = draggingTestPoint, drag.id == tp.id { return drag.position }
+        return document.circuit.physical.testPointWorld(tp) ?? tp.position
+    }
+
+    /// Constrained drag: the cursor is projected onto the ridden segment's
+    /// polyline, so the bead stays on its rail. Committed once on release.
+    private func testPointDragGesture(_ tp: TestPoint) -> some Gesture {
+        let minDistance: Double = InputPlatform.isTouch ? 4 : 1
+        return DragGesture(minimumDistance: minDistance, coordinateSpace: .global)
+            .onChanged { value in
+                guard let segment = document.circuit.physical.testPointSegment(tp) else { return }
+                let start = document.circuit.physical.testPointWorld(tp) ?? tp.position
+                let dragged = Point(
+                    x: start.x + value.translation.width / transform.ptsPerMm,
+                    y: start.y + value.translation.height / transform.ptsPerMm
+                )
+                let proj = segment.projection(of: dragged)
+                draggingTestPoint = DraggingTestPoint(id: tp.id, offset: proj.offset, position: proj.point)
+                if !selection.contains(testPoint: tp.id) { selection = .testPoint(tp.id) }
+            }
+            .onEnded { _ in
+                if let drag = draggingTestPoint, drag.id == tp.id,
+                   let i = document.circuit.physical.testPoints.firstIndex(where: { $0.id == tp.id }) {
+                    document.circuit.physical.testPoints[i].offset = drag.offset
+                    document.circuit.physical.testPoints[i].position = drag.position
+                }
+                draggingTestPoint = nil
+            }
+    }
+
+    /// Drop a new testing point on the route segment nearest the click. The
+    /// bead is projected onto the segment polyline; its plate/depth start from
+    /// that segment (depth is then F-cyclable). Wired to ⌥-click (macOS) and
+    /// the long-press "Add testing point here" menu (iPad).
+    private func createTestPoint(at pt: CGPoint) {
+        let world = transform.toWorld(pt)
+        let threshold: Double = 12   // screen px, ~routeSegmentHit tolerance
+        var best: (route: Route, segIdx: Int, proj: (point: Point, offset: Double), dist: Double)?
+        for route in document.circuit.physical.routes {
+            for (segIdx, segment) in route.segments.enumerated() {
+                guard visible.contains(segment.layer), segment.waypoints.count >= 2 else { continue }
+                let proj = segment.projection(of: world)
+                let projScreen = transform.toScreen(proj.point)
+                let d = Double(hypot(projScreen.x - pt.x, projScreen.y - pt.y))
+                if d <= threshold, d < (best?.dist ?? .greatestFiniteMagnitude) {
+                    best = (route, segIdx, proj, d)
+                }
+            }
+        }
+        guard let hit = best else { return }
+        let segment = hit.route.segments[hit.segIdx]
+        let tp = TestPoint(
+            name: document.circuit.physical.nextTestPointName(),
+            netId: hit.route.netId, segmentIndex: hit.segIdx, offset: hit.proj.offset,
+            plate: segment.layer.plate, depth: segment.layer.depth, position: hit.proj.point
+        )
+        document.circuit.physical.testPoints.append(tp)
+        selection = .testPoint(tp.id)
+    }
+
     /// Returns the waypoint positions to render for a given segment, applying
     /// the in-progress drag (if it targets this segment) so handles and
     /// `RoutesOverlay` stay in lockstep during the gesture.
@@ -1439,6 +1543,12 @@ struct PhysicalCanvasView: View {
                 )
                 selection = .none
                 routingError = nil
+                return
+            }
+            // ⌥-click on a route segment drops a testing point there (macOS;
+            // iPad uses the long-press "Add testing point here" menu entry).
+            if ModifierKeys.optionHeld, routeSegmentHit(at: pt) != nil {
+                createTestPoint(at: pt)
                 return
             }
             // Hit-test route segments before deselecting. RoutesOverlay is a
@@ -1964,6 +2074,13 @@ struct PhysicalCanvasView: View {
                 color: .accentColor,
                 apply: { insertWaypointFromRightClick(at: pt) }
             ))
+            // Touch equivalent of ⌥-click: tap a route to add a testing point.
+            out.append(DisambigCandidate(
+                label: "Add testing point here",
+                systemImage: "scope",
+                color: .orange,
+                apply: { createTestPoint(at: pt) }
+            ))
         }
 
         // --- Placements ---
@@ -2179,6 +2296,32 @@ struct PhysicalPinHandle: View {
 /// Small draggable dot at one waypoint of the selected route segment. Visual
 /// only — the drag gesture is attached at the call site so it has access to
 /// the in-view drag state.
+/// Bead glyph for a testing point on the physical canvas: a ring with a
+/// centre dot (a probe pad seen top-down), tinted orange so it reads apart
+/// from accent-coloured route handles and layer-coloured channels. Turns
+/// accent-coloured when selected.
+struct TestPointGlyph: View {
+    let selected: Bool
+    @State private var hovered = false
+
+    var body: some View {
+        let base: CGFloat = InputPlatform.isTouch ? 14 : 12
+        let size = hovered || selected ? base + 2 : base
+        let tint = selected ? Color.accentColor : Color.orange
+        let hit: CGFloat = InputPlatform.isTouch ? 30 : 24
+        return ZStack {
+            Circle().fill(Color.white.opacity(0.9))
+            Circle().stroke(tint, lineWidth: 2)
+            Circle().fill(tint).frame(width: 3, height: 3)
+        }
+        .frame(width: size, height: size)
+        .contentShape(Rectangle().size(width: hit, height: hit))
+        .onHover { hovered = $0 }
+        .help("Testing point — drag along the route, F to change layer")
+        .animation(.easeOut(duration: 0.08), value: hovered)
+    }
+}
+
 struct WaypointHandle: View {
     @State private var hovered = false
 

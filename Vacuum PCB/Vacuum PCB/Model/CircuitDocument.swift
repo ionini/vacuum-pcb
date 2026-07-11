@@ -32,7 +32,14 @@ struct CircuitDocument: Codable, Hashable {
     /// v9: adds `connectorScrewCount` on `Component` — the number of clamp
     /// screws on a connector. Optional / decodeIfPresent and nil for the
     /// legacy "two end caps" layout, so v8 → v9 is a no-op for existing docs.
-    static let currentSchemaVersion = 9
+    /// v10: adds `testPoints` on `PhysicalLayout` — physical-view probe taps
+    /// that bore vertically from a route segment to the plate's outer face.
+    /// The array omits when empty and decodes with `decodeIfPresent ?? []`, so
+    /// a v9 doc round-trips byte-identical (v9 → v10 is a no-op). Test-point
+    /// geometry participates in the content/effective hashes (it changes the
+    /// printed plate) but the cosmetic `name` is stripped so renames don't
+    /// churn library snapshots.
+    static let currentSchemaVersion = 10
 
     var schemaVersion: Int
     var manufacturing: ManufacturingConstants
@@ -496,6 +503,12 @@ extension CircuitDocument {
         for i in stripped.logic.components.indices {
             stripped.logic.components[i].partRefHash = nil
         }
+        // Test-point *geometry* changes the printed plate, so it stays in the
+        // hash — but the cosmetic `name` doesn't, so strip it (like `tests`)
+        // to keep renaming a test point from re-pinning library snapshots.
+        for i in stripped.physical.testPoints.indices {
+            stripped.physical.testPoints[i].name = ""
+        }
         let data = (try? Self.jsonEncoder.encode(stripped)) ?? Data()
         let digest = SHA256.hash(data: data)
         return digest.map { String(format: "%02x", $0) }.joined()
@@ -516,6 +529,10 @@ extension CircuitDocument {
         // exclude it (matches `contentHash`) to avoid phantom staleness.
         stripped.skipEdgeWallDRC = nil
         stripped.tests = nil
+        // See `contentHash()` — test-point geometry counts, its name doesn't.
+        for i in stripped.physical.testPoints.indices {
+            stripped.physical.testPoints[i].name = ""
+        }
         let data = (try? Self.jsonEncoder.encode(stripped)) ?? Data()
         let digest = SHA256.hash(data: data)
         return digest.map { String(format: "%02x", $0) }.joined()

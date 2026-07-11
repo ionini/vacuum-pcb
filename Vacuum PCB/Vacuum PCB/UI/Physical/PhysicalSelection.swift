@@ -15,6 +15,10 @@ struct PhysicalSelection: Hashable {
     /// dragged, so multi-select can grab a subcircuit *with* its interior
     /// route bends and move it all as one piece.
     var waypoints: Set<RouteWaypointAddress> = []
+    /// A single selected testing point (by id). Mutually exclusive with the
+    /// other kinds in practice — a test point is picked on its own so the
+    /// inspector can show its name / layer / delete controls.
+    var testPoint: UUID?
 
     struct RouteSegmentRef: Hashable {
         let netId: UUID
@@ -23,14 +27,16 @@ struct PhysicalSelection: Hashable {
 
     static let none = PhysicalSelection()
 
-    var isEmpty: Bool { placements.isEmpty && routeSegment == nil && waypoints.isEmpty }
+    var isEmpty: Bool {
+        placements.isEmpty && routeSegment == nil && waypoints.isEmpty && testPoint == nil
+    }
 
     /// Convenience: when exactly one placement is selected (and nothing else),
     /// the legacy single-component code paths (rotate, flip layer, inspector
     /// title) treat that as "the selected placement". With multi-select we
     /// gate those operations on placements.count == 1.
     var singlePlacement: UUID? {
-        guard routeSegment == nil, placements.count == 1 else { return nil }
+        guard routeSegment == nil, testPoint == nil, placements.count == 1 else { return nil }
         return placements.first
     }
 
@@ -40,6 +46,7 @@ struct PhysicalSelection: Hashable {
 
     func contains(placement id: UUID) -> Bool { placements.contains(id) }
     func contains(routeSegment ref: RouteSegmentRef) -> Bool { routeSegment == ref }
+    func contains(testPoint id: UUID) -> Bool { testPoint == id }
 
     static func placement(_ id: UUID) -> PhysicalSelection {
         PhysicalSelection(placements: [id])
@@ -47,6 +54,10 @@ struct PhysicalSelection: Hashable {
 
     static func routeSegment(netId: UUID, segmentIndex: Int) -> PhysicalSelection {
         PhysicalSelection(routeSegment: RouteSegmentRef(netId: netId, segmentIndex: segmentIndex))
+    }
+
+    static func testPoint(_ id: UUID) -> PhysicalSelection {
+        PhysicalSelection(testPoint: id)
     }
 }
 

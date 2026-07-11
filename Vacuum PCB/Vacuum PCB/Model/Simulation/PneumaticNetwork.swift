@@ -76,10 +76,24 @@ struct PneumaticNetwork {
 
     /// A pressure probe surfaced in the Simulate sidebar.
     struct Probe: Identifiable {
-        let id: UUID            // component id
+        let id: UUID            // component id (or test-point id)
         let label: String
         let kind: ComponentKind // .port (output), .led, ...
         let netId: UUID
+        /// True for a testing-point probe — a read-only tap the user placed in
+        /// the physical view. Behaviourally identical to an output-port probe
+        /// (contributes no boundary/edge); only drives a distinct sidebar icon
+        /// and reads its net through the flatten remap (`pressure(rawNet:)`).
+        let isTestPoint: Bool
+
+        init(id: UUID, label: String, kind: ComponentKind, netId: UUID,
+             isTestPoint: Bool = false) {
+            self.id = id
+            self.label = label
+            self.kind = kind
+            self.netId = netId
+            self.isTestPoint = isTestPoint
+        }
     }
 
     /// A user-controllable input. Default pressure is 1 (atmosphere) until the
@@ -251,6 +265,16 @@ struct PneumaticNetwork {
                     }
                 }
             }
+        }
+
+        // Testing points are read-only probes: they tap a net for a pressure
+        // readout but add no boundary/pump/input, so the solve is unchanged.
+        // `doc` is flattened here, which preserves `physical.testPoints`; the
+        // stored `netId` is this level's (pre-merge) id, resolved for pressure
+        // through the flatten remap by `SimulationState.pressure(probe:)`.
+        for tp in doc.physical.testPoints {
+            probes.append(Probe(id: tp.id, label: tp.name,
+                                kind: .port, netId: tp.netId, isTestPoint: true))
         }
 
         let capacitanceByNet = nodeCapacitances(doc: doc)
