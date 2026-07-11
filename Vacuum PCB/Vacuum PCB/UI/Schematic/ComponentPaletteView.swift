@@ -29,34 +29,136 @@ enum SchematicPaletteDrag {
 /// of the vertical-strip form the leading-column version used.
 /// Primitives are listed first; user-defined library parts (`.vpcb`
 /// files in the parts folder) appear below a "Library" header.
+/// A filter field at the top narrows both sections; Return adds the
+/// single remaining match.
 struct ComponentPaletteView: View {
     let onAdd: (ComponentKind, PortDirection?) -> Void
     let onAddLibraryPart: (PartsLibrary.Part) -> Void
 
     @ObservedObject private var library = PartsLibrary.shared
+    @State private var filterText = ""
+
+    /// One row of the fixed primitives section, in data form so the
+    /// filter can run over it.
+    private struct Primitive: Identifiable {
+        let label: String
+        let subtitle: String
+        let kind: ComponentKind
+        var dir: PortDirection? = nil
+        var id: String { label }
+    }
+
+    private static let primitives: [Primitive] = [
+        .init(label: "Q",   subtitle: "Transistor", kind: .transistor),
+        .init(label: "R",   subtitle: "Resistor",   kind: .resistor),
+        .init(label: "D",   subtitle: "LED",        kind: .led),
+        .init(label: "VAC", subtitle: "Vacuum",     kind: .vacuumSource),
+        .init(label: "ATM", subtitle: "Vent",       kind: .atmVent),
+        .init(label: "IN",  subtitle: "Input",      kind: .port, dir: .input),
+        .init(label: "OUT", subtitle: "Output",     kind: .port, dir: .output),
+        .init(label: "J",   subtitle: "Connector",  kind: .connector),
+    ]
+
+    private var trimmedFilter: String {
+        filterText.trimmingCharacters(in: .whitespaces)
+    }
+
+    private var visiblePrimitives: [Primitive] {
+        guard !trimmedFilter.isEmpty else { return Self.primitives }
+        return Self.primitives.filter {
+            $0.subtitle.localizedCaseInsensitiveContains(trimmedFilter)
+                || $0.label.localizedCaseInsensitiveContains(trimmedFilter)
+        }
+    }
+
+    private var visibleParts: [PartsLibrary.Part] {
+        guard !trimmedFilter.isEmpty else { return library.parts }
+        return library.parts.filter {
+            $0.displayName.localizedCaseInsensitiveContains(trimmedFilter)
+        }
+    }
 
     var body: some View {
+        let primitives = visiblePrimitives
+        let parts = visibleParts
         VStack(alignment: .leading, spacing: 6) {
-            sectionHeader("Add Component")
-            paletteButton(label: "Q",   subtitle: "Transistor", kind: .transistor)
-            paletteButton(label: "R",   subtitle: "Resistor",   kind: .resistor)
-            paletteButton(label: "D",   subtitle: "LED",        kind: .led)
-            paletteButton(label: "VAC", subtitle: "Vacuum",     kind: .vacuumSource)
-            paletteButton(label: "ATM", subtitle: "Vent",       kind: .atmVent)
-            paletteButton(label: "IN",  subtitle: "Input",      kind: .port, dir: .input)
-            paletteButton(label: "OUT", subtitle: "Output",     kind: .port, dir: .output)
-            paletteButton(label: "J",   subtitle: "Connector",  kind: .connector)
+            filterField
 
-            if !library.parts.isEmpty {
-                Divider().padding(.vertical, 4)
+            if !primitives.isEmpty {
+                sectionHeader("Add Component")
+                ForEach(primitives) { p in
+                    paletteButton(label: p.label, subtitle: p.subtitle, kind: p.kind, dir: p.dir)
+                }
+            }
+
+            if !parts.isEmpty {
+                if !primitives.isEmpty {
+                    Divider().padding(.vertical, 4)
+                }
                 sectionHeader("Library")
-                ForEach(library.parts) { part in
+                ForEach(parts) { part in
                     libraryButton(part: part)
                 }
+            }
+
+            if primitives.isEmpty && parts.isEmpty {
+                Text("No components match “\(trimmedFilter)”")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 2)
             }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
+    }
+
+    private var filterField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            TextField("Filter", text: $filterText)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .onSubmit(addSingleMatch)
+                #if os(iOS)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                #endif
+            if !filterText.isEmpty {
+                Button {
+                    filterText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Clear filter")
+            }
+        }
+        .padding(.vertical, 5)
+        .padding(.horizontal, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.primary.opacity(0.06))
+        )
+        .help("Type to filter the palette; press Return to add the only match")
+        #if os(macOS)
+        .onExitCommand { filterText = "" }
+        #endif
+    }
+
+    /// Return in the filter field adds the one visible entry, making
+    /// filter-then-Return a keyboard-only add path.
+    private func addSingleMatch() {
+        let primitives = visiblePrimitives
+        let parts = visibleParts
+        if let p = primitives.first, primitives.count == 1, parts.isEmpty {
+            onAdd(p.kind, p.dir)
+        } else if let part = parts.first, parts.count == 1, primitives.isEmpty {
+            onAddLibraryPart(part)
+        }
     }
 
     private func sectionHeader(_ text: String) -> some View {
