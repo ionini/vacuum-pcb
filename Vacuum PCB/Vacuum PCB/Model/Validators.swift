@@ -129,7 +129,12 @@ enum Validators {
         let total = 1 << n
         let inLabels = swept.map { $0.label.isEmpty ? "<unnamed>" : $0.label }
         let heldLabels = held.map { "\($0.label)=\(holds[$0.label]! < 0.5 ? "vac" : "atm")" }
-        let probeLabels = network.probes.map { $0.label.isEmpty ? "<unnamed>" : $0.label }
+        // Test points are physical debug taps, not declared functional outputs,
+        // so they don't gate the sweep / robustness comparison — a probe on a
+        // marginal internal node shouldn't fail Validate. They still read live
+        // in the Simulate sidebar (which reads the network directly).
+        let observed = network.probes.filter { !$0.isTestPoint }
+        let probeLabels = observed.map { $0.label.isEmpty ? "<unnamed>" : $0.label }
         if total > maxCombos {
             return SweepResult(inputLabels: inLabels, probeLabels: probeLabels,
                                heldLabels: heldLabels, rows: [], tooManyCombos: total)
@@ -148,7 +153,7 @@ enum Validators {
             }
             let r = simulateToSettle(network: network, params: params, inputs: inputMap, maxSteps: maxSteps, epsilon: epsilon)
             rows.append(SweepRow(
-                bits: bits, probes: network.probes.map { r.pressures[$0.netId] ?? 1.0 },
+                bits: bits, probes: observed.map { r.pressures[$0.netId] ?? 1.0 },
                 converged: r.converged, steps: r.steps
             ))
         }

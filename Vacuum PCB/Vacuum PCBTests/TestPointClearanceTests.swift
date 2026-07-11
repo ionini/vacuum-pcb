@@ -152,6 +152,36 @@ struct TestPointClearanceTests {
         #expect(after.probes.contains { $0.isTestPoint && $0.label == "TP1" && $0.netId == nVac.id })
     }
 
+    /// A test point registers a probe for the Simulate sidebar, but as a
+    /// physical debug tap it must NOT be treated as a functional output by the
+    /// validation sweep / robustness gate (else a probe on a marginal internal
+    /// node fails Validate).
+    @MainActor
+    @Test("Test-point probes are excluded from the validation sweep")
+    func testPointExcludedFromSweep() {
+        var doc = makeDoc()
+        let outPort = Component(kind: .port, label: "OUT")   // nil dir → output probe
+        doc.logic.components.append(outPort)
+        let nOut = Net(label: "nout", pins: [PinRef(componentId: outPort.id, pinKey: "p")])
+        doc.logic.nets.append(nOut)
+        doc.physical.routes.append(Route(netId: nOut.id, segments: [
+            Segment(waypoints: [Waypoint(position: Point(x: 10, y: 15)),
+                                Waypoint(position: Point(x: 40, y: 15))], layer: .top)
+        ]))
+        doc.physical.testPoints.append(TestPoint(
+            name: "TP_PROBE", netId: nOut.id, segmentIndex: 0, offset: 15,
+            plate: .top, depth: 0, position: Point(x: 25, y: 15)))
+
+        let net = Validators.buildNetwork(doc)
+        let sweep = Validators.sweep(network: net, params: .defaults,
+                                     maxSteps: 2000, epsilon: 1e-5, maxCombos: 64)
+        // Excluded from the validated probe set…
+        #expect(sweep.probeLabels.contains("OUT"))
+        #expect(!sweep.probeLabels.contains("TP_PROBE"))
+        // …but still a probe on the network (the Simulate sidebar reads it).
+        #expect(net.probes.contains { $0.isTestPoint && $0.label == "TP_PROBE" })
+    }
+
     // MARK: - Persistence
 
     @Test("Empty testPoints are omitted from the encoding (v9 docs round-trip)")
