@@ -49,6 +49,12 @@ struct DocumentView: View {
     /// Per-element visibility of the 3D preview (which plates / channels / mold
     /// parts are shown). Starts on the plates-plus-channels preset.
     @State private var previewVisibility: PreviewVisibility = .both
+    /// When off, testing points are excluded from the built geometry entirely —
+    /// no bore in the preview and none in the exported STL. Unlike the
+    /// `PreviewVisibility` flags (which only hide scene nodes), this feeds the
+    /// build, so toggling it forces a rebuild. Persisted like the schematic's
+    /// test-point toggle.
+    @AppStorage("previewIncludeTestPoints") private var includeTestPoints = true
     /// Survives the Preview tab being switched away and back: `detail` is a
     /// `switch`, so leaving Preview tears `Scene3DView` (and the camera living
     /// inside its SCNView) down. Holding the pose here lets the rebuilt view
@@ -155,6 +161,12 @@ struct DocumentView: View {
             if document.circuit.isAssembly, !visibleTabs.contains(selectedTab) {
                 selectedTab = .schematic
             }
+        }
+        .onChange(of: includeTestPoints) { _, _ in
+            // This flag feeds the build (unlike the scene-visibility toggles),
+            // so a change means the cached geometry is stale.
+            previewDirty = true
+            if selectedTab == .preview { rebuild() }
         }
         .onChange(of: document.circuit.librarySnapshots) { _, _ in
             // `CircuitDocument.==` deliberately ignores `librarySnapshots`
@@ -357,6 +369,11 @@ struct DocumentView: View {
                 Section("Casting") {
                     Toggle("Silicone sheet", isOn: visibilityBinding(.stencil))
                     Toggle("Casting frame", isOn: visibilityBinding(.mold))
+                }
+                Section("Testing") {
+                    // Not a scene-visibility flag: this rebuilds the geometry so
+                    // the bores leave the preview *and* the exported STL.
+                    Toggle("Test points", isOn: $includeTestPoints)
                 }
             } label: {
                 Label("Layers", systemImage: "square.3.layers.3d")
@@ -760,7 +777,12 @@ struct DocumentView: View {
         buildToken += 1
         let token = buildToken
         isBuilding = true
-        let snapshot = document.circuit
+        var snapshot = document.circuit
+        // Excluding test points here keeps them out of both the preview mesh
+        // and the exported STL (both read the same `built`), while leaving the
+        // editor and Simulate views — which read the document directly —
+        // untouched.
+        if !includeTestPoints { snapshot.physical.testPoints = [] }
         DispatchQueue.global(qos: .userInitiated).async {
             let result = PlateBuilder.build(snapshot)
             // Whole printed board, subparts flattened — matches what prints, so

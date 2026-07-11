@@ -49,6 +49,7 @@ struct SimulatePhysicalCanvas: View {
                     drawBoard(in: &ctx)
                     drawRoutes(in: &ctx)
                     drawComponents(in: &ctx)
+                    drawTestPoints(in: &ctx)
                 }
                 .allowsHitTesting(false)
 
@@ -158,6 +159,34 @@ struct SimulatePhysicalCanvas: View {
                     style: StrokeStyle(lineWidth: stroke, lineCap: .round, lineJoin: .round)
                 )
             }
+        }
+    }
+
+    /// Testing points as pressure-tinted rings at their world XY (a top-down
+    /// probe pad). Uses `pressure(rawNet:)` because a test point stores this
+    /// level's pre-merge net id — the same accessor the sidebar probe uses.
+    private func drawTestPoints(in ctx: inout GraphicsContext) {
+        let r = max(4.0, flat.manufacturing.portBoreDiameter / 2 * transform.ptsPerMm)
+        for tp in flat.physical.testPoints {
+            guard let segment = flat.physical.testPointSegment(tp),
+                  visible.contains(segment.layer),
+                  let world = flat.physical.testPointWorld(tp) else { continue }
+            let c = transform.toScreen(world)
+            let color = PressureColor.strokeColor(for: state.pressure(rawNet: tp.netId))
+            ctx.stroke(
+                Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)),
+                with: .color(color), style: StrokeStyle(lineWidth: 2)
+            )
+            ctx.fill(
+                Path(ellipseIn: CGRect(x: c.x - 1.5, y: c.y - 1.5, width: 3, height: 3)),
+                with: .color(color)
+            )
+            // Name label, centred just below the ring (matches component labels).
+            ctx.draw(
+                Text(tp.name).font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.primary),
+                at: CGPoint(x: c.x, y: c.y + r + 8)
+            )
         }
     }
 

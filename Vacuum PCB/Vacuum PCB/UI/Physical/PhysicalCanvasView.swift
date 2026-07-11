@@ -1081,7 +1081,8 @@ struct PhysicalCanvasView: View {
                 let world = testPointDisplayPosition(tp)
                 let screen = transform.toScreen(world)
                 let selected = selection.contains(testPoint: tp.id)
-                TestPointGlyph(selected: selected)
+                TestPointGlyph(selected: selected,
+                               baseTint: LayerPalette.color(for: segment.layer))
                     .position(screen)
                     .gesture(testPointDragGesture(tp), including: navigateMode ? .none : .gesture)
                     .onTapGesture { selection = .testPoint(tp.id) }
@@ -2336,12 +2337,15 @@ struct PhysicalPinHandle: View {
 /// accent-coloured when selected.
 struct TestPointGlyph: View {
     let selected: Bool
+    /// Resting tint — the tapped segment's layer colour, so the bead reads as
+    /// belonging to that channel. Selection overrides it with the accent.
+    var baseTint: Color = .orange
     @State private var hovered = false
 
     var body: some View {
         let base: CGFloat = InputPlatform.isTouch ? 14 : 12
         let size = hovered || selected ? base + 2 : base
-        let tint = selected ? Color.accentColor : Color.orange
+        let tint = selected ? Color.accentColor : baseTint
         let hit: CGFloat = InputPlatform.isTouch ? 30 : 24
         return ZStack {
             Circle().fill(Color.white.opacity(0.9))

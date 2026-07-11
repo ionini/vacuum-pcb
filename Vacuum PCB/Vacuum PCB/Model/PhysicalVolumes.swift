@@ -80,6 +80,17 @@ struct VolumeVia: Hashable {
     var net: UUID
 }
 
+/// A testing point inside a volume — the vertical tapered bore from a tapped
+/// channel's midline (`midZ`) out to the plate's outer face (`outerZ`). Stored
+/// with its resolved Z endpoints so the highlight mesh can rebuild the bore
+/// without re-deriving plate thicknesses (which `volumeMesh` doesn't receive).
+struct VolumeTestPoint: Hashable {
+    var pos: Point
+    var plate: Plate
+    var midZ: Double
+    var outerZ: Double
+}
+
 /// A transistor/LED *body* cavity belonging to a volume: a source/drain pad or
 /// a gate (or LED) dimple. These are the widest features on the board, so they
 /// dominate collision-checking, and they're painted into the highlight using
@@ -123,6 +134,7 @@ struct Volume: Identifiable, Hashable {
     var resistors: [VolumeResistor]
     var vias: [VolumeVia]
     var features: [VolumeFeature]
+    var testPoints: [VolumeTestPoint]
 }
 
 /// Decompose a (flattened) document into per-plate physical volumes.
@@ -135,6 +147,9 @@ func physicalVolumes(_ doc: CircuitDocument) -> [Volume] {
     let eps = 0.05
     // Same tolerance the CAD pipeline uses to attach a channel end to a pin.
     let pinSnapTol = m.dimpleDiameter / 2 + 0.5
+    // Outer-face Z per plate — where a test-point bore's mouth opens.
+    let topOuterZ = m.siliconeThickness / 2 + m.plateThickness(forLayerCount: doc.physical.topLayers)
+    let bottomOuterZ = -m.siliconeThickness / 2 - m.plateThickness(forLayerCount: doc.physical.bottomLayers)
 
     // One board-wide node graph. Each node is tagged with the net that created
     // it, so the within-net bore-overlap heal below can't fuse two *different*
@@ -162,6 +177,7 @@ func physicalVolumes(_ doc: CircuitDocument) -> [Volume] {
     var pendingVias: [(node: Int, via: VolumeVia)] = []
     var pendingResistors: [(node: Int, res: VolumeResistor)] = []
     var pendingFeatures: [(node: Int, feature: VolumeFeature)] = []
+    var pendingTestPoints: [(node: Int, tp: VolumeTestPoint)] = []
     var pinNodeByRef: [PinRef: Int] = [:]
 
     for net in doc.logic.nets {
@@ -210,13 +226,27 @@ func physicalVolumes(_ doc: CircuitDocument) -> [Volume] {
         // Routes: union extended waypoints along each segment; remember the
         // extended polyline so the volume's mesh can be rebuilt later.
         for route in doc.physical.routes where route.netId == net.id {
-            for segment in route.segments {
+            for (segIdx, segment) in route.segments.enumerated() {
                 let positions = PlateBuilder.extendedWaypointPositions(
                     for: segment, pinsOnLayer: pinsByLayer[segment.layer] ?? [], tolerance: pinSnapTol)
                 guard positions.count >= 2 else { continue }
                 let idxs = positions.map { nodeIndex(net.id, segment.layer, $0) }
                 for i in 0..<(idxs.count - 1) { union(idxs[i], idxs[i + 1]) }
                 pendingSegs.append((node: idxs[0], seg: VolumeSegment(positions: positions, layer: segment.layer, net: net.id)))
+
+                // Testing points riding this segment join its cavity, so the 3D
+                // preview selects/highlights them with the net and paints the
+                // vertical bore into the highlight mesh. `midZ` uses the point's
+                // own (F-cycled) depth; the bore runs out to the plate face.
+                for tp in doc.physical.testPoints where tp.netId == net.id && tp.segmentIndex == segIdx {
+                    let tpWorld = segment.point(atOffset: tp.offset)
+                    let tn = nodeIndex(net.id, segment.layer, tpWorld)
+                    union(tn, idxs[0])
+                    pendingTestPoints.append((node: tn, tp: VolumeTestPoint(
+                        pos: tpWorld, plate: tp.plate,
+                        midZ: m.midZ(for: Layer(plate: tp.plate, depth: tp.depth)),
+                        outerZ: tp.plate == .top ? topOuterZ : bottomOuterZ)))
+                }
             }
         }
 
@@ -350,12 +380,14 @@ func physicalVolumes(_ doc: CircuitDocument) -> [Volume] {
     for pv in pendingVias { viasByRoot[find(pv.node), default: []].append(pv.via) }
     for pr in pendingResistors { resByRoot[find(pr.node), default: []].append(pr.res) }
     for pf in pendingFeatures { featuresByRoot[find(pf.node), default: []].append(pf.feature) }
+    var tpsByRoot: [Int: [VolumeTestPoint]] = [:]
+    for pt in pendingTestPoints { tpsByRoot[find(pt.node), default: []].append(pt.tp) }
 
     // Built without ids; ids are assigned after the final sort below.
     struct RawVolume {
         var plate: Plate; var netLabel: String; var holes: [VolumeHole]
         var segments: [VolumeSegment]; var resistors: [VolumeResistor]; var vias: [VolumeVia]
-        var features: [VolumeFeature]
+        var features: [VolumeFeature]; var testPoints: [VolumeTestPoint]
     }
     var raw: [RawVolume] = []
     for (root, holes) in holesByRoot {
@@ -375,7 +407,8 @@ func physicalVolumes(_ doc: CircuitDocument) -> [Volume] {
                              segments: segsByRoot[root] ?? [],
                              resistors: resByRoot[root] ?? [],
                              vias: viasByRoot[root] ?? [],
-                             features: featuresByRoot[root] ?? []))
+                             features: featuresByRoot[root] ?? [],
+                             testPoints: tpsByRoot[root] ?? []))
     }
 
     // Top plate first, then by net label, then by where the cavity sits.
@@ -391,6 +424,7 @@ func physicalVolumes(_ doc: CircuitDocument) -> [Volume] {
         let id: String
         if r.plate == .top { topN += 1; id = "T\(topN)" } else { bottomN += 1; id = "B\(bottomN)" }
         return Volume(id: id, plate: r.plate, netLabel: r.netLabel, holes: r.holes,
-                      segments: r.segments, resistors: r.resistors, vias: r.vias, features: r.features)
+                      segments: r.segments, resistors: r.resistors, vias: r.vias,
+                      features: r.features, testPoints: r.testPoints)
     }
 }

@@ -1180,6 +1180,15 @@ enum PlateBuilder {
             }
         }
 
+        // Testing-point bores — the vertical tap painted into the cavity so it
+        // reads as one connected volume and highlights with the net. Built from
+        // the same solid the plate CSG cuts, inflated a hair (as channels are).
+        for tp in volume.testPoints {
+            polys += testPointBoreSolid(at: tp.pos, plate: tp.plate,
+                                        innerZ: tp.midZ, outerZ: tp.outerZ,
+                                        m: m, extraR: 0.15).polygons
+        }
+
         // Transistor / LED body cavities — painted with the *same* solids the
         // plate builds (gate/LED dimple dome, single source/drain pad lobe), so
         // the highlight is a 1:1 match with the printed cavity rather than a
@@ -1656,17 +1665,28 @@ enum PlateBuilder {
         topInnerZ: Double, bottomInnerZ: Double,
         topThickness: Double, bottomThickness: Double
     ) -> Mesh {
-        let routeR = m.portBoreDiameter / 2
-        let taperRad = m.portBoreTaperDegrees * .pi / 180
         let midZ = m.midZ(for: Layer(plate: tp.plate, depth: tp.depth))
-        let innerOvershoot = 0.05   // bite into the channel for a clean opening
-        let outerOvershoot = 0.1    // overshoot the outer face for clean CSG
-
-        // Distance from the channel midline out to the plate's outer face.
         let outerFaceZ = tp.plate == .top
             ? topInnerZ + topThickness
             : bottomInnerZ - bottomThickness
-        let length = abs(outerFaceZ - midZ) + innerOvershoot + outerOvershoot
+        return testPointBoreSolid(at: world, plate: tp.plate,
+                                  innerZ: midZ, outerZ: outerFaceZ, m: m)
+    }
+
+    /// Vertical tapered test-point bore between a channel midline (`innerZ`)
+    /// and the plate's outer face (`outerZ`). Shared by the plate CSG cut
+    /// (`testPointBoreMesh`) and the 3D preview highlight (`volumeMesh`, which
+    /// passes a small `extraR` so the cavity sits proud of the real bore, the
+    /// same +0.15 mm trick the channels use).
+    static func testPointBoreSolid(
+        at p: Point, plate: Plate, innerZ: Double, outerZ: Double,
+        m: ManufacturingConstants, extraR: Double = 0
+    ) -> Mesh {
+        let routeR = m.portBoreDiameter / 2 + extraR
+        let taperRad = m.portBoreTaperDegrees * .pi / 180
+        let innerOvershoot = 0.05   // bite into the channel for a clean opening
+        let outerOvershoot = 0.1    // overshoot the outer face for clean CSG
+        let length = abs(outerZ - innerZ) + innerOvershoot + outerOvershoot
         let edgeR = routeR + length * tan(taperRad)
 
         // `taperedBoreSolid` is authored along +Y (narrow pole at Y=0, wide
@@ -1675,15 +1695,15 @@ enum PlateBuilder {
         // Translate the narrow pole just inside the channel so the mouth lands
         // a hair past the outer face.
         let bore = taperedBoreSolid(routeEndR: routeR, edgeR: edgeR, length: length)
-        switch tp.plate {
+        switch plate {
         case .top:
             return bore
                 .rotated(by: Euclid.Rotation.pitch(.radians(-.pi / 2)))
-                .translated(by: Vector(world.x, world.y, midZ - innerOvershoot))
+                .translated(by: Vector(p.x, p.y, innerZ - innerOvershoot))
         case .bottom:
             return bore
                 .rotated(by: Euclid.Rotation.pitch(.radians(.pi / 2)))
-                .translated(by: Vector(world.x, world.y, midZ + innerOvershoot))
+                .translated(by: Vector(p.x, p.y, innerZ + innerOvershoot))
         }
     }
 
