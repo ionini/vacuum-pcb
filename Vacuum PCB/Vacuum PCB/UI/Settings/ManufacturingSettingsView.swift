@@ -69,6 +69,9 @@ struct ManufacturingSettingsView: View {
                         .font(.caption)
                     Text("Squares off the lower half of each routing channel (flat floor, arched top) for more void volume; the arch faces each plate's outer face so both plates stay printable. Off = round bores. Resistor bores are always round.")
                         .font(.caption2).foregroundStyle(.secondary)
+                    row("Test point label size", $draftMfg.testPointLabelSize)
+                    Text("Font size (mm) of the raised name embossed around each testing point's hole on the plate's outer face. Set 0 to hide the labels.")
+                        .font(.caption2).foregroundStyle(.secondary)
                 }
             }
 
@@ -308,7 +311,8 @@ struct ManufacturingSettingsView: View {
             castingMargin: max(0.0, m.castingMargin),
             moldWallThickness: max(0.0, m.moldWallThickness),
             minWallThickness: max(0.05, m.minWallThickness),
-            flatBottomChannels: m.flatBottomChannels
+            flatBottomChannels: m.flatBottomChannels,
+            testPointLabelSize: max(0.0, m.testPointLabelSize)
         )
     }
 

@@ -91,6 +91,10 @@ struct ManufacturingConstants: Codable, Hashable {
     /// `channelDiameter + interLayerWall`.
     var interLayerWall: Double
 
+    /// Font size (mm) of the raised name embossed around each testing point's
+    /// hole on the plate's outer face. 0 hides the labels.
+    var testPointLabelSize: Double
+
     /// Fillet radius applied to the four vertical corner edges of each
     /// plate — softens the corners viewed from above so the printer doesn't
     /// have to resolve a perfect 90° corner. Runs full plate height; the
@@ -220,7 +224,8 @@ struct ManufacturingConstants: Codable, Hashable {
         castingMargin: 2.0,
         moldWallThickness: 3.0,
         minWallThickness: 0.5,
-        flatBottomChannels: true
+        flatBottomChannels: true,
+        testPointLabelSize: 3.0
     )
 
     // Codable hand-rolled so older .vpcb files (written before a field like
@@ -243,6 +248,7 @@ struct ManufacturingConstants: Codable, Hashable {
         case castingMargin, moldWallThickness
         case minWallThickness
         case flatBottomChannels
+        case testPointLabelSize
     }
 
     init(plateThickness: Double, channelDiameter: Double,
@@ -258,7 +264,8 @@ struct ManufacturingConstants: Codable, Hashable {
          screwHeadDepth: Double, screwNutDepth: Double,
          stencilThickness: Double, stencilViaPadding: Double,
          castingMargin: Double = 2.0, moldWallThickness: Double = 3.0,
-         minWallThickness: Double, flatBottomChannels: Bool) {
+         minWallThickness: Double, flatBottomChannels: Bool,
+         testPointLabelSize: Double = 3.0) {
         self.plateThickness = plateThickness
         self.channelDiameter = channelDiameter
         self.portBoreDiameter = portBoreDiameter
@@ -288,6 +295,7 @@ struct ManufacturingConstants: Codable, Hashable {
         self.moldWallThickness = moldWallThickness
         self.minWallThickness = minWallThickness
         self.flatBottomChannels = flatBottomChannels
+        self.testPointLabelSize = testPointLabelSize
     }
 
     /// Outer length of the resistor footprint (pin-to-pin distance). Constant
@@ -349,6 +357,8 @@ struct ManufacturingConstants: Codable, Hashable {
                                                  forKey: .minWallThickness) ?? 0.5
         flatBottomChannels = try c.decodeIfPresent(Bool.self,
                                                    forKey: .flatBottomChannels) ?? true
+        testPointLabelSize = try c.decodeIfPresent(Double.self,
+                                                   forKey: .testPointLabelSize) ?? 3.0
     }
 
     /// Effective thickness of a plate with `layerCount` channel layers. The

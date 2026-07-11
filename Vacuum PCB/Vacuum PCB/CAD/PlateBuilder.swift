@@ -1,5 +1,6 @@
 import Foundation
 import Euclid
+import CoreText
 
 /// Produces the top and bottom plate solids for a CircuitDocument.
 /// Coordinate system: model XY → world XY (mm). Z is the plate-normal axis.
@@ -137,6 +138,18 @@ enum PlateBuilder {
             )
             appendCutter(bore, plate: tp.plate,
                          top: &topCutters, bottom: &bottomCutters)
+
+            // Raised name embossed around the hole on the same plate's face.
+            let surfaceZ = tp.plate == .top
+                ? topInnerZ + topThickness
+                : bottomInnerZ - bottomThickness
+            if let label = testPointLabelMesh(name: tp.name, at: world, plate: tp.plate,
+                                              surfaceZ: surfaceZ, m: m) {
+                switch tp.plate {
+                case .top:    topAdditions.append(label)
+                case .bottom: bottomAdditions.append(label)
+                }
+            }
         }
 
         // 2. Component features. All components anchor at depth 0; geometry
@@ -495,6 +508,13 @@ enum PlateBuilder {
             ? m.screwProtrusion + 0.5
             : 0
         let clipOvershoot = max(1, screwOvershoot)
+        // Embossed test-point names are additions that protrude past the outer
+        // face too, so the additions clipper must reach at least that high or
+        // it shears the raised text off.
+        let labelOvershoot = (m.testPointLabelSize > 0 && !doc.physical.testPoints.isEmpty)
+            ? testPointLabelEmboss + 0.3
+            : 0
+        let additionOvershoot = max(screwOvershoot, labelOvershoot)
 
         var topOut: (plate: Mesh, preview: Mesh) = (top, .empty)
         var bottomOut: (plate: Mesh, preview: Mesh) = (bottom, .empty)
@@ -508,7 +528,7 @@ enum PlateBuilder {
                     outline: outline, innerZ: topInnerZ,
                     thickness: topThickness, side: .top,
                     cornerRadius: m.plateCornerFillet,
-                    additionOvershoot: screwOvershoot,
+                    additionOvershoot: additionOvershoot,
                     previewOvershoot: clipOvershoot
                 )
             default:
@@ -519,7 +539,7 @@ enum PlateBuilder {
                     outline: outline, innerZ: bottomInnerZ,
                     thickness: bottomThickness, side: .bottom,
                     cornerRadius: m.plateCornerFillet,
-                    additionOvershoot: screwOvershoot,
+                    additionOvershoot: additionOvershoot,
                     previewOvershoot: clipOvershoot
                 )
             }
@@ -1704,6 +1724,64 @@ enum PlateBuilder {
             return bore
                 .rotated(by: Euclid.Rotation.pitch(.radians(.pi / 2)))
                 .translated(by: Vector(p.x, p.y, innerZ + innerOvershoot))
+        }
+    }
+
+    /// How far (mm) the embossed test-point name protrudes above the plate
+    /// face. Font size is user-tunable (`ManufacturingConstants.testPointLabelSize`);
+    /// this raised height is fixed.
+    static let testPointLabelEmboss = 0.5
+
+    /// Raised name text curved around a testing point's hole on the plate's
+    /// outer face (`surfaceZ`). Glyphs sit tangent to a circle just clear of
+    /// the bore mouth, reading left→right along the top of the ring. Returns
+    /// nil when labels are disabled (size 0) or the name has no printable
+    /// glyphs. Cross-platform via Euclid's CoreText `Mesh.text`.
+    static func testPointLabelMesh(
+        name: String, at center: Point, plate: Plate,
+        surfaceZ: Double, m: ManufacturingConstants
+    ) -> Mesh? {
+        let size = m.testPointLabelSize
+        guard size > 0 else { return nil }
+        let chars = Array(name)
+        guard !chars.isEmpty else { return nil }
+        let font = CTFontCreateWithName("Helvetica" as CFString, size, nil)
+
+        // Baseline circle clears the (tapered) bore mouth plus a margin; the
+        // angular step keeps glyph centres ~0.85·size apart along the arc.
+        let radius = m.portBoreDiameter / 2 + size + 0.5
+        let step = (size * 0.85) / radius
+
+        var glyphs: [Mesh] = []
+        for (i, ch) in chars.enumerated() {
+            let g = Mesh.text(String(ch), font: font, depth: testPointLabelEmboss, detail: 2)
+            guard !g.polygons.isEmpty else { continue }   // spaces contribute nothing
+            let b = g.bounds
+            let gc = Vector((b.min.x + b.max.x) / 2, (b.min.y + b.max.y) / 2, 0)
+            // i=0 is leftmost (largest angle); reading runs clockwise to the
+            // right along the top arc. Each glyph is rotated so its up axis
+            // points radially outward (tangent baseline).
+            let ang = .pi / 2 + (Double(chars.count - 1) / 2 - Double(i)) * step
+            let placed = g
+                .translated(by: Vector(-gc.x, -gc.y, 0))
+                .rotated(by: Euclid.Rotation.roll(.radians(.pi / 2 - ang)))
+                .translated(by: Vector(radius * cos(ang), radius * sin(ang), 0))
+            glyphs.append(placed)
+        }
+        guard !glyphs.isEmpty else { return nil }
+        let label = Mesh.union(glyphs)
+
+        switch plate {
+        case .top:
+            // `Mesh.text` extrudes +Z, so it already protrudes up; drop it onto
+            // the top outer face.
+            return label.translated(by: Vector(center.x, center.y, surfaceZ))
+        case .bottom:
+            // Mirror across X (so it reads when viewed from below) and flip the
+            // extrusion to protrude −Z — a 180° turn about the Y axis does both.
+            return label
+                .rotated(by: Euclid.Rotation.yaw(.radians(.pi)))
+                .translated(by: Vector(center.x, center.y, surfaceZ))
         }
     }
 
