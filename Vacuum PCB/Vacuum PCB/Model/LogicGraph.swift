@@ -125,6 +125,22 @@ struct Component: Codable, Identifiable, Hashable {
     /// changes connectivity. Nil for non-connector kinds and for connectors
     /// the user hasn't named (keeps such docs byte-stable on save).
     var connectorPinNames: [String]?
+    /// Debug-print mode for `.connector` instances. When true the printed
+    /// board gets a row of plain tube sockets (edge port bores,
+    /// `connectorDebugPortPitch` apart) instead of the mating protrusion —
+    /// no plate/silicone extension, no clamp screws. Purely a manufacturing
+    /// change: pin count, role, signal, nets, simulation, and mating
+    /// compatibility are untouched, so a debug half still pairs with a
+    /// normal one. Nil means false (keeps older docs byte-stable on save).
+    var connectorDebugPorts: Bool?
+    /// Per-socket channel layer for debug-ports mode, indexed positionally
+    /// like `connectorPinNames`: element `i` is the layer of pin key
+    /// `"\(i + 1)"`. A missing entry (index past the end / nil array) falls
+    /// back to the role's plate at depth 0. Only read while
+    /// `connectorDebugPorts` is true, but *kept* when the toggle goes off so
+    /// flipping a connector back to debug restores the layers last placed.
+    /// Nil when every socket sits on the role default (byte-stable saves).
+    var connectorDebugPortLayers: [Layer]?
 
     init(
         id: UUID = UUID(),
@@ -138,7 +154,9 @@ struct Component: Codable, Identifiable, Hashable {
         connectorScrewCount: Int? = nil,
         connectorRole: ConnectorRole? = nil,
         connectorSignal: ConnectorSignal? = nil,
-        connectorPinNames: [String]? = nil
+        connectorPinNames: [String]? = nil,
+        connectorDebugPorts: Bool? = nil,
+        connectorDebugPortLayers: [Layer]? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -152,6 +170,8 @@ struct Component: Codable, Identifiable, Hashable {
         self.connectorRole = connectorRole
         self.connectorSignal = connectorSignal
         self.connectorPinNames = connectorPinNames
+        self.connectorDebugPorts = connectorDebugPorts
+        self.connectorDebugPortLayers = connectorDebugPortLayers
     }
 }
 
@@ -182,6 +202,21 @@ extension Component {
         else { return key }
         let name = names[index - 1]
         return name.isEmpty ? key : name
+    }
+
+    /// Channel layer of one debug-mode socket, identified by its numeric pin
+    /// key ("1"…"N"). Falls back to the role's plate at depth 0 for pins the
+    /// user never moved (nil array / index past the end). Single source of
+    /// truth for `connectorDebugPortLayers` reads — the footprint, the CAD,
+    /// and the F-cycle action all agree through here. Only meaningful while
+    /// `connectorDebugPorts` is true.
+    func connectorDebugPortLayer(_ key: String) -> Layer {
+        let fallback = ComponentKind.connectorDebugPortDefaultLayer(role: connectorRole ?? .bottomExtend)
+        guard kind == .connector,
+              let index = Int(key), index >= 1,
+              let layers = connectorDebugPortLayers, index <= layers.count
+        else { return fallback }
+        return layers[index - 1]
     }
 }
 

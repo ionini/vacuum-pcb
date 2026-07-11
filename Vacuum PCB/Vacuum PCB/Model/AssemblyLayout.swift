@@ -131,9 +131,25 @@ extension CircuitDocument {
             }
         }
 
+        // Footprint used for mate alignment. Always the *normal* (mating)
+        // geometry, even when a half is set to print as debug ports — the
+        // toggle changes only what's manufactured, and posing off the inset
+        // 10 mm debug pins would slide boards on top of each other. Keeping
+        // the real interface here means toggling debug never re-poses an
+        // assembly.
+        func matingFootprint(_ site: Site) -> Footprint {
+            ComponentKind.connectorFootprint(
+                pinCount: site.component.connectorPinCount ?? 1,
+                screwCount: site.component.connectorScrewCount ?? ComponentKind.connectorMinScrewCount,
+                role: site.component.connectorRole ?? .bottomExtend,
+                debugPorts: false,
+                manufacturing: site.manufacturing
+            )
+        }
+
         // World position of a connector pin given the board's pose.
         func pinWorld(_ site: Site, _ pose: BoardPose, key: String) -> Point? {
-            let fp = site.component.footprint(site.manufacturing)
+            let fp = matingFootprint(site)
             guard let pin = fp.pins.first(where: { $0.key == key }) else { return nil }
             return pose.apply(site.placement.worldPosition(of: pin))
         }
@@ -169,7 +185,7 @@ extension CircuitDocument {
             let target = Point(x: -refOutward.x, y: -refOutward.y)
             let rot = bestRotation(mapping: childEdge.outwardNormal, to: target)
 
-            let childFP = child.component.footprint(child.manufacturing)
+            let childFP = matingFootprint(child)
             guard let pin1 = childFP.pins.first(where: { $0.key == "1" }) else { return nil }
             let childPin1Local = child.placement.worldPosition(of: pin1)
             let origin = child.outline.origin

@@ -368,7 +368,14 @@ struct ComponentSymbolView: View {
                 let n = component.connectorPinCount ?? 1
                 let s = component.connectorScrewCount ?? ComponentKind.connectorMinScrewCount
                 let roleTag = (component.connectorRole ?? .bottomExtend) == .bottomExtend ? "▼" : "▲"
-                Text("\(n)P · \(s)S \(roleTag)").font(.system(size: 9)).foregroundStyle(.secondary)
+                if component.connectorDebugPorts ?? false {
+                    // Debug print: screws don't apply; flag the mode loudly
+                    // so a board doesn't go to the printer in tap mode by
+                    // accident.
+                    Text("\(n)P · DBG \(roleTag)").font(.system(size: 9)).foregroundStyle(.orange)
+                } else {
+                    Text("\(n)P · \(s)S \(roleTag)").font(.system(size: 9)).foregroundStyle(.secondary)
+                }
             }
         }
     }

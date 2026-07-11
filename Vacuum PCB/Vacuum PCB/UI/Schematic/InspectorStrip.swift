@@ -151,6 +151,7 @@ struct InspectorStrip: View {
                 }
                 .fixedSize()
                 let maxScrews = ComponentKind.connectorMaxScrewCount(pinCount: c.connectorPinCount ?? 1)
+                let debugPorts = c.connectorDebugPorts ?? false
                 Stepper(
                     value: connectorScrewCountBinding(c),
                     in: ComponentKind.connectorMinScrewCount...maxScrews
@@ -158,9 +159,18 @@ struct InspectorStrip: View {
                     let s = c.connectorScrewCount ?? ComponentKind.connectorMinScrewCount
                     Text("\(s) screw\(s == 1 ? "" : "s")")
                         .font(.system(size: 12))
+                        .foregroundStyle(debugPorts ? .secondary : .primary)
                 }
                 .fixedSize()
+                .disabled(debugPorts)
                 .help("Clamp screws. 2 keeps one at each end (the default). 3+ split the pins into even groups with a screw between each. Mating halves must use the same screw count.")
+                Toggle(isOn: connectorDebugPortsBinding(c)) {
+                    Text("Debug ports")
+                        .font(.system(size: 12))
+                }
+                .checklistToggleStyle()
+                .fixedSize()
+                .help("Print this connector as a row of plain tube sockets \(Int(ComponentKind.connectorDebugPortPitch)) mm apart instead of the mating protrusion — for bench-driving the board on its own. No protrusion, no screws; nets, simulation, and matings are unchanged, so it still pairs with a normal half. Pins sit at a different pitch, so routes into the connector need re-drawing after toggling. In the physical view, press F over a socket to move it to another layer (each socket is independent; choices are remembered when you toggle back).")
                 Picker("Role", selection: connectorRoleBinding(c)) {
                     Text("Carries silicone").tag(ConnectorRole.bottomExtend)
                     Text("Mates with silicone").tag(ConnectorRole.topExtend)
@@ -281,6 +291,17 @@ struct InspectorStrip: View {
                         document.circuit.logic.components[i].connectorPinNames =
                             names.allSatisfy(\.isEmpty) ? nil : names
                     }
+                    // Same for per-socket debug layers: drop entries for
+                    // pins that no longer exist (normalising to nil when
+                    // everything left sits on the role default).
+                    if var layers = document.circuit.logic.components[i].connectorDebugPortLayers {
+                        if layers.count > clamped { layers.removeLast(layers.count - clamped) }
+                        let fallback = ComponentKind.connectorDebugPortDefaultLayer(
+                            role: document.circuit.logic.components[i].connectorRole ?? .bottomExtend
+                        )
+                        document.circuit.logic.components[i].connectorDebugPortLayers =
+                            layers.allSatisfy { $0 == fallback } ? nil : layers
+                    }
                     for netIdx in document.circuit.logic.nets.indices {
                         document.circuit.logic.nets[netIdx].pins.removeAll { pin in
                             guard pin.componentId == c.id,
@@ -291,6 +312,18 @@ struct InspectorStrip: View {
                     }
                     document.circuit.logic.nets.removeAll { $0.pins.count < 2 }
                 }
+            }
+        )
+    }
+
+    private func connectorDebugPortsBinding(_ c: Component) -> Binding<Bool> {
+        Binding(
+            get: { c.connectorDebugPorts ?? false },
+            set: { on in
+                guard let i = document.circuit.logic.components.firstIndex(where: { $0.id == c.id }) else { return }
+                // Store nil for the default (normal print) so untouched
+                // connectors stay byte-identical on save.
+                document.circuit.logic.components[i].connectorDebugPorts = on ? true : nil
             }
         )
     }

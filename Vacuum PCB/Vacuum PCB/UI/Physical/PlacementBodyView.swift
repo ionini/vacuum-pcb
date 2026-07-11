@@ -91,6 +91,10 @@ struct PlacementBodyView: View {
             let rect = CGRect(x: -r, y: -r, width: 2 * r, height: 2 * r)
             ctx.stroke(Path(ellipseIn: rect), with: .color(strokeColor), lineWidth: 1.4)
         case .connector:
+            // Debug-ports connectors don't extend or punch the sheet at all
+            // (their bores live inside the plate), so they have no sheet
+            // feature to preview.
+            if component.connectorDebugPorts ?? false { return }
             let role = component.connectorRole ?? .bottomExtend
             let fp = component.footprint(manufacturing)
             let rect = CGRect(
@@ -317,6 +321,11 @@ struct PlacementBodyView: View {
         let bodyPlate: Plate = role == .bottomExtend ? .bottom : .top
         let bodyColor = plateColor(bodyPlate)
 
+        if component.connectorDebugPorts ?? false {
+            drawConnectorDebugPorts(in: &ctx, fp: fp, bodyColor: bodyColor)
+            return
+        }
+
         // Protrusion outline.
         let rect = CGRect(
             x: fp.exclusionRect.origin.x * transform.ptsPerMm,
@@ -372,6 +381,47 @@ struct PlacementBodyView: View {
             let throughRect = CGRect(x: endX - throughR, y: cy - throughR,
                                      width: 2 * throughR, height: 2 * throughR)
             ctx.stroke(Path(ellipseIn: throughRect), with: .color(Color.primary.opacity(0.7)), lineWidth: 0.8)
+        }
+    }
+
+    /// Debug-ports connector: a dashed strip inside the board edge (the
+    /// footprint's reserved rect) with one literal bore per pin — route-end
+    /// radius at the pin, tapered mouth at the board edge (local x = 0).
+    /// No screws, no protrusion: nothing sticks past the outline. Each bore
+    /// is tinted by its own socket layer (`absoluteLayer`, cycled with F),
+    /// so a mixed-plate row reads at a glance; the strip keeps the role's
+    /// plate colour.
+    private func drawConnectorDebugPorts(in ctx: inout GraphicsContext, fp: Footprint, bodyColor: Color) {
+        let rect = CGRect(
+            x: fp.exclusionRect.origin.x * transform.ptsPerMm,
+            y: fp.exclusionRect.origin.y * transform.ptsPerMm,
+            width: fp.exclusionRect.size.width * transform.ptsPerMm,
+            height: fp.exclusionRect.size.height * transform.ptsPerMm
+        )
+        ctx.stroke(Path(roundedRect: rect, cornerSize: CGSize(width: 1, height: 1)),
+                   with: .color(bodyColor.opacity(0.8)),
+                   style: StrokeStyle(lineWidth: 1.0, dash: [4, 3]))
+
+        let routeR = manufacturing.portBoreDiameter / 2
+        let taperRad = manufacturing.portBoreTaperDegrees * .pi / 180
+        for pin in fp.pins {
+            let pinColor = pin.absoluteLayer.map { LayerPalette.color(for: $0) } ?? bodyColor
+            let mouthR = routeR + abs(pin.offset.x) * tan(taperRad)
+            let px = pin.offset.x * transform.ptsPerMm
+            let py = pin.offset.y * transform.ptsPerMm
+            let rPt = routeR * transform.ptsPerMm
+            let mPt = mouthR * transform.ptsPerMm
+            var bore = Path()
+            bore.move(to: CGPoint(x: px, y: py - rPt))
+            bore.addLine(to: CGPoint(x: 0, y: py - mPt))
+            bore.addLine(to: CGPoint(x: 0, y: py + mPt))
+            bore.addLine(to: CGPoint(x: px, y: py + rPt))
+            bore.closeSubpath()
+            ctx.fill(bore, with: .color(pinColor.opacity(0.30)))
+            ctx.stroke(bore, with: .color(pinColor), lineWidth: 1.0)
+            // Route-end dot — where channels attach.
+            let dotRect = CGRect(x: px - rPt, y: py - rPt, width: 2 * rPt, height: 2 * rPt)
+            ctx.fill(Path(ellipseIn: dotRect), with: .color(pinColor))
         }
     }
 
