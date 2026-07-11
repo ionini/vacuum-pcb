@@ -37,7 +37,9 @@ func continuityFeature(_ comp: Component, pinKey: String) -> String {
         case nil:     return "port edge bore"
         }
     case .led:       return "LED indicator dimple"
-    case .connector: return "connector tube (edge)"
+    case .connector: return (comp.connectorDebugPorts ?? false)
+        ? "connector debug port edge bore"
+        : "connector tube (edge)"
     case .subpart:   return "subpart boundary pin"
     case .screw:     return "screw (no pin)"
     }

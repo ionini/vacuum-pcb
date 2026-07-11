@@ -921,6 +921,15 @@ enum PhysicalActions {
             let placement = document.circuit.physical.placements[i]
             let component = document.circuit.logic.components
                 .first(where: { $0.id == id })
+            // Debug-ports connectors don't move as a body: F advances every
+            // socket's layer individually (same cycle as ports), keeping
+            // `placement.layer` on the role's plate. Per-socket F lives in
+            // the canvas (hover a socket); this is the whole-row variant.
+            if let c = component, c.kind == .connector, c.connectorDebugPorts ?? false {
+                cycleConnectorDebugPorts(document: &document, componentId: id,
+                                         pinKeys: c.pinKeys())
+                continue
+            }
             let cyclesLayers: Bool = {
                 switch component?.kind {
                 case .resistor, .port, .vacuumSource, .atmVent: return true
@@ -938,6 +947,44 @@ enum PhysicalActions {
                 document.circuit.physical.placements[i].depth = 0
             }
         }
+    }
+
+    /// Advance the given debug-mode sockets of one connector to the next
+    /// channel layer (same top-then-bottom cycle `flipLayer` walks for
+    /// ports), writing the result to `connectorDebugPortLayers` so the
+    /// choice survives toggling debug off and back on. Pass one key for
+    /// per-socket F (hover), or every key for the selected-connector flip.
+    static func cycleConnectorDebugPorts(
+        document: inout VPCBDocument, componentId: UUID, pinKeys: [String]
+    ) {
+        guard let ci = document.circuit.logic.components
+            .firstIndex(where: { $0.id == componentId })
+        else { return }
+        let component = document.circuit.logic.components[ci]
+        guard component.kind == .connector, component.connectorDebugPorts ?? false else { return }
+        let cycle = document.circuit.physical.layers(in: .top)
+            + document.circuit.physical.layers(in: .bottom)
+        guard !cycle.isEmpty else { return }
+
+        let n = max(1, component.connectorPinCount ?? 1)
+        let fallback = ComponentKind.connectorDebugPortDefaultLayer(
+            role: component.connectorRole ?? .bottomExtend
+        )
+        // Materialise the sparse array to full length, advance the asked
+        // pins, then store nil if everything is back on the role default so
+        // untouched connectors stay byte-identical on save.
+        var layers = component.connectorDebugPortLayers ?? []
+        if layers.count < n {
+            layers.append(contentsOf: Array(repeating: fallback, count: n - layers.count))
+        }
+        for key in pinKeys {
+            guard let index = Int(key), index >= 1, index <= n else { continue }
+            let current = layers[index - 1]
+            let idx = cycle.firstIndex(of: current) ?? 0
+            layers[index - 1] = cycle[(idx + 1) % cycle.count]
+        }
+        document.circuit.logic.components[ci].connectorDebugPortLayers =
+            layers.allSatisfy { $0 == fallback } ? nil : Array(layers.prefix(n))
     }
 
     /// Bulk-delete everything in the selection: placements (the logic-side

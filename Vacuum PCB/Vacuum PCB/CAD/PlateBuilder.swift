@@ -255,6 +255,34 @@ enum PlateBuilder {
             case .connector:
                 let role = component.connectorRole ?? .bottomExtend
                 let fp = component.footprint(m)
+                // Debug-ports mode: no protrusion, no tubes, no end-cap
+                // screws, and the silicone/stencil/mold stay untouched.
+                // Each pin is an ordinary edge port bore drilled from its
+                // (inset) position out through the anchor edge — the same
+                // cutter a hand-placed `.port` gets, just laid out by the
+                // connector's footprint. Each socket carries its own
+                // plate + depth (`absoluteLayer`, user-cycled with F), so
+                // one row can feed both plates.
+                if component.connectorDebugPorts ?? false {
+                    for pin in fp.pins {
+                        let pinLayer = pin.absoluteLayer
+                            ?? Layer(plate: placement.layer, depth: placement.depth)
+                        let pinPlacement = Placement(
+                            componentId: placement.componentId,
+                            position: placement.worldPosition(of: pin),
+                            rotation: placement.rotation,
+                            layer: pinLayer.plate,
+                            depth: pinLayer.depth
+                        )
+                        let bore = portBoreMesh(
+                            placement: pinPlacement, outline: outline, m: m,
+                            topMidZ: topMidZ, bottomMidZ: bottomMidZ
+                        )
+                        appendCutter(bore, plate: pinLayer.plate,
+                                     top: &topCutters, bottom: &bottomCutters)
+                    }
+                    break
+                }
                 // Protrusion slab in world coordinates. The footprint's
                 // exclusionRect sits in local space at r0 (origin at the
                 // inner edge midpoint, extending along local +X). Rotated
@@ -512,7 +540,8 @@ enum PlateBuilder {
         for placement in doc.physical.placements {
             guard let component = componentsById[placement.componentId],
                   component.kind == .connector,
-                  (component.connectorRole ?? .bottomExtend) == .bottomExtend
+                  (component.connectorRole ?? .bottomExtend) == .bottomExtend,
+                  !(component.connectorDebugPorts ?? false)   // debug bores never cross the sheet
             else { continue }
             let fp = component.footprint(m)
             for pin in fp.pins {
