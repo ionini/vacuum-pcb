@@ -497,7 +497,8 @@ enum DRC {
             case .screw:
                 others.append(Hole(pos: pl.position, radius: ScrewGeometry.throughDiameter / 2,
                                    label: "screw"))
-            case .connector where (c.connectorRole ?? .bottomExtend) == .bottomExtend:
+            case .connector where (c.connectorRole ?? .bottomExtend) == .bottomExtend
+                    && !(c.connectorDebugPorts ?? false):   // debug bores never cross the sheet
                 for pin in c.footprint(m, snapshots: flat.librarySnapshots).pins {
                     padded.append(Hole(pos: pl.worldPosition(of: pin), radius: paddedRadius,
                                        label: "connector pin"))
@@ -1772,6 +1773,7 @@ enum DRC {
         for placement in doc.physical.placements {
             guard let comp = doc.logic.components.first(where: { $0.id == placement.componentId }),
                   comp.kind == .connector,
+                  !(comp.connectorDebugPorts ?? false),   // debug mode adds no protrusion
                   let anchor = placement.edgeAnchor
             else { continue }
             let n = max(1, comp.connectorPinCount ?? 1)

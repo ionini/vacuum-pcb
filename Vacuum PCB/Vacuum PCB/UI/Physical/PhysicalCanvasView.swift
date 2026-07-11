@@ -1920,7 +1920,41 @@ struct PhysicalCanvasView: View {
     }
 
     private func flipLayerSelection() {
+        // F over a debug-ports socket cycles just that socket's layer —
+        // per-socket control without disturbing the rest of the row. Only
+        // when the cursor isn't on one does F fall back to flipping the
+        // selection (where a selected debug connector cycles all sockets).
+        if cycleDebugPortUnderCursor() { return }
         PhysicalActions.flipLayer(document: &document, selection: selection)
+    }
+
+    /// Hit-test the current `mouseLocation` against every visible debug-ports
+    /// socket (same hit zone as the pin handles) and cycle the one under the
+    /// cursor. Returns false when the cursor isn't over one.
+    private func cycleDebugPortUnderCursor() -> Bool {
+        guard !navigateMode, mouseLocation != .zero else { return false }
+        let hitR: CGFloat = InputPlatform.isTouch ? 13 : 10
+        for placement in document.circuit.physical.placements {
+            guard let component = component(for: placement.componentId),
+                  component.kind == .connector,
+                  component.connectorDebugPorts ?? false
+            else { continue }
+            for pin in component.footprint(manufacturing, snapshots: librarySnapshots).pins {
+                let pinLayer = placement.resolvedLayer(of: pin, on: component)
+                guard visible.contains(pinLayer) else { continue }
+                let screen = transform.toScreen(placement.worldPosition(of: pin))
+                let dx = mouseLocation.x - screen.x
+                let dy = mouseLocation.y - screen.y
+                guard dx * dx + dy * dy <= hitR * hitR else { continue }
+                PhysicalActions.cycleConnectorDebugPorts(
+                    document: &document,
+                    componentId: placement.componentId,
+                    pinKeys: [pin.key]
+                )
+                return true
+            }
+        }
+        return false
     }
 
     // MARK: - Disambiguator (click-and-hold)

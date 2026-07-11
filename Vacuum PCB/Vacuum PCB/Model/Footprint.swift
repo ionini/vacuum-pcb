@@ -223,6 +223,26 @@ extension ComponentKind {
     /// "hardcoded for now" caveat as `connectorTubePitch`.
     static let connectorEndCapOffset: Double = 8.0
 
+    /// Centre-to-centre spacing between a debug-mode connector's tube
+    /// sockets. Wider than `connectorTubePitch` so push-in tubes (and the
+    /// fingers seating them) fit side by side on the board edge.
+    static let connectorDebugPortPitch: Double = 10.0
+
+    /// How far inside the anchor edge a debug-mode pin (the route end of
+    /// its bore) sits. This is the bore length, and with the taper it sets
+    /// the mouth width at the edge face — 10 mm at the default 1° taper
+    /// opens the 1.7 mm bore to ≈2.05 mm, the same socket a hand-placed
+    /// port 10 mm from the edge gets.
+    static let connectorDebugPortInset: Double = 10.0
+
+    /// Layer a debug-mode socket sits on when the user hasn't moved it:
+    /// the role's plate at the silicone-facing depth — the same plate the
+    /// real connector's pins would land on, so toggling debug leaves
+    /// routing plans intact by default.
+    static func connectorDebugPortDefaultLayer(role: ConnectorRole) -> Layer {
+        Layer(plate: role == .bottomExtend ? .bottom : .top, depth: 0)
+    }
+
     /// Lowest legal screw count: two end caps always clamp the joint, which
     /// is also the legacy (pre-screw-count) layout.
     static let connectorMinScrewCount = 2
@@ -310,9 +330,14 @@ extension ComponentKind {
         pinCount: Int,
         screwCount: Int = connectorMinScrewCount,
         role: ConnectorRole,
+        debugPorts: Bool = false,
+        debugPortLayers: [Layer]? = nil,
         manufacturing m: ManufacturingConstants
     ) -> Footprint {
         let n = max(1, pinCount)
+        if debugPorts {
+            return connectorDebugPortsFootprint(pinCount: n, role: role, layers: debugPortLayers)
+        }
         let row = connectorRow(pinCount: n, screwCount: screwCount)
         let endCapY = row.screwYs.last ?? 0      // outermost screw |y| (symmetric)
         // Row extends `headRadius + minWallThickness` past each end-cap so
@@ -369,6 +394,58 @@ extension ComponentKind {
         )
     }
 
+    /// Debug-print connector footprint: no protrusion, no screws — just a
+    /// row of edge port bores drilled from inside the board out through the
+    /// anchor edge. Pins sit `connectorDebugPortInset` inside the edge
+    /// (local -X; the anchor stays on the edge with +X outward) on a
+    /// centred `connectorDebugPortPitch` grid, and keep the same role-based
+    /// pin-1 end as the normal footprint so toggling debug never flips the
+    /// row. Each pin owns one pitch-wide slot, so the rect — which drives
+    /// edge snapping, corner clearance, and exclusion DRC — spans exactly
+    /// `n × pitch` along the edge and covers the bore path inward.
+    ///
+    /// `layers` is the per-socket layer choice (`connectorDebugPortLayers`,
+    /// positional by pin number); missing entries fall back to the role's
+    /// plate at depth 0. Each pin carries its layer in `absoluteLayer`, so
+    /// pin handles, routing, ratsnest, DRC, and the CAD all resolve the
+    /// per-socket choice without knowing about the connector.
+    static func connectorDebugPortsFootprint(
+        pinCount: Int, role: ConnectorRole, layers: [Layer]? = nil
+    ) -> Footprint {
+        let n = max(1, pinCount)
+        let pitch = connectorDebugPortPitch
+        let inset = connectorDebugPortInset
+        let fallback = connectorDebugPortDefaultLayer(role: role)
+        var pins: [FootprintPin] = []
+        for i in 0..<n {
+            let pinIndex = i + 1
+            let step: Int
+            switch role {
+            case .topExtend:    step = i               // pin 1 at smallest y
+            case .bottomExtend: step = (n - 1) - i     // pin 1 at largest y
+            }
+            let y = (Double(step) - Double(n - 1) / 2) * pitch
+            let layer = (layers?.indices.contains(i) ?? false) ? layers![i] : fallback
+            pins.append(FootprintPin(
+                key: "\(pinIndex)",
+                offset: Point(x: -inset, y: y),
+                relativeLayer: .same,
+                absoluteLayer: layer
+            ))
+        }
+        let halfRow = Double(n) * pitch / 2
+        let rect = Rect(
+            origin: Point(x: -inset, y: -halfRow),
+            size: Size(width: inset, height: 2 * halfRow)
+        )
+        return Footprint(
+            kind: .connector,
+            pins: pins,
+            exclusionRect: rect,
+            boundingRect: rect
+        )
+    }
+
     /// Same signature as the original `footprint`, plus a named parameter so
     /// call sites that have a `ManufacturingConstants` value can still resolve
     /// the gate-dome / pad geometry. Subpart resolution still requires a
@@ -414,6 +491,8 @@ extension Component {
                 pinCount: connectorPinCount ?? 1,
                 screwCount: connectorScrewCount ?? ComponentKind.connectorMinScrewCount,
                 role: connectorRole ?? .bottomExtend,
+                debugPorts: connectorDebugPorts ?? false,
+                debugPortLayers: connectorDebugPortLayers,
                 manufacturing: m
             )
         }
@@ -432,6 +511,8 @@ extension Component {
                 pinCount: connectorPinCount ?? 1,
                 screwCount: connectorScrewCount ?? ComponentKind.connectorMinScrewCount,
                 role: connectorRole ?? .bottomExtend,
+                debugPorts: connectorDebugPorts ?? false,
+                debugPortLayers: connectorDebugPortLayers,
                 manufacturing: .defaults
             )
         }

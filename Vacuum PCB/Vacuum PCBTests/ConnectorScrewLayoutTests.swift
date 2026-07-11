@@ -166,4 +166,156 @@ struct ConnectorScrewLayoutTests {
         let p1Top = fpTop.pins.first { $0.key == "1" }!.offset.y
         #expect(abs(p1Top - row.pinYs.first!) < tol)
     }
+
+    // MARK: - Debug-ports mode
+
+    /// Debug print replaces the protrusion with an inset row of edge bores:
+    /// `connectorDebugPortPitch` centre-to-centre, centred on the anchor,
+    /// pins `connectorDebugPortInset` inside the edge (local -X), one
+    /// pitch-wide slot per pin, and the rect flush with the edge at x = 0.
+    /// Screw count must have no effect — debug boards print none.
+    @Test(arguments: [1, 2, 5, 8])
+    func debugPortsFootprintLayout(n: Int) {
+        let m = ManufacturingConstants.defaults
+        let dPitch = ComponentKind.connectorDebugPortPitch
+        let inset = ComponentKind.connectorDebugPortInset
+
+        let fp = ComponentKind.connectorFootprint(
+            pinCount: n, screwCount: 4, role: .bottomExtend,
+            debugPorts: true, manufacturing: m
+        )
+        #expect(fp.pins.count == n)
+        #expect(fp.pins.allSatisfy { abs($0.offset.x + inset) <= tol })
+        let ys = fp.pins.map(\.offset.y).sorted()
+        let gaps = zip(ys.dropFirst(), ys).map { $0 - $1 }
+        #expect(gaps.allSatisfy { abs($0 - dPitch) <= tol })
+        #expect(abs(ys.first! + ys.last!) <= tol)          // centred on the anchor
+        #expect(abs(fp.exclusionRect.size.height - Double(n) * dPitch) <= tol)
+        #expect(abs(fp.exclusionRect.size.width - inset) <= tol)
+        #expect(abs(fp.exclusionRect.origin.x + inset) <= tol)
+        #expect(abs(fp.exclusionRect.origin.x + fp.exclusionRect.size.width) <= tol) // maxX = edge
+
+        // Screw count is irrelevant in debug mode.
+        let fp2 = ComponentKind.connectorFootprint(
+            pinCount: n, screwCount: 2, role: .bottomExtend,
+            debugPorts: true, manufacturing: m
+        )
+        #expect(fp.pins == fp2.pins)
+        #expect(fp.exclusionRect == fp2.exclusionRect)
+    }
+
+    /// The role flip orders debug pins exactly like the normal footprint,
+    /// so toggling debug never swaps which physical end is pin 1.
+    @Test(arguments: [ConnectorRole.bottomExtend, .topExtend])
+    func debugPortsRoleFlipMatchesNormal(role: ConnectorRole) {
+        let m = ManufacturingConstants.defaults
+        func keysByY(_ fp: Footprint) -> [String] {
+            fp.pins.sorted { $0.offset.y < $1.offset.y }.map(\.key)
+        }
+        let normal = ComponentKind.connectorFootprint(pinCount: 5, role: role, manufacturing: m)
+        let debug = ComponentKind.connectorFootprint(pinCount: 5, role: role, debugPorts: true, manufacturing: m)
+        #expect(keysByY(normal) == keysByY(debug))
+    }
+
+    /// Off (or omitted) leaves the classic mating footprint untouched, and
+    /// the flag rides through `Component.footprint(_:)`.
+    @Test func debugPortsDefaultsOffAndThreadsThroughComponent() {
+        let m = ManufacturingConstants.defaults
+        let classic = ComponentKind.connectorFootprint(pinCount: 4, role: .topExtend, manufacturing: m)
+        let explicitOff = ComponentKind.connectorFootprint(
+            pinCount: 4, role: .topExtend, debugPorts: false, manufacturing: m
+        )
+        #expect(classic.pins == explicitOff.pins)
+        #expect(classic.exclusionRect == explicitOff.exclusionRect)
+
+        let comp = Component(
+            kind: .connector, label: "J1",
+            connectorPinCount: 4, connectorRole: .topExtend,
+            connectorDebugPorts: true
+        )
+        let viaComponent = comp.footprint(m)
+        let direct = ComponentKind.connectorFootprint(
+            pinCount: 4, role: .topExtend, debugPorts: true, manufacturing: m
+        )
+        #expect(viaComponent.pins == direct.pins)
+        #expect(viaComponent.exclusionRect == direct.exclusionRect)
+    }
+
+    // MARK: - Per-socket layers (debug mode)
+
+    /// Per-socket layers bake into `absoluteLayer` positionally by pin
+    /// number; missing entries fall back to the role's plate at depth 0;
+    /// the normal (mating) footprint never carries absolute layers.
+    @Test func debugPortLayersBakeIntoFootprint() {
+        let m = ManufacturingConstants.defaults
+        let layers = [Layer(plate: .top, depth: 0), Layer(plate: .bottom, depth: 1)]
+        let fp = ComponentKind.connectorFootprint(
+            pinCount: 3, role: .bottomExtend, debugPorts: true,
+            debugPortLayers: layers, manufacturing: m
+        )
+        #expect(fp.pin("1")?.absoluteLayer == layers[0])
+        #expect(fp.pin("2")?.absoluteLayer == layers[1])
+        #expect(fp.pin("3")?.absoluteLayer
+                == ComponentKind.connectorDebugPortDefaultLayer(role: .bottomExtend))
+        #expect(fp.pin("3")?.absoluteLayer == Layer(plate: .bottom, depth: 0))
+
+        let normal = ComponentKind.connectorFootprint(pinCount: 3, role: .bottomExtend, manufacturing: m)
+        #expect(normal.pins.allSatisfy { $0.absoluteLayer == nil })
+    }
+
+    /// F on one socket advances it through the top-then-bottom layer cycle
+    /// and stores the result on the component; the choice survives turning
+    /// debug off and back on; cycling it home collapses the array to nil.
+    @Test func cycleDebugPortLayerRoundTrips() {
+        var doc = VPCBDocument(circuit: .blank())
+        let comp = Component(
+            kind: .connector, label: "J1",
+            connectorPinCount: 2, connectorRole: .bottomExtend,
+            connectorDebugPorts: true
+        )
+        doc.circuit.logic.components.append(comp)
+        let bottom0 = Layer(plate: .bottom, depth: 0)
+        let top0 = Layer(plate: .top, depth: 0)
+
+        // Role default is bottom0; one advance wraps pin 2 to top0.
+        PhysicalActions.cycleConnectorDebugPorts(document: &doc, componentId: comp.id, pinKeys: ["2"])
+        var c = doc.circuit.logic.components[0]
+        #expect(c.connectorDebugPortLayers == [bottom0, top0])
+        #expect(c.connectorDebugPortLayer("1") == bottom0)
+        #expect(c.connectorDebugPortLayer("2") == top0)
+        #expect(c.footprint(ManufacturingConstants.defaults).pin("2")?.absoluteLayer == top0)
+
+        // Toggling debug off keeps the stored layers (that's the memory).
+        doc.circuit.logic.components[0].connectorDebugPorts = nil
+        #expect(doc.circuit.logic.components[0].connectorDebugPortLayers == [bottom0, top0])
+        doc.circuit.logic.components[0].connectorDebugPorts = true
+
+        // Advancing pin 2 again returns the row to the role default → nil.
+        PhysicalActions.cycleConnectorDebugPorts(document: &doc, componentId: comp.id, pinKeys: ["2"])
+        c = doc.circuit.logic.components[0]
+        #expect(c.connectorDebugPortLayers == nil)
+        #expect(c.connectorDebugPortLayer("2") == bottom0)
+    }
+
+    /// F with the whole debug connector selected advances every socket in
+    /// lockstep and leaves `placement.layer` (the role plate) alone.
+    @Test func flipLayerOnSelectedDebugConnectorCyclesAllSockets() {
+        var doc = VPCBDocument(circuit: .blank())
+        let comp = Component(
+            kind: .connector, label: "J1",
+            connectorPinCount: 3, connectorRole: .bottomExtend,
+            connectorDebugPorts: true
+        )
+        doc.circuit.logic.components.append(comp)
+        doc.circuit.physical.placements.append(Placement(
+            componentId: comp.id, position: Point(x: 0, y: 0),
+            rotation: .r0, layer: .bottom
+        ))
+
+        PhysicalActions.flipLayer(document: &doc, selection: .placement(comp.id))
+        let c = doc.circuit.logic.components[0]
+        let top0 = Layer(plate: .top, depth: 0)
+        #expect(c.connectorDebugPortLayers == [top0, top0, top0])
+        #expect(doc.circuit.physical.placements[0].layer == .bottom)
+    }
 }
