@@ -311,13 +311,24 @@ struct RoutingPreviewOverlay: View {
 
             // Already-committed in-progress waypoints
             let committed = waypoints.map(transform.toScreen)
-            guard committed.count >= 2 else { return }
-            var committedPath = Path()
-            committedPath.move(to: committed[0])
-            for p in committed.dropFirst() { committedPath.addLine(to: p) }
-            ctx.stroke(committedPath,
-                       with: .color(routeColor(layer).opacity(0.9)),
-                       style: StrokeStyle(lineWidth: 2.0, lineCap: .round, lineJoin: .round))
+            if committed.count >= 2 {
+                var committedPath = Path()
+                committedPath.move(to: committed[0])
+                for p in committed.dropFirst() { committedPath.addLine(to: p) }
+                ctx.stroke(committedPath,
+                           with: .color(routeColor(layer).opacity(0.9)),
+                           style: StrokeStyle(lineWidth: 2.0, lineCap: .round, lineJoin: .round))
+            }
+
+            // Route head: a filled dot on the last committed waypoint so the
+            // user can see exactly where the next tap extends from. Touch
+            // has no live cursor between taps, so this is the only anchor
+            // the eye gets — it's also where the HUD's chips drop a via.
+            let headR: CGFloat = 4.5
+            let headRect = CGRect(x: a.x - headR, y: a.y - headR,
+                                  width: headR * 2, height: headR * 2)
+            ctx.fill(Path(ellipseIn: headRect), with: .color(routeColor(layer)))
+            ctx.stroke(Path(ellipseIn: headRect), with: .color(.white), lineWidth: 1.2)
         }
         .allowsHitTesting(false)
     }

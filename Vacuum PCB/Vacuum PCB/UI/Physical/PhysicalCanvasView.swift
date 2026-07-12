@@ -77,6 +77,16 @@ struct PhysicalCanvasView: View {
     /// multi-touch arbitration. Locking the canvas is the bulletproof
     /// fallback: single-finger drags pan instead of moving placements.
     @State private var navigateMode: Bool = false
+    /// Waypoint-count checkpoints recorded after each routing tap, so Undo
+    /// (the HUD button, or ⌫ on macOS) backs out one *tap* at a time. A
+    /// single tap usually commits two waypoints (auto-elbow + corner), so a
+    /// plain remove-last-waypoint would take two presses per fumbled tap.
+    @State private var routingTapStack: [Int] = []
+    /// Sticky touch stand-in for holding ⌘ while routing: segments run
+    /// straight (diagonal) to the tap instead of inserting a Manhattan
+    /// elbow. OR'd with the live modifier at each use so the macOS
+    /// per-click ⌘ keeps working when the toggle is off.
+    @State private var straightRouting = false
 
     enum BackgroundDragMode { case none, marquee, pan }
 
@@ -150,8 +160,8 @@ struct PhysicalCanvasView: View {
     /// the current routing plate. Both share the underlying via-drop logic.
     private var viaKeyHandlers: [UInt16: () -> Void] {
         var h: [UInt16: () -> Void] = [
-            KeyCodes.delete: { deleteSelection() },
-            KeyCodes.forwardDelete: { deleteSelection() },
+            KeyCodes.delete: { deleteBackward() },
+            KeyCodes.forwardDelete: { deleteBackward() },
             KeyCodes.escape: {
                 routingState = .idle
                 selection = .none
@@ -238,7 +248,7 @@ struct PhysicalCanvasView: View {
                     mouseLocation: mouseLocation,
                     transform: transform,
                     gridMm: grid,
-                    directRoute: ModifierKeys.commandHeld
+                    directRoute: ModifierKeys.commandHeld || straightRouting
                 )
 
                 if let focus = issueFocus, visible.contains(focus.layer) {
@@ -335,6 +345,49 @@ struct PhysicalCanvasView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                 .allowsHitTesting(true)
 
+                // Bottom-centre routing strip: layer chips that drop a via at
+                // the route head (the touch stand-in for V / 0…9, which aim
+                // at a hover cursor touch doesn't have), undo-last-tap,
+                // straight-mode toggle, and cancel — plus the transient
+                // routing-error toast, which previously had no UI at all.
+                VStack(spacing: 8) {
+                    if let error = routingError {
+                        RoutingErrorToast(message: error) { routingError = nil }
+                            .task(id: error) {
+                                try? await Task.sleep(for: .seconds(4))
+                                if !Task.isCancelled { routingError = nil }
+                            }
+                    }
+                    if case let .routing(netId, wps, layer, startsAtVia) = routingState {
+                        // While the route is still just its via pickup point,
+                        // the chips switch among the layers that via already
+                        // connects instead of dropping a new one.
+                        let atViaPickup = startsAtVia && wps.count == 1
+                        RoutingHUD(
+                            netLabel: netLabel(for: netId),
+                            currentLayer: layer,
+                            layers: configuredLayers,
+                            viaReady: wps.count >= 2,
+                            canUndo: wps.count > 1,
+                            pickupLayers: atViaPickup && wps.first != nil
+                                ? viaConnectedLayers(netId: netId, at: wps[0])
+                                : [],
+                            straight: $straightRouting,
+                            onVia: { target in
+                                if atViaPickup {
+                                    switchPickupLayer(to: target)
+                                } else {
+                                    dropViaAtRouteHead(toLayer: target)
+                                }
+                            },
+                            onUndo: { undoLastRoutingWaypoint() },
+                            onCancel: { routingState = .idle }
+                        )
+                    }
+                }
+                .padding(.bottom, 10)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+
                 // Live pointer position in board mm, bottom-left. Only while
                 // the pointer is hovering the canvas — see `pointerHovering`.
                 if pointerHovering {
@@ -429,6 +482,12 @@ struct PhysicalCanvasView: View {
                 // First-time fit only — once the user has zoomed/panned,
                 // resizing the window shouldn't blow away their viewport.
                 if !userAdjustedView { recomputeTransform(viewSize: new) }
+            }
+            // Any exit from routing (commit, Esc, the inspector's Cancel,
+            // lock mode, a net-mismatch error) invalidates the per-tap
+            // undo checkpoints — including exits this view didn't drive.
+            .onChange(of: routingState) { _, new in
+                if !new.inProgress { routingTapStack = [] }
             }
             .onDrop(of: [.text], delegate: ParkingDropDelegate(
                 document: $document,
@@ -1537,13 +1596,25 @@ struct PhysicalCanvasView: View {
             // route at one — handy when a mid-route segment got deleted and
             // its sibling via is now stranded.
             if let via = viaAtTap(at: pt) {
-                routingLayer = via.layer
+                // The tapped via already connects a set of layers. Start on
+                // the toolbar's current routing layer when it's one of them
+                // (the user is usually continuing work on that side);
+                // otherwise fall back to the hit segment's layer. The HUD's
+                // chips can switch among the connected layers afterwards.
+                let connected = viaConnectedLayers(netId: via.netId, at: via.position)
+                let startLayer = connected.contains(routingLayer) ? routingLayer : via.layer
+                routingLayer = startLayer
                 routingState = .routing(
                     netId: via.netId, waypoints: [via.position],
-                    layer: via.layer, startsAtVia: true
+                    layer: startLayer, startsAtVia: true
                 )
                 selection = .none
                 routingError = nil
+                routingTapStack = []
+                // Park the preview cursor on the pickup point — on touch no
+                // hover events arrive, so without this the dashed hint
+                // points at wherever the pointer state last was.
+                mouseLocation = pt
                 return
             }
             // ⌥-click on a route segment drops a testing point there (macOS;
@@ -1564,9 +1635,10 @@ struct PhysicalCanvasView: View {
                 selection = .none
             }
         case .routing(let netId, var wps, let layer, let startsAtVia):
-            // Cmd held → run each segment straight to the target instead of
-            // inserting a Manhattan corner.
-            let directRoute = ModifierKeys.commandHeld
+            // Cmd held (or the HUD's sticky straight toggle) → run each
+            // segment straight to the target instead of inserting a
+            // Manhattan corner.
+            let directRoute = ModifierKeys.commandHeld || straightRouting
             // Click an existing via to close the in-progress route into it —
             // mirrors clicking a pin, but the closing waypoint is marked
             // `.via` so the via XY stays a via in both segments.
@@ -1597,10 +1669,16 @@ struct PhysicalCanvasView: View {
             }
             let world = transform.snap(transform.toWorld(pt), grid: grid)
             guard let last = wps.last else { return }
+            let before = wps.count
             let elbow = elbow(from: last, to: world, direct: directRoute)
             if !approximatelyEqual(elbow, last) { wps.append(elbow) }
             if !approximatelyEqual(world, wps.last ?? last) { wps.append(world) }
             routingState = .routing(netId: netId, waypoints: wps, layer: layer, startsAtVia: startsAtVia)
+            // Checkpoint the tap for Undo, and park the preview cursor on
+            // it so the dashed next-segment hint doesn't chase a stale
+            // hover position on touch (no hover events between taps).
+            if wps.count > before { routingTapStack.append(wps.count) }
+            mouseLocation = pt
         }
     }
 
@@ -1783,6 +1861,11 @@ struct PhysicalCanvasView: View {
             routingState = .routing(netId: net.id, waypoints: [world], layer: pinLayer, startsAtVia: false)
             selection = .none
             routingError = nil
+            routingTapStack = []
+            // Park the preview cursor on the pin: touch gets no hover
+            // events, so without this the dashed hint points at wherever
+            // the pointer state last was (or the view origin).
+            mouseLocation = transform.toScreen(world)
 
         case let .routing(netId, wps, layer, startsAtVia):
             // Same pin clicked again with only one waypoint → cancel
@@ -1803,8 +1886,9 @@ struct PhysicalCanvasView: View {
                 return
             }
             // Commit a segment to the route. Manhattan path from the last
-            // waypoint to this pin, unless Cmd is held — then run straight.
-            let directRoute = ModifierKeys.commandHeld
+            // waypoint to this pin, unless Cmd is held (or the HUD's
+            // straight toggle is on) — then run straight.
+            let directRoute = ModifierKeys.commandHeld || straightRouting
             var finalPath = wps
             if let last = finalPath.last {
                 let elbow = elbow(from: last, to: world, direct: directRoute)
@@ -1867,6 +1951,96 @@ struct PhysicalCanvasView: View {
 
         routingLayer = target
         routingState = .routing(netId: netId, waypoints: [cursorWorld], layer: target, startsAtVia: true)
+        routingTapStack = []
+    }
+
+    /// HUD chip path: drop a via at the **route head** — the last committed
+    /// waypoint — instead of at the hover cursor. Touch has no cursor to
+    /// aim V / 0…9 with, so the model becomes "tap the point, then tap the
+    /// layer to continue on". Same segment-commit + restart mechanics as
+    /// `dropVia`, minus the elbow-to-cursor run.
+    private func dropViaAtRouteHead(toLayer target: Layer) {
+        guard case let .routing(netId, wps, layer, startsAtVia) = routingState,
+              target != layer,
+              wps.count >= 2, let head = wps.last
+        else { return }
+        var finalPath = wps.enumerated().map { i, p in
+            Waypoint(position: p, kind: (i == 0 && startsAtVia) ? .via : .point)
+        }
+        finalPath[finalPath.count - 1] = Waypoint(position: head, kind: .via)
+        let segment = Segment(waypoints: finalPath, layer: layer)
+        if let i = document.circuit.physical.routes.firstIndex(where: { $0.netId == netId }) {
+            document.circuit.physical.routes[i].segments.append(segment)
+        } else {
+            document.circuit.physical.routes.append(Route(netId: netId, segments: [segment]))
+        }
+        routingLayer = target
+        routingState = .routing(netId: netId, waypoints: [head], layer: target, startsAtVia: true)
+        routingTapStack = []
+        mouseLocation = transform.toScreen(head)
+    }
+
+    /// Layers this net already marks with a `.via` waypoint at `position` —
+    /// the existing bore's layer group. Tapping a via to pick routing back
+    /// up offers these as continue-on choices: the via is already drilled,
+    /// so working on its other side needs no new via.
+    private func viaConnectedLayers(netId: UUID, at position: Point) -> Set<Layer> {
+        guard let route = document.circuit.physical.routes.first(where: { $0.netId == netId })
+        else { return [] }
+        var layers: Set<Layer> = []
+        for segment in route.segments {
+            for wp in segment.waypoints where wp.kind == .via {
+                if abs(wp.position.x - position.x) < 0.05,
+                   abs(wp.position.y - position.y) < 0.05 {
+                    layers.insert(segment.layer)
+                }
+            }
+        }
+        return layers
+    }
+
+    /// HUD chip tap while the route is still just its via pickup point:
+    /// re-target the in-progress layer instead of dropping a new via — the
+    /// tapped via already connects `target`, the user is only choosing
+    /// which side of it to work on.
+    private func switchPickupLayer(to target: Layer) {
+        guard case let .routing(netId, wps, layer, startsAtVia) = routingState,
+              startsAtVia, wps.count == 1, target != layer
+        else { return }
+        routingLayer = target
+        routingState = .routing(netId: netId, waypoints: wps, layer: target, startsAtVia: true)
+    }
+
+    /// Back out the last routing tap: truncate the in-progress polyline to
+    /// the checkpoint before the most recent one (falling back to just the
+    /// start point). Bound to the HUD's Undo button and to ⌫ mid-route.
+    private func undoLastRoutingWaypoint() {
+        guard case let .routing(netId, wps, layer, startsAtVia) = routingState,
+              wps.count > 1
+        else { return }
+        _ = routingTapStack.popLast()
+        let targetCount = max(1, routingTapStack.last ?? 1)
+        guard targetCount < wps.count else { return }
+        let trimmed = Array(wps.prefix(targetCount))
+        routingState = .routing(netId: netId, waypoints: trimmed, layer: layer, startsAtVia: startsAtVia)
+        if let head = trimmed.last { mouseLocation = transform.toScreen(head) }
+    }
+
+    /// ⌫ / ⌦: while routing, back out the last tap; otherwise delete the
+    /// selection. Keeps the keyboard in lockstep with the HUD's Undo.
+    private func deleteBackward() {
+        if routingState.inProgress {
+            undoLastRoutingWaypoint()
+        } else {
+            deleteSelection()
+        }
+    }
+
+    /// Every channel layer configured on the board, T0…Tn then B0…Bm — the
+    /// same order the toolbar's route picker uses. Drives the HUD chips.
+    private var configuredLayers: [Layer] {
+        document.circuit.physical.layers(in: .top)
+            + document.circuit.physical.layers(in: .bottom)
     }
 
     private func appendRouteSegment(
