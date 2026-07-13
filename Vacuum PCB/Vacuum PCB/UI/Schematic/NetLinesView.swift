@@ -59,6 +59,12 @@ struct NetLinesView: View {
                 for: id
             )
         }
+        // Carry the bend points of fully-participating wires along too, so a
+        // routed wire keeps its shape mid-drag instead of kinking toward a
+        // stale waypoint. Unsnapped for a smooth preview; the commit snaps.
+        doc.schematic.translateWaypoints(
+            forComponentsIn: shift.participants, by: shift.translation, snap: false
+        )
         return doc
     }
 

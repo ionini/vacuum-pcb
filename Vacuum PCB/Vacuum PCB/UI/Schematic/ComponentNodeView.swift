@@ -245,6 +245,11 @@ struct ComponentNodeView: View {
             ))
             document.circuit.schematic.setPosition(next, for: id)
         }
+        // Move the bend points of wires internal to the moved group along with
+        // it, so tidy-up waypoints don't get left behind at the old location.
+        document.circuit.schematic.translateWaypoints(
+            forComponentsIn: multi.participants, by: finalTranslation, snap: true
+        )
     }
 
     // MARK: - Pin tap

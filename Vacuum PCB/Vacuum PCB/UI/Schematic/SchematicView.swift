@@ -279,14 +279,19 @@ struct SchematicInspector: View {
 struct SchematicContextSection: View {
     @Binding var document: VPCBDocument
     @Binding var selection: SchematicSelection
+    /// Observed so the Paste button appears the instant something is copied
+    /// (and stays available even with nothing selected).
+    @ObservedObject private var clipboard = SchematicClipboard.shared
 
     var body: some View {
         Group {
-            if !selection.isEmpty {
+            if !selection.isEmpty || clipboard.hasContent {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(header)
-                        .font(.caption.bold())
-                        .foregroundStyle(.secondary)
+                    if !selection.isEmpty {
+                        Text(header)
+                            .font(.caption.bold())
+                            .foregroundStyle(.secondary)
+                    }
                     if !selection.components.isEmpty {
                         Button {
                             SchematicActions.rotate(document: &document, selection: selection)
@@ -295,14 +300,32 @@ struct SchematicContextSection: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         .buttonStyle(.bordered)
+                        Button {
+                            SchematicActions.copy(document: document, selection: selection)
+                        } label: {
+                            Label(copyLabel, systemImage: "doc.on.doc")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.bordered)
                     }
-                    Button(role: .destructive) {
-                        SchematicActions.delete(document: &document, selection: &selection)
-                    } label: {
-                        Label(deleteLabel, systemImage: "trash")
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                    if clipboard.hasContent {
+                        Button {
+                            SchematicActions.paste(document: &document, selection: &selection)
+                        } label: {
+                            Label("Paste", systemImage: "doc.on.clipboard")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.bordered)
                     }
-                    .buttonStyle(.bordered)
+                    if !selection.isEmpty {
+                        Button(role: .destructive) {
+                            SchematicActions.delete(document: &document, selection: &selection)
+                        } label: {
+                            Label(deleteLabel, systemImage: "trash")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.bordered)
+                    }
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
@@ -310,6 +333,12 @@ struct SchematicContextSection: View {
                 .background(.regularMaterial)
             }
         }
+    }
+
+    private var copyLabel: String {
+        selection.components.count > 1
+            ? "Copy \(selection.components.count) components"
+            : "Copy"
     }
 
     private var header: String {

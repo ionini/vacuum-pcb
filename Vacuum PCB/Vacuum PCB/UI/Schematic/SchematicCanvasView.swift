@@ -133,6 +133,9 @@ struct SchematicCanvasView: View {
                         },
                     ],
                     commandHandlers: [
+                        KeyCodes.c: { copySelection() },
+                        KeyCodes.x: { cutSelection() },
+                        KeyCodes.v: { pasteSelection() },
                         KeyCodes.equals: { zoomBy(1.25, atWindowPoint: windowCursor, viewSize: geo.size) },
                         KeyCodes.minus: { zoomBy(1 / 1.25, atWindowPoint: windowCursor, viewSize: geo.size) },
                         KeyCodes.zero: { fitToView(viewSize: geo.size) },
@@ -798,10 +801,19 @@ struct SchematicCanvasView: View {
     }
 
     /// Flattened list of every wire waypoint, for placing its drag handle.
+    /// While a group drag is in flight, handles on wires whose both endpoints
+    /// are moving ride along with the same shift so the dots track their wire.
     private var waypointHandles: [(pair: PinPair, index: Int, point: CGPoint)] {
-        (document.circuit.schematic.wireWaypoints ?? []).flatMap { entry in
-            entry.points.enumerated().map {
-                (entry.pair, $0.offset, CGPoint(x: $0.element.x, y: $0.element.y))
+        let shift = activeDragShift
+        return (document.circuit.schematic.wireWaypoints ?? []).flatMap { entry -> [(pair: PinPair, index: Int, point: CGPoint)] in
+            let moving = shift.map {
+                $0.participants.contains(entry.pair.a.componentId)
+                    && $0.participants.contains(entry.pair.b.componentId)
+            } ?? false
+            let dx = moving ? shift!.translation.width : 0
+            let dy = moving ? shift!.translation.height : 0
+            return entry.points.enumerated().map {
+                (entry.pair, $0.offset, CGPoint(x: $0.element.x + dx, y: $0.element.y + dy))
             }
         }
     }
@@ -825,6 +837,20 @@ struct SchematicCanvasView: View {
 
     private func deleteSelection() {
         SchematicActions.delete(document: &document, selection: &selection)
+    }
+
+    // MARK: - Copy / paste
+
+    private func copySelection() {
+        SchematicActions.copy(document: document, selection: selection)
+    }
+
+    private func cutSelection() {
+        SchematicActions.cut(document: &document, selection: &selection)
+    }
+
+    private func pasteSelection() {
+        SchematicActions.paste(document: &document, selection: &selection)
     }
 
     /// Rotate every selected component 90° clockwise (R key). Mirrors

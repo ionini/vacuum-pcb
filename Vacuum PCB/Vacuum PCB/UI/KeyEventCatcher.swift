@@ -105,7 +105,9 @@ enum KeyCodes {
     static let escape: UInt16        = 53
     static let r: UInt16             = 15
     static let f: UInt16             = 3
+    static let c: UInt16             = 8
     static let v: UInt16             = 9
+    static let x: UInt16             = 7
     static let equals: UInt16        = 24
     static let minus: UInt16         = 27
     static let zero: UInt16          = 29

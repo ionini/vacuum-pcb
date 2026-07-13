@@ -129,6 +129,27 @@ struct SchematicLayout: Codable, Hashable {
         if wireWaypoints?.isEmpty == true { wireWaypoints = nil }
     }
 
+    /// Translates the waypoints of every wire whose *both* endpoints sit on a
+    /// component in `ids`, by `delta`. Called when a group of components is
+    /// moved together (multi-drag, paste-then-drag) so a wire's bend points
+    /// ride along with the rigid translation instead of staying pinned to the
+    /// canvas. Wires with only one endpoint in the set stretch, so their
+    /// waypoints are left put. `snap` rounds each moved point to the grid for
+    /// the committed move; pass `false` for a smooth live-drag preview.
+    mutating func translateWaypoints(forComponentsIn ids: Set<UUID>, by delta: CGSize, snap: Bool) {
+        guard var list = wireWaypoints, !ids.isEmpty else { return }
+        var changed = false
+        for i in list.indices where ids.contains(list[i].pair.a.componentId)
+            && ids.contains(list[i].pair.b.componentId) {
+            list[i].points = list[i].points.map { p in
+                let moved = Point(x: p.x + Double(delta.width), y: p.y + Double(delta.height))
+                return snap ? SchematicLayout.snapToGrid(moved) : moved
+            }
+            changed = true
+        }
+        if changed { wireWaypoints = list }
+    }
+
     mutating func remove(componentId: UUID) {
         positions.removeAll { $0.componentId == componentId }
         if var list = wireWaypoints {
