@@ -42,6 +42,9 @@ BIN=.build/debug/vacuum-cli
 
 # Drive inputs by label, filter probes, dump every net, or emit JSON:
 "$BIN" simulate path/to/design.vpcb --set IN=vac --probe OUT --all-nets --json
+
+# Supply budget: settle, then rank every path drawing air into the rail:
+"$BIN" flows path/to/design.vpcb --set IN=atm
 ```
 
 ### Options (`simulate`)
@@ -92,6 +95,37 @@ has been released loses its bit faster the higher the leak, and a refresh
 A stored 1 reads back as deep vacuum and a stored 0 as atmosphere; bumping
 `resistance` and `flow` above their defaults sharpens that separation on
 bus/latch designs.
+
+### Supply budget (`flows`)
+
+The engine never stores flow, but every edge is attributable, so `flows`
+reconstructs Q = G·ΔP from a settled state (shared `FlowAnalysis`, the same
+compute behind the Simulate tab's flow overlay and Supply panel) and prints
+the supply-side story:
+
+- **pump line** — throughput vs the pump's free-flow ceiling
+  (`flow × (1 − pumpMax)`), plus the rail's settled pressure;
+- **external rail feed** — asserted soft drives sitting on rail nets (a bench
+  line on the connector's VAC pin) counted into the supply total;
+- **draw into rail, ranked** — every resistor/transistor edge crossing into a
+  rail net, plus the rail plumbing's own leak: a pull-up fighting an open vent
+  path is continuous static draw (the NMOS-style rail-sag mechanism); one
+  holding an isolated node is just the leak floor. Σ draw ≈ supply at settle
+  — a big gap means it hasn't settled;
+- with `--all-nets`, every resistor's and transistor's signed through-flow
+  (spot shoot-through paths and off-band residual leaks through "closed"
+  valves).
+
+Takes the same `--set` / `--phase` / `--param` / `--steps` / `--epsilon`
+options as `simulate`; with `--phase` the budget describes the final phase's
+settled state (e.g. a register in hold).
+
+```sh
+# Which pull-up is eating the pump while the latch holds a 1?
+"$BIN" flows latch.vpcb \
+  --phase "J1.VAC=vac,J1.WRITE=vac,J1.D0=vac" \
+  --phase "J1.WRITE=atm,J1.D0=nan" --all-nets
+```
 
 ## What you can validate
 

@@ -30,13 +30,29 @@ import CryptoKit
 ///     reader (schematic heatmap, net list, carried-forward pressures) keeps
 ///     working unchanged.
 struct ChannelGraph {
+    /// One vertex of a span's retained geometry: a board-mm position tagged
+    /// with the routing layer it sits on. Consecutive points on the same
+    /// layer are a drawable run; a layer change at constant XY is a via bore.
+    struct PolylinePoint {
+        let p: Point
+        let layer: Layer
+    }
+
     /// One straight run of channel between two solver nodes. `lengthMm == 0`
     /// marks a stiff tie (island bridging, via bores) — the engine clamps the
     /// length before dividing so ties are very conductive, not infinite.
+    ///
+    /// `polyline` is the routed geometry this span solves, ordered node1 →
+    /// node2, retained purely for rendering (per-span pressure colours and
+    /// flow animation in the Simulate physical view). The solver never reads
+    /// it. Degree-2 contraction concatenates the merged spans' polylines, so
+    /// one span's polyline may cross layers through absorbed via ties. Empty
+    /// for nonphysical ties (island → hub bridges).
     struct Span {
         let node1: UUID
         let node2: UUID
         let lengthMm: Double
+        var polyline: [PolylinePoint] = []
     }
 
     /// Synthetic sub-nodes (every routed-net vertex beyond the hub), as `Net`
@@ -113,7 +129,12 @@ struct ChannelGraph {
 
             // ── 1. Vertices + raw spans from the routed polylines ──────────
             struct Vertex { let layer: Layer; var p: Point }
-            struct RawSpan { let i: Int; let j: Int; let length: Double; let layer: Layer }
+            // `points` is the retained render geometry, ordered i → j; it
+            // never feeds the solve (only `length` does).
+            struct RawSpan {
+                let i: Int; let j: Int; let length: Double; let layer: Layer
+                var points: [PolylinePoint] = []
+            }
             var vertices: [Vertex] = []
             var rawSpans: [RawSpan] = []
 
@@ -164,7 +185,9 @@ struct ChannelGraph {
                         let a = positions[k], b = positions[k + 1]
                         rawSpans.append(RawSpan(i: indices[k], j: indices[k + 1],
                                                 length: hypot(b.x - a.x, b.y - a.y),
-                                                layer: segment.layer))
+                                                layer: segment.layer,
+                                                points: [PolylinePoint(p: a, layer: segment.layer),
+                                                         PolylinePoint(p: b, layer: segment.layer)]))
                     }
                 }
             }
@@ -184,8 +207,12 @@ struct ChannelGraph {
                     ($0.plate.rawValue, $0.depth) < ($1.plate.rawValue, $1.depth)
                 }
                 let nodes = orderedLayers.map { vertexIndex($0, group.position) }
-                for k in nodes.dropFirst() where k != nodes[0] {
-                    rawSpans.append(RawSpan(i: nodes[0], j: k, length: 0, layer: orderedLayers[0]))
+                for (idx, k) in zip(orderedLayers.indices, nodes).dropFirst() where k != nodes[0] {
+                    rawSpans.append(RawSpan(
+                        i: nodes[0], j: k, length: 0, layer: orderedLayers[0],
+                        points: [PolylinePoint(p: group.position, layer: orderedLayers[0]),
+                                 PolylinePoint(p: group.position, layer: orderedLayers[idx])]
+                    ))
                 }
             }
 
@@ -215,8 +242,15 @@ struct ChannelGraph {
                     } else {
                         vertices.append(Vertex(layer: layer, p: hit.proj))
                         let v = vertices.count - 1
-                        rawSpans.append(RawSpan(i: s.i, j: v, length: s.length * hit.t, layer: s.layer))
-                        rawSpans.append(RawSpan(i: v, j: s.j, length: s.length * (1 - hit.t), layer: s.layer))
+                        // Taps run before contraction, so the split span is a
+                        // single straight piece — its halves are too.
+                        let a = vertices[s.i].p, b = vertices[s.j].p
+                        rawSpans.append(RawSpan(i: s.i, j: v, length: s.length * hit.t, layer: s.layer,
+                                                points: [PolylinePoint(p: a, layer: s.layer),
+                                                         PolylinePoint(p: hit.proj, layer: s.layer)]))
+                        rawSpans.append(RawSpan(i: v, j: s.j, length: s.length * (1 - hit.t), layer: s.layer,
+                                                points: [PolylinePoint(p: hit.proj, layer: s.layer),
+                                                         PolylinePoint(p: b, layer: s.layer)]))
                         rawSpans.remove(at: hit.spanIdx)
                         tapVertexByTestPoint[tp.id] = v
                     }
@@ -292,7 +326,16 @@ struct ChannelGraph {
                 spanAlive[incident[0]] = false
                 spanAlive[incident[1]] = false
                 vertexAlive[v] = false
-                let merged = RawSpan(i: a, j: b, length: s1.length + s2.length, layer: s1.layer)
+                // Geometry merges a → v → b: re-orient each half so the final
+                // polyline runs i → j, and drop the duplicated shared point at
+                // v. An absorbed island bridge contributes no points, so its
+                // partner's polyline passes through unchanged.
+                let half1 = s1.j == v ? s1.points : s1.points.reversed()
+                let half2 = s2.i == v ? s2.points : s2.points.reversed()
+                var pts = Array(half1)
+                pts.append(contentsOf: pts.isEmpty ? Array(half2) : Array(half2.dropFirst()))
+                let merged = RawSpan(i: a, j: b, length: s1.length + s2.length,
+                                     layer: s1.layer, points: pts)
                 rawSpans.append(merged)
                 spanAlive.append(true)
                 let si = rawSpans.count - 1
@@ -316,7 +359,8 @@ struct ChannelGraph {
             var caps = [Double](repeating: 0, count: vertices.count)
             for (si, s) in rawSpans.enumerated()
             where spanAlive[si] && s.i != s.j && vertexAlive[s.i] && vertexAlive[s.j] {
-                spans.append(Span(node1: nodeId[s.i]!, node2: nodeId[s.j]!, lengthMm: s.length))
+                spans.append(Span(node1: nodeId[s.i]!, node2: nodeId[s.j]!,
+                                  lengthMm: s.length, polyline: s.points))
                 caps[s.i] += s.length * capPerMm / 2
                 caps[s.j] += s.length * capPerMm / 2
             }

@@ -307,6 +307,100 @@ func bar(_ p: Double) -> String {
     return "[" + String(repeating: "#", count: 10 - filled) + String(repeating: ".", count: filled) + "]"
 }
 
+/// Supply-budget report for one settled state: what the pump is delivering,
+/// how deep the rail sits, and every path drawing air into the rail, ranked.
+/// The compute lives in the shared `FlowAnalysis` (same code as the Simulate
+/// tab's flow overlay / supply panel).
+func reportFlows(_ r: FlowReport, steps: Int, converged: Bool, showEdges: Bool,
+                 network: PneumaticNetwork, json: Bool) {
+    func kindLabel(_ k: FlowReport.ConsumerKind) -> String {
+        switch k {
+        case .resistor:     return "resistor"
+        case .transistor:   return "transistor"
+        case .railLeak:     return "rail-leak"
+        case .internalLeak: return "wall-leak"
+        }
+    }
+    if json {
+        var pump: [String: Any] = [
+            "throughput": r.pumpThroughput,
+            "freeFlowMax": r.pumpFreeFlowMax,
+            "utilization": r.utilization,
+        ]
+        if let railP = r.railPressure { pump["railPressure"] = railP }
+        pump["railDriveSupply"] = r.railDriveSupply
+        pump["supplyTotal"] = r.supplyTotal
+        var root: [String: Any] = [
+            "steps": steps, "converged": converged, "subdivided": r.subdivided,
+            "pump": pump,
+            "consumers": r.consumers.map { c -> [String: Any] in
+                ["label": c.label, "kind": kindLabel(c.kind), "q": c.q, "detail": c.detail]
+            },
+            "externalDrives": r.externalDrives.map { d -> [String: Any] in
+                ["label": d.label, "toward": d.towardVacuum ? "vac" : "atm", "q": d.q]
+            },
+        ]
+        if showEdges {
+            root["resistorFlows"] = network.resistors.map {
+                ["label": $0.label, "q": r.flowByResistor[$0.id] ?? 0]
+            }
+            root["transistorFlows"] = network.transistors.map {
+                ["label": $0.label, "q": r.flowByTransistor[$0.id] ?? 0]
+            }
+        }
+        printJSON(root)
+        return
+    }
+
+    print(converged ? "settled in \(steps) steps"
+                    : "did NOT settle (\(steps)-step cap) — budget below is a snapshot")
+    print("channel model: \(r.subdivided ? "subdivided (per-span flows real)" : "lumped (channelR=0)")")
+    if let railP = r.railPressure {
+        let pct = r.pumpFreeFlowMax > 0 ? Int((r.utilization * 100).rounded()) : 0
+        print(String(format: "pump: Q=%.4f / ceiling %.4f  (%d%%)   rail P=%.4f  %@",
+                     r.pumpThroughput, r.pumpFreeFlowMax, pct, railP, bar(railP)))
+    } else {
+        print("pump: none (no vacuum source and no input held at Vac)")
+    }
+    if abs(r.railDriveSupply) > 1e-6 {
+        print(String(format: "rail also fed by external drive(s): %.4f  →  total supply %.4f",
+                     r.railDriveSupply, r.supplyTotal))
+    }
+    if r.consumers.isEmpty {
+        print("draw into rail: (none)")
+    } else {
+        print("draw into rail, ranked:")
+        for c in r.consumers {
+            let share = r.supplyTotal > 1e-12
+                ? "  (\(Int((c.q / r.supplyTotal * 100).rounded()))%)" : ""
+            print(String(format: "  %@ [%@]  q=%.4f%@  %@",
+                         padRight(c.label.isEmpty ? "<unnamed>" : c.label, 14),
+                         padRight(kindLabel(c.kind), 10), c.q, share, c.detail))
+        }
+        let sum = r.consumers.reduce(0) { $0 + $1.q }
+        print(String(format: "  Σ draw=%.4f vs supply=%.4f  (gap = transients still charging volumes)",
+                     sum, r.supplyTotal))
+    }
+    if !r.externalDrives.isEmpty {
+        print("external drives (positive q = pulling air out of the board):")
+        for d in r.externalDrives {
+            print(String(format: "  %@ → %@  q=%.4f",
+                         padRight(d.label, 14), d.towardVacuum ? "Vac" : "Atm", d.q))
+        }
+    }
+    if showEdges {
+        print("component through-flows (signed, pin1→pin2 / a→b):")
+        for res in network.resistors {
+            print(String(format: "  %@ q=%+.4f", padRight(res.label, 14),
+                         r.flowByResistor[res.id] ?? 0))
+        }
+        for t in network.transistors {
+            print(String(format: "  %@ q=%+.4f", padRight(t.label, 14),
+                         r.flowByTransistor[t.id] ?? 0))
+        }
+    }
+}
+
 func reportInspect(_ network: PneumaticNetwork, json: Bool) {
     if json {
         let root: [String: Any] = [
@@ -928,6 +1022,16 @@ USAGE:
   vacuum-cli simulate <file.vpcb> [options]
       Run the solver and print probe pressures (0 = vacuum, 1 = atmosphere).
 
+  vacuum-cli flows <file.vpcb> [options]
+      Solve to a settled state, then report the supply budget: pump throughput
+      vs its free-flow ceiling, rail depth, and every path drawing air into
+      the rail, ranked worst-first (a pull-up fighting an open vent path is
+      continuous static draw; one holding an isolated node is just the leak
+      floor). Accepts the same --set / --phase / --param / --steps / --epsilon
+      options as simulate — with --phase the budget describes the final
+      phase's settled state (e.g. a register in hold). --all-nets adds every
+      resistor's and transistor's signed through-flow.
+
   vacuum-cli minimize <file.vpcb> [options]
       Compact a placed-and-routed board and report the area saved.
 
@@ -1208,6 +1312,53 @@ do {
             probeFilter: probeFilter,
             json: json
         )
+
+    case "flows":
+        // Settle first — the budget is only meaningful once transient chamber
+        // charging has died down (the report says so if it hasn't).
+        let settleCap = max(steps, 20000)
+        let finalPressures: [UUID: Double]
+        let finalInputs: [UUID: Double]
+        let converged: Bool
+        let settleSteps: Int
+        if !phaseArgs.isEmpty {
+            let phases = phaseArgs.map { parsePhase($0, defaultMaxSteps: settleCap) }
+            let results = simulateSequence(network: network, params: params,
+                                           phases: phases, epsilon: epsilon)
+            guard let last = results.last else { fail("error: --phase produced no results") }
+            // Rebuild the cumulative (sticky) drive map the sequence ended on,
+            // with the same merge rule `simulateSequence` applies.
+            var cumulative: [(label: String, value: Double)] = []
+            for phase in phases {
+                for s in phase.sets {
+                    if let j = cumulative.firstIndex(where: { $0.label.lowercased() == s.label.lowercased() }) {
+                        cumulative[j] = s
+                    } else {
+                        cumulative.append(s)
+                    }
+                }
+            }
+            finalInputs = resolveInputs(network: network, sets: cumulative).map
+            finalPressures = last.pressures
+            converged = last.converged
+            settleSteps = last.steps
+        } else {
+            let (inputMap, unmatched) = resolveInputs(network: network, sets: sets)
+            if !unmatched.isEmpty {
+                fail("error: no input labelled \(unmatched.map { "'\($0)'" }.joined(separator: ", ")). Run `inspect` to see available labels.")
+            }
+            let r = Validators.simulateToSettle(network: network, params: params,
+                                                inputs: inputMap, maxSteps: settleCap,
+                                                epsilon: epsilon)
+            finalPressures = r.pressures
+            finalInputs = inputMap
+            converged = r.converged
+            settleSteps = r.steps
+        }
+        let flowReport = FlowAnalysis.report(network: network, params: params,
+                                             pressures: finalPressures, inputs: finalInputs)
+        reportFlows(flowReport, steps: settleSteps, converged: converged,
+                    showEdges: showAllNets, network: network, json: json)
 
     case "minimize":
         let auto = Minimizer.Options.make(forComponentCount: doc.physical.placements.count)

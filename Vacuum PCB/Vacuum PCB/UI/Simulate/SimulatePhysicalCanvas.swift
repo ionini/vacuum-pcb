@@ -23,6 +23,9 @@ struct SimulatePhysicalCanvas: View {
     /// channel layer's pressure flow without overlapping strokes from other
     /// depths/plates.
     let visible: LayerVisibility
+    /// Toolbar "Flow" toggle: overlays marching-dot mass-flow animation on
+    /// top of the pressure heatmap (see `FlowOverlayView`).
+    let showFlow: Bool
 
     /// Subpart-flattened doc the simulator solves on. The Physical canvas
     /// renders from this so a subpart's library-internal transistors,
@@ -52,6 +55,18 @@ struct SimulatePhysicalCanvas: View {
                     drawTestPoints(in: &ctx)
                 }
                 .allowsHitTesting(false)
+
+                if showFlow {
+                    FlowOverlayView(
+                        state: state,
+                        flat: flat,
+                        visible: visible,
+                        transform: transform,
+                        channelStroke: max(2.0, document.manufacturing.channelDiameter
+                                                * transform.ptsPerMm * 0.85)
+                    )
+                    .allowsHitTesting(false)
+                }
 
                 Color.clear
                     .contentShape(Rectangle())
@@ -141,11 +156,48 @@ struct SimulatePhysicalCanvas: View {
         ctx.stroke(Path(rect), with: .color(Color.gray), lineWidth: 1.2)
     }
 
+    /// Channels colour by *local* pressure: each channel span (the solver's
+    /// subdivision unit, geometry retained by `ChannelGraph`) interpolates
+    /// linearly between its two solved end pressures — physically exact for a
+    /// uniform channel — so supply-run sag and vent-run gradients are visible.
+    /// When channel resistance is 0 the engine mirrors hub pressure onto every
+    /// sub-node, so the same code degrades to the historical flat per-net
+    /// colouring. Nets whose graph kept no drawable geometry fall back to raw
+    /// route strokes at hub pressure.
     private func drawRoutes(in ctx: inout GraphicsContext) {
         let stroke = max(2.0, document.manufacturing.channelDiameter * transform.ptsPerMm * 0.85)
-        for route in flat.physical.routes {
-            let pressure = state.pressure(net: route.netId)
-            let color = PressureColor.strokeColor(for: pressure)
+        let style = StrokeStyle(lineWidth: stroke, lineCap: .round, lineJoin: .round)
+        let graph = state.network.channelGraph
+        var spanCovered = Set<UUID>()
+
+        for span in graph.spans where span.polyline.count >= 2 {
+            let hub = graph.hubBySubNode[span.node1] ?? span.node1
+            spanCovered.insert(hub)
+            let p1 = state.pressure(net: span.node1)
+            let p2 = state.pressure(net: span.node2)
+            // Arc-length parameterisation; layer-change pairs (via bores)
+            // contribute no length and aren't drawable runs.
+            var cum: [Double] = [0]
+            for k in 1..<span.polyline.count {
+                let a = span.polyline[k - 1], b = span.polyline[k]
+                let d = a.layer == b.layer ? hypot(b.p.x - a.p.x, b.p.y - a.p.y) : 0
+                cum.append(cum[k - 1] + d)
+            }
+            let total = cum[cum.count - 1]
+            for k in 1..<span.polyline.count {
+                let a = span.polyline[k - 1], b = span.polyline[k]
+                guard a.layer == b.layer, visible.contains(a.layer) else { continue }
+                let tMid = total > 0 ? (cum[k - 1] + cum[k]) / (2 * total) : 0.5
+                let color = PressureColor.strokeColor(for: p1 + (p2 - p1) * tMid)
+                var path = Path()
+                path.move(to: transform.toScreen(a.p))
+                path.addLine(to: transform.toScreen(b.p))
+                ctx.stroke(path, with: .color(color), style: style)
+            }
+        }
+
+        for route in flat.physical.routes where !spanCovered.contains(route.netId) {
+            let color = PressureColor.strokeColor(for: state.pressure(net: route.netId))
             for segment in route.segments {
                 guard visible.contains(segment.layer) else { continue }
                 let pts = segment.waypoints.map { transform.toScreen($0.position) }
@@ -153,11 +205,7 @@ struct SimulatePhysicalCanvas: View {
                 var path = Path()
                 path.move(to: pts[0])
                 for p in pts.dropFirst() { path.addLine(to: p) }
-                ctx.stroke(
-                    path,
-                    with: .color(color),
-                    style: StrokeStyle(lineWidth: stroke, lineCap: .round, lineJoin: .round)
-                )
+                ctx.stroke(path, with: .color(color), style: style)
             }
         }
     }
@@ -207,7 +255,31 @@ struct SimulatePhysicalCanvas: View {
             let center = transform.toScreen(placement.position)
             drawBody(in: &ctx, component: component, placement: placement,
                      center: center, pressure: p)
+            if state.highlightedComponentId == component.id {
+                drawHighlight(in: &ctx, component: component, center: center)
+            }
         }
+    }
+
+    /// Accent ring around the component the user picked in the supply-budget
+    /// panel, so a budget row can be traced to its body on the board.
+    private func drawHighlight(in ctx: inout GraphicsContext,
+                               component: Component, center: CGPoint) {
+        let m = document.manufacturing
+        let half: Double
+        switch component.kind {
+        case .transistor:    half = m.dimpleDiameter / 2
+        case .resistor:      half = ManufacturingConstants.resistorFootprintLength / 2
+        case .led:           half = m.ledDimpleDiameter / 2
+        case .connector:
+            let rect = component.footprint(m).exclusionRect
+            half = max(rect.maxX - rect.minX, rect.maxY - rect.minY) / 2
+        default:             half = max(2.0, m.portBoreDiameter * 0.8)
+        }
+        let r = CGFloat(half * transform.ptsPerMm) + 6
+        let rect = CGRect(x: center.x - r, y: center.y - r, width: 2 * r, height: 2 * r)
+        ctx.stroke(Path(ellipseIn: rect), with: .color(.accentColor),
+                   style: StrokeStyle(lineWidth: 2.5))
     }
 
     /// Pressure that defines this component's tint. Mirrors the schematic

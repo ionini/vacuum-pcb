@@ -36,6 +36,9 @@ struct SimulateControlsView: View {
             Divider()
             Text("Simulate")
                 .font(.headline)
+            // Its own leaf view: reads the 20 Hz flow publish, so it must not
+            // be inlined into this body (see the leaf-view note below).
+            SupplyBudgetSection(state: state)
             tuning
             inputs
             probes

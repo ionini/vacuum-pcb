@@ -28,6 +28,10 @@ struct SimulateView: View {
     /// per-layer pills so the user can isolate T0 / B0 / etc. while tracing
     /// pressure flow. Schematic mode ignores this.
     @State private var visible: LayerVisibility = .both
+    /// Physical-view flow overlay: marching dots along every path air is
+    /// moving through (speed ∝ mass flow). On by default — spotting continuous
+    /// supply draw is the overlay's whole point — and remembered per app.
+    @AppStorage("simulateShowFlow") private var showFlow = true
 
     enum ViewMode: Hashable { case schematic, physical }
 
@@ -74,7 +78,7 @@ struct SimulateView: View {
                 SimulateSchematicCanvas(document: document.circuit, state: state)
             case .physical:
                 SimulatePhysicalCanvas(document: document.circuit, state: state,
-                                       visible: visible)
+                                       visible: visible, showFlow: showFlow)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -145,6 +149,15 @@ struct SimulateView: View {
 
         // Layer visibility is only relevant on the physical heatmap.
         if viewMode == .physical {
+            ToolbarItem(placement: .automatic) {
+                Toggle(isOn: $showFlow) {
+                    Label("Flow", systemImage: "wind")
+                }
+                .help("Animate air mass flow: dot speed tracks how much air " +
+                      "each channel and component is passing. A path that " +
+                      "keeps streaming after the board settles is continuous " +
+                      "supply draw.")
+            }
             ToolbarItem(placement: .automatic) {
                 Picker("Plates", selection: $visible) {
                     Text("All").tag(LayerVisibility.both)

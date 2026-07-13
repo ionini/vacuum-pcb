@@ -45,6 +45,17 @@ final class SimulationState {
     /// conductance ramp around the gate threshold.
     var transistorOpenness: [UUID: Double] = [:]
 
+    /// Mass-flow readout reconstructed from the latest published pressures
+    /// (per-edge Q = G·ΔP plus the ranked supply budget). Refreshed on the
+    /// same ~20 Hz publish cadence as `pressureByNet`, so views reading it
+    /// invalidate no more often than the heatmap already does.
+    var flows: FlowReport = .empty
+
+    /// Component the user picked in the supply-budget panel; both Simulate
+    /// canvases draw a highlight ring around it so a budget row can be traced
+    /// to its body on the board. nil = nothing highlighted.
+    var highlightedComponentId: UUID?
+
     /// Whether the integrator advances on each clock tick.
     var isPlaying: Bool = false
 
@@ -93,6 +104,7 @@ final class SimulationState {
         self.network = PneumaticNetwork.build(from: prepared.flattened.document,
                                               netIdRemap: prepared.flattened.netIdRemap)
         self.pressureByNet = initialPressures(for: network)
+        refreshFlows()
     }
 
     /// Flatten the document for the simulator, first laying out an assembly's
@@ -141,6 +153,11 @@ final class SimulationState {
         workingPressures = nil
         workingTransistors = nil
         sincePublish = 0
+        if let highlighted = highlightedComponentId,
+           !flattenedDoc.logic.components.contains(where: { $0.id == highlighted }) {
+            highlightedComponentId = nil
+        }
+        refreshFlows()
     }
 
     /// Snap every pressure back to atmosphere and clear transistor states.
@@ -153,6 +170,7 @@ final class SimulationState {
         workingPressures = nil
         workingTransistors = nil
         sincePublish = 0
+        refreshFlows()
     }
 
     /// Heartbeat for the Simulate clock: advance by the real wall-time elapsed
@@ -232,6 +250,14 @@ final class SimulationState {
         sincePublish = 0
         pressureByNet = localPressures
         transistorOpenness = localTransistors
+        refreshFlows()
+    }
+
+    /// Rebuild the flow readout from the currently published pressures. Rides
+    /// the publish throttle: one O(edges) pass per publish, never per step.
+    private func refreshFlows() {
+        flows = FlowAnalysis.report(network: network, params: params,
+                                    pressures: pressureByNet, inputs: inputPressures)
     }
 
     /// Convenience: pressure of one net, defaulting to atmosphere if the net

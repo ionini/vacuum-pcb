@@ -42,6 +42,16 @@ BIN=.build/debug/vacuum-cli
 
 # Run the solver and read out probe pressures:
 "$BIN" simulate <file.vpcb> [options]
+
+# Supply budget: settle, then rank every path drawing air into the rail —
+# pump throughput vs ceiling, rail depth, per-consumer draw (a pull-up
+# fighting an open vent path = continuous static draw; the rail-sag
+# mechanism). Same --set/--phase/--param options as simulate; with --phase
+# the budget is the final phase's settled state (e.g. a register in hold).
+# --all-nets adds every resistor's/transistor's signed through-flow —
+# spot shoot-through paths and off-band residual through "closed" valves.
+# Σ draw ≈ supply at settle; a big gap = not settled yet.
+"$BIN" flows <file.vpcb> [options]
 ```
 
 ### `simulate` options

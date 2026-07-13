@@ -76,6 +76,7 @@ private struct SchematicCanvasLayer: View {
         let pressures = state.pressureByNet
         let remap = state.netIdRemap
         let openness = state.transistorOpenness
+        let highlighted = state.highlightedComponentId
 
         return Canvas { ctx, _ in
             // Centre the drawing on the schematic origin so symbols/wires at
@@ -84,7 +85,8 @@ private struct SchematicCanvasLayer: View {
             ctx.translateBy(x: SchematicCanvasBounds.origin, y: SchematicCanvasBounds.origin)
             drawNets(in: ctx, pressures: pressures, remap: remap)
             drawMatings(in: ctx)
-            drawComponents(in: ctx, pressures: pressures, remap: remap, openness: openness)
+            drawComponents(in: ctx, pressures: pressures, remap: remap,
+                           openness: openness, highlighted: highlighted)
         }
         // Oversized, origin-centred frame so negative schematic space is drawn
         // rather than clipped. The `.offset` is render-only.
@@ -156,7 +158,8 @@ private struct SchematicCanvasLayer: View {
         in ctx: GraphicsContext,
         pressures: [UUID: Double],
         remap: [UUID: UUID],
-        openness: [UUID: Double]
+        openness: [UUID: Double],
+        highlighted: UUID?
     ) {
         for component in document.logic.components where component.kind != .screw {
             let pos = document.schematic.position(for: component.id) ?? Point(x: 200, y: 200)
@@ -177,6 +180,12 @@ private struct SchematicCanvasLayer: View {
             let path = symbolPath(component.kind, in: rect)
             ctx.fill(path, with: .color(fill))
             ctx.stroke(path, with: .color(stroke), lineWidth: 1.5)
+            // Supply-budget selection ring (top-level components only — a
+            // subpart-internal consumer has no symbol at this level).
+            if component.id == highlighted {
+                ctx.stroke(Path(roundedRect: rect.insetBy(dx: -6, dy: -6), cornerRadius: 8),
+                           with: .color(.accentColor), style: StrokeStyle(lineWidth: 2.5))
+            }
 
             drawLabel(in: ctx, component: component, center: center,
                       pressure: pressure, openness: openness)
