@@ -145,22 +145,36 @@ struct SimulationParameters: Equatable {
         // manages −0.3 (pumpMaxVacuum 0.7).
         pumpMaxVacuum: 0.4,
         // The pump edge's conductance doubles as the *external supply line*
-        // (it isn't a route, so `channelResistancePerMm` can't see it). 0.09
-        // is fitted so a zero-flag board run lands on the measured rails
-        // (−0.20…−0.25 under 1–2 pull-ups of static draw, READ-toggle wiggle
-        // included). NOTE the open discrepancy: a bare-tube divider measures
-        // the supply path at ≈ 0.13 — the board behaves as if fed through
-        // ~2× that restriction (entry fitting? extra draw?). This stays the
-        // board-fitted value until that gap is resolved. Crank it toward 30
-        // to model an ideal manifold right at the barb.
-        pumpFlowCapacity: 0.09,
+        // (it isn't a route, so `channelResistancePerMm` can't see it). 0.13
+        // is the supply path measured *directly* — the bare-tube divider —
+        // and now stands as the default. The earlier 0.09 board-fit sat ~2×
+        // more restrictive than that direct measurement (the old "supply
+        // gap"); the Jul 13 2026 inverter-board experiment resolved it: the
+        // extra restriction was clamp-dependent *interface leak*, not the
+        // supply path. Evidence — the inlet tee and the on-board rail read
+        // equal (no board-side entry restriction), and pressing the plates
+        // harder lifted the whole rail ~0.1 atm back toward the bare-tube
+        // level. So the supply is modelled at its true (bare-tube) stiffness
+        // and the seal quality lives in `leakConductance`, where it belongs.
+        // A looser/worse-clamped build is modelled by lowering this toward
+        // 0.09 and/or raising `leakConductance`; crank toward 30 for an
+        // ideal manifold right at the barb.
+        pumpFlowCapacity: 0.13,
         // Matches `transistorOnConductance` by design (see its doc): an
         // externally-driven bus pin behaves like one more membrane valve
         // to a rail, and the bench drive arrives through the same kind of
         // socket + tube.
         busDriveConductance: 0.42,
         pumpDroopExponent: -0.14,
-        leakConductance: 0.025,
+        // Fitted (Jul 13 2026) to the pre-registered pinning reading on the
+        // well-clamped single-cell inverter board: INV1 (the inter-stage
+        // node) held at logic-1 measured −0.32 atm, which this value
+        // reproduces (−0.323) at the bare-tube `pumpFlowCapacity` above. The
+        // earlier 0.025 came from the leakier D-latch board and smeared into
+        // the supply fit; separating supply (bare-tube stiffness) from seal
+        // (this) is what let both land on the bench. Raise back toward 0.025+
+        // to model a poorly-clamped board that bleeds its rails.
+        leakConductance: 0.013,
         // Measured directly (Jul 13 2026): 40 mm and 80 mm straight-channel
         // divider coupons independently give 0.0067 and 0.0069/mm with exact
         // R ∝ length scaling — same order as the Poiseuille estimate
