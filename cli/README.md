@@ -239,13 +239,25 @@ a dense board is routable at all.
 ## Gotchas
 
 - A **hard** input toggled to `vac` joins the shared pump manifold and only
-  reaches `pumpMaxVacuum` (default 0.1), not full vacuum — matching the app. If
-  a gate needs deeper vacuum than the rail delivers, it won't switch, and the
-  readout will show it.
+  reaches `pumpMaxVacuum` (default 0.4, the bench pump's measured −0.6 atm
+  baseline), not full vacuum — matching the app. If a gate needs deeper
+  vacuum than the rail delivers, it won't switch, and the readout will show
+  it.
 - Identical probe readings across different `--set` values usually mean the
   drive isn't reaching the gate, or the input can't pull it past
-  `gateThreshold` (default 0.3) — not necessarily a bug. Check topology with
-  `inspect`.
+  `gateThreshold` (default 0.9 ≈ −0.1 atm, bench-calibrated) — not
+  necessarily a bug. Check topology with `inspect`.
+- `channelR` (default 0.006/mm, coupon-measured: 40/80 mm dividers with
+  exact R ∝ length scaling) subdivides routed nets so channels drop
+  pressure under flow — supply-run starvation, bus-leg sag and mid-channel
+  test-point readings are visible by default. The external pump tube is
+  modelled by `flow` (default 0.09, board-fitted; a bare-tube divider
+  measures ≈ 0.13 — open gap), not `channelR` (it isn't a route).
+  `onConductance` (default 0.42, bench-fitted from the readback ladder)
+  makes open transistors realistically restrictive. For the old idealised
+  solve:
+  `--param flow=30 --param channelR=0 --param onConductance=5
+  --param resistance=0.3`.
 - Build: SwiftPM treats any non-Swift file inside a listed source dir as an
   error, so docs/assets under `cli/` must be added to `exclude` in
   `../Package.swift` (that's why this README is listed there).

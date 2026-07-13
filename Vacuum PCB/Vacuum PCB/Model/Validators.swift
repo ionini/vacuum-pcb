@@ -12,7 +12,8 @@ enum Validators {
     // MARK: - Headless simulation core (shared with the CLI's simulate path)
 
     static func buildNetwork(_ doc: CircuitDocument) -> PneumaticNetwork {
-        PneumaticNetwork.build(from: doc.flattenedForSimulation().document)
+        let flat = doc.flattenedForSimulation()
+        return PneumaticNetwork.build(from: flat.document, netIdRemap: flat.netIdRemap)
     }
 
     /// Seed initial net pressures: everything at atmosphere; hard boundaries
@@ -153,7 +154,7 @@ enum Validators {
             }
             let r = simulateToSettle(network: network, params: params, inputs: inputMap, maxSteps: maxSteps, epsilon: epsilon)
             rows.append(SweepRow(
-                bits: bits, probes: observed.map { r.pressures[$0.netId] ?? 1.0 },
+                bits: bits, probes: observed.map { r.pressures[$0.nodeId] ?? 1.0 },
                 converged: r.converged, steps: r.steps
             ))
         }
@@ -193,8 +194,14 @@ enum Validators {
         let allKeys: [(name: String, set: (inout SimulationParameters, Double) -> Void, base: Double)] = [
             ("resistance", { $0.resistorResistancePerMm = $1 }, base.resistorResistancePerMm),
             ("flow", { $0.pumpFlowCapacity = $1 }, base.pumpFlowCapacity),
-            ("gateThreshold", { $0.gateThreshold = $1 }, base.gateThreshold),
+            // The membrane's device quantity is its actuation *depth below
+            // atmosphere* (1 − threshold), so drift is swept in depth space:
+            // ±tol of a 0.9 threshold means 0.88…0.92, not 0.72…1.08 — a
+            // threshold ≥ 1 could never close a gate and would fail every
+            // design at that corner.
+            ("gateDepth", { $0.gateThreshold = 1 - $1 }, 1 - base.gateThreshold),
             ("leak", { $0.leakConductance = $1 }, base.leakConductance),
+            ("channelR", { $0.channelResistancePerMm = $1 }, base.channelResistancePerMm),
             ("internalLeak", { $0.internalLeakConductance = $1 }, base.internalLeakConductance),
         ]
         // ±tol of a zero base is still zero, so a key at 0 (internalLeak by

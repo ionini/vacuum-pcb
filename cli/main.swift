@@ -161,10 +161,11 @@ func applyParamOverride(_ params: inout SimulationParameters, name: String, valu
     case "busdrive", "busdriveconductance": params.busDriveConductance = value
     case "droop", "pumpdroopexponent": params.pumpDroopExponent = value
     case "leak", "leakconductance": params.leakConductance = value
+    case "channelr", "channelresistance", "channelresistancepermm": params.channelResistancePerMm = value
     case "internalleak", "internalleakconductance": params.internalLeakConductance = value
     case "dt", "dtseconds": params.dtSeconds = value
     default:
-        fail("error: unknown --param '\(name)'. Known: resistance, flow, pumpMax, onConductance, offConductance, gateThreshold, gateHysteresis, capacitance, busDrive, droop, leak, internalLeak, dt.")
+        fail("error: unknown --param '\(name)'. Known: resistance, flow, pumpMax, onConductance, offConductance, gateThreshold, gateHysteresis, capacitance, busDrive, droop, leak, channelR, internalLeak, dt.")
     }
 }
 
@@ -200,7 +201,7 @@ func reportSequence(network: PneumaticNetwork, results: [PhaseResult], probeFilt
                 "set": r.sets.map { ["label": $0.label, "value": $0.value] },
                 "steps": r.steps,
                 "converged": r.converged,
-                "probes": probes.map { p in ["label": p.label, "pressure": r.pressures[p.netId] ?? 1.0] },
+                "probes": probes.map { p in ["label": p.label, "pressure": r.pressures[p.nodeId] ?? 1.0] },
             ]
         }]
         printJSON(root)
@@ -212,7 +213,7 @@ func reportSequence(network: PneumaticNetwork, results: [PhaseResult], probeFilt
         let settle = r.converged ? "settled in \(r.steps) steps" : "did NOT settle (\(r.steps) steps cap)"
         print("── phase \(r.index): set \(drive.isEmpty ? "(hold)" : drive)  [\(settle)]")
         for probe in probes {
-            let p = r.pressures[probe.netId] ?? 1.0
+            let p = r.pressures[probe.nodeId] ?? 1.0
             print("    \(probe.label.isEmpty ? "<unnamed>" : probe.label)  [\(probe.kind)]  P=\(fmt(p))  \(bar(p))")
         }
     }
@@ -269,7 +270,7 @@ func reportSimulate(
     if json {
         var root: [String: Any] = ["steps": steps]
         root["probes"] = probes.map { probe -> [String: Any] in
-            ["label": probe.label, "kind": "\(probe.kind)", "pressure": pressures[probe.netId] ?? 1.0]
+            ["label": probe.label, "kind": "\(probe.kind)", "pressure": pressures[probe.nodeId] ?? 1.0]
         }
         if showAllNets {
             root["nets"] = network.nets.map { net -> [String: Any] in
@@ -286,7 +287,7 @@ func reportSimulate(
         print("  (none)")
     }
     for probe in probes {
-        let p = pressures[probe.netId] ?? 1.0
+        let p = pressures[probe.nodeId] ?? 1.0
         print("  \(probe.label.isEmpty ? "<unnamed>" : probe.label)  [\(probe.kind)]  P=\(fmt(p))  \(bar(p))")
     }
     if showAllNets {
@@ -1012,8 +1013,9 @@ SIMULATE OPTIONS:
   --param NAME=VALUE    Override a simulation parameter. Repeatable. Names:
                         resistance, flow, pumpMax, onConductance,
                         offConductance, gateThreshold, gateHysteresis,
-                        capacitance, busDrive, droop, leak, internalLeak, dt.
-                        e.g. --param resistance=0.15 --param flow=30
+                        capacitance, busDrive, droop, leak, channelR,
+                        internalLeak, dt.
+                        e.g. --param pumpMax=0.3 --param channelR=0.004
   --json                Machine-readable output.
 
 MINIMIZE OPTIONS:

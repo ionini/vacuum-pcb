@@ -44,7 +44,7 @@ struct SimulateControlsView: View {
         }
     }
 
-    /// Two sliders we surface for interactive calibration. The defaults
+    /// The sliders we surface for interactive calibration. The defaults
     /// produce sensible behaviour on the canonical inverter, but real
     /// pneumatic devices have wildly varying restrictions, and the gate
     /// "threshold" is the cleanest knob for adjusting how much vacuum the
@@ -66,8 +66,19 @@ struct SimulateControlsView: View {
                       "is half-open. Lower = needs more vacuum on the gate " +
                       "to activate.",
                 value: $state.params.gateThreshold,
-                range: 0.05...0.9,
+                range: 0.05...0.95,
                 format: "%.2f"
+            )
+            tuningSlider(
+                label: "Gate ramp",
+                help: "Half-width of the on/off ramp around the gate " +
+                      "threshold: fully open below threshold − ramp, fully " +
+                      "closed above threshold + ramp. Keep threshold + ramp " +
+                      "below the design's logic-0 pressure, or \"closed\" " +
+                      "gates keep conducting.",
+                value: $state.params.gateHysteresis,
+                range: 0.005...0.2,
+                format: "%.3f"
             )
             tuningSlider(
                 label: "Leak",
@@ -78,6 +89,28 @@ struct SimulateControlsView: View {
                       "sealed.",
                 value: $state.params.leakConductance,
                 range: 0.0...1.0,
+                format: "%.3f"
+            )
+            tuningSlider(
+                label: "On G",
+                help: "Source–drain conductance of a fully-open transistor " +
+                      "(gate at vacuum). Bench-fitted: a real open membrane " +
+                      "is a thin gap under the dimple, barely stronger than " +
+                      "an S resistor. Raise toward 5 for idealised valves.",
+                value: $state.params.transistorOnConductance,
+                range: 0.05...5.0,
+                format: "%.2f"
+            )
+            tuningSlider(
+                label: "Chan R/mm",
+                help: "Flow resistance of routed transport channels, per mm " +
+                      "of polyline. 0 = channels are perfect (a net is one " +
+                      "pressure node). Positive values make long supply " +
+                      "runs, bus legs and vent runs drop pressure under " +
+                      "flow, like the printed board does. Costs solve time " +
+                      "on big boards.",
+                value: $state.params.channelResistancePerMm,
+                range: 0.0...0.5,
                 format: "%.3f"
             )
             tuningSlider(
@@ -120,8 +153,8 @@ struct SimulateControlsView: View {
                       "and drag the source net closer to max vacuum. Lower " +
                       "to model an underpowered pump.",
                 value: $state.params.pumpFlowCapacity,
-                range: 0.5...50.0,
-                format: "%.1f"
+                range: 0.05...50.0,
+                format: "%.2f"
             )
             tuningSlider(
                 label: "Droop",

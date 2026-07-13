@@ -14,15 +14,17 @@ struct ValidatorsMarginsTests {
         let network = Validators.buildNetwork(CircuitDocument.blank())
         var params = SimulationParameters.defaults
 
+        // Bench-calibrated defaults carry five non-zero swept keys
+        // (resistance, flow, gateDepth, leak, channelR) → 2^5 corners.
         let nominal = Validators.margins(network: network, base: params,
                                          tol: 0.2, maxSteps: 50, epsilon: 1e-4, maxCombos: 16)
         #expect(!nominal.keys.contains("internalLeak"))
-        #expect(nominal.corners == 16)
+        #expect(nominal.corners == 32)
 
         params.internalLeakConductance = 0.05
         let withLeak = Validators.margins(network: network, base: params,
                                           tol: 0.2, maxSteps: 50, epsilon: 1e-4, maxCombos: 16)
         #expect(withLeak.keys.contains("internalLeak"))
-        #expect(withLeak.corners == 32)
+        #expect(withLeak.corners == 64)
     }
 }

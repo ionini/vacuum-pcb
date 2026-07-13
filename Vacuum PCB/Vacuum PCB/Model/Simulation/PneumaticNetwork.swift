@@ -31,6 +31,24 @@ struct PneumaticNetwork {
         let gateNet: UUID
         let aNet: UUID
         let bNet: UUID
+        /// Solver nodes for the three pins when channel subdivision is active
+        /// (`SimulationParameters.channelResistancePerMm > 0`); equal to the
+        /// net ids otherwise. See `ChannelGraph`.
+        let gateNode: UUID
+        let aNode: UUID
+        let bNode: UUID
+
+        init(id: UUID, label: String, gateNet: UUID, aNet: UUID, bNet: UUID,
+             gateNode: UUID? = nil, aNode: UUID? = nil, bNode: UUID? = nil) {
+            self.id = id
+            self.label = label
+            self.gateNet = gateNet
+            self.aNet = aNet
+            self.bNet = bNet
+            self.gateNode = gateNode ?? gateNet
+            self.aNode = aNode ?? aNet
+            self.bNode = bNode ?? bNet
+        }
     }
 
     /// Fixed-conductance edge: one resistor between its two pin nets.
@@ -42,6 +60,20 @@ struct PneumaticNetwork {
         /// Effective length of the serpentine path in millimetres. Multiplied
         /// by `SimulationParameters.resistorResistancePerMm` at solve time.
         let pathLengthMm: Double
+        /// Pin attachment nodes under channel subdivision (else the net ids).
+        let node1: UUID
+        let node2: UUID
+
+        init(id: UUID, label: String, net1: UUID, net2: UUID, pathLengthMm: Double,
+             node1: UUID? = nil, node2: UUID? = nil) {
+            self.id = id
+            self.label = label
+            self.net1 = net1
+            self.net2 = net2
+            self.pathLengthMm = pathLengthMm
+            self.node1 = node1 ?? net1
+            self.node2 = node2 ?? net2
+        }
     }
 
     /// Weak net↔net edge between two routed channels that run close together
@@ -62,6 +94,16 @@ struct PneumaticNetwork {
     struct HardBoundary {
         let netId: UUID
         let value: Double
+        /// Pin attachment node under channel subdivision (else the net id) —
+        /// an ATM vent pins only its own bore's node, so the rest of the net
+        /// reaches atmosphere through the vent run's resistance.
+        let nodeId: UUID
+
+        init(netId: UUID, value: Double, nodeId: UUID? = nil) {
+            self.netId = netId
+            self.value = value
+            self.nodeId = nodeId ?? netId
+        }
     }
 
     /// Soft vacuum source: a conductance edge from `netId` to a virtual
@@ -72,6 +114,15 @@ struct PneumaticNetwork {
         let id: UUID            // component id
         let label: String
         let netId: UUID
+        /// Barb attachment node under channel subdivision (else the net id).
+        let nodeId: UUID
+
+        init(id: UUID, label: String, netId: UUID, nodeId: UUID? = nil) {
+            self.id = id
+            self.label = label
+            self.netId = netId
+            self.nodeId = nodeId ?? netId
+        }
     }
 
     /// A pressure probe surfaced in the Simulate sidebar.
@@ -80,6 +131,12 @@ struct PneumaticNetwork {
         let label: String
         let kind: ComponentKind // .port (output), .led, ...
         let netId: UUID
+        /// Solver node this probe reads: its routed attachment vertex (a
+        /// test point's mid-channel tap, a port's bore) when channel
+        /// subdivision is active, else its canonical net id. The engine keeps
+        /// node pressures valid in both modes, so readers should prefer this
+        /// over `netId`.
+        let nodeId: UUID
         /// True for a testing-point probe — a read-only tap the user placed in
         /// the physical view. Behaviourally identical to an output-port probe
         /// (contributes no boundary/edge); only drives a distinct sidebar icon
@@ -87,11 +144,12 @@ struct PneumaticNetwork {
         let isTestPoint: Bool
 
         init(id: UUID, label: String, kind: ComponentKind, netId: UUID,
-             isTestPoint: Bool = false) {
+             nodeId: UUID? = nil, isTestPoint: Bool = false) {
             self.id = id
             self.label = label
             self.kind = kind
             self.netId = netId
+            self.nodeId = nodeId ?? netId
             self.isTestPoint = isTestPoint
         }
     }
@@ -111,12 +169,18 @@ struct PneumaticNetwork {
         /// keeps the old behaviour: it clamps its net to atmosphere or joins
         /// the shared vacuum manifold.
         let soft: Bool
+        /// Pin attachment node under channel subdivision (else the net id) —
+        /// an external drive enters at the connector/port bore and pays the
+        /// channel run from there inward.
+        let nodeId: UUID
 
-        init(id: UUID, label: String, netId: UUID, soft: Bool = false) {
+        init(id: UUID, label: String, netId: UUID, soft: Bool = false,
+             nodeId: UUID? = nil) {
             self.id = id
             self.label = label
             self.netId = netId
             self.soft = soft
+            self.nodeId = nodeId ?? netId
         }
     }
 
@@ -134,6 +198,10 @@ struct PneumaticNetwork {
     /// Channel-to-channel leak paths (see `InterChannelLeak`), computed from the
     /// routed layout; scaled by `SimulationParameters.internalLeakConductance`.
     let interChannelLeaks: [InterChannelLeak]
+    /// Routed-channel subdivision (sub-nodes + finite spans per net). Consulted
+    /// by the engine only when `SimulationParameters.channelResistancePerMm > 0`;
+    /// at the default 0 the solve is the historical one-node-per-net system.
+    let channelGraph: ChannelGraph
 
     /// Deterministic per-pin UUID for a connector pin. The SimulationState
     /// reuses Input/Probe ids as the key in its toggle-state dictionary —
@@ -169,8 +237,18 @@ struct PneumaticNetwork {
     /// doc to be a primitive and every net to be valid.
     /// `SimulationState` does the flattening once per document change and
     /// passes the cached result here so we don't re-flatten per frame.
-    static func build(from doc: CircuitDocument) -> PneumaticNetwork {
+    ///
+    /// `netIdRemap` is the flatten's pre-merge → canonical net map; it
+    /// resolves test-point net references (stored pre-merge) so their probes
+    /// can attach to the right channel vertex.
+    static func build(from doc: CircuitDocument,
+                      netIdRemap: [UUID: UUID] = [:]) -> PneumaticNetwork {
         let pinToNet = pinToNetMap(doc)
+        let channelGraph = ChannelGraph.build(doc: doc, netIdRemap: netIdRemap)
+        /// Solver node for a pin when channel subdivision is active.
+        func node(_ componentId: UUID, _ pinKey: String, net: UUID) -> UUID {
+            channelGraph.nodeByPin[PinRef(componentId: componentId, pinKey: pinKey)] ?? net
+        }
 
         var hardBoundaries: [HardBoundary] = []
         var pumps: [Pump] = []
@@ -187,25 +265,30 @@ struct PneumaticNetwork {
             switch component.kind {
             case .vacuumSource:
                 if let net = netForSinglePin(component) {
-                    pumps.append(Pump(id: component.id, label: component.label, netId: net))
+                    pumps.append(Pump(id: component.id, label: component.label, netId: net,
+                                      nodeId: node(component.id, "p", net: net)))
                 }
             case .atmVent:
                 if let net = netForSinglePin(component) {
-                    hardBoundaries.append(HardBoundary(netId: net, value: 1))
+                    hardBoundaries.append(HardBoundary(netId: net, value: 1,
+                                                       nodeId: node(component.id, "p", net: net)))
                 }
             case .port:
                 guard let net = netForSinglePin(component) else { break }
                 switch component.portDirection {
                 case .input:
-                    inputs.append(Input(id: component.id, label: component.label, netId: net))
+                    inputs.append(Input(id: component.id, label: component.label, netId: net,
+                                        nodeId: node(component.id, "p", net: net)))
                 case .output, .none:
                     probes.append(Probe(id: component.id, label: component.label,
-                                        kind: .port, netId: net))
+                                        kind: .port, netId: net,
+                                        nodeId: node(component.id, "p", net: net)))
                 }
             case .led:
                 if let net = netForSinglePin(component) {
                     probes.append(Probe(id: component.id, label: component.label,
-                                        kind: .led, netId: net))
+                                        kind: .led, netId: net,
+                                        nodeId: node(component.id, "p", net: net)))
                 }
             case .transistor:
                 let g = pinToNet[PinRef(componentId: component.id, pinKey: "gate")]
@@ -214,7 +297,10 @@ struct PneumaticNetwork {
                 if let g, let a, let b {
                     transistors.append(TransistorEdge(
                         id: component.id, label: component.label,
-                        gateNet: g, aNet: a, bNet: b
+                        gateNet: g, aNet: a, bNet: b,
+                        gateNode: node(component.id, "gate", net: g),
+                        aNode: node(component.id, "a", net: a),
+                        bNode: node(component.id, "b", net: b)
                     ))
                 }
             case .resistor:
@@ -225,7 +311,9 @@ struct PneumaticNetwork {
                     resistors.append(ResistorEdge(
                         id: component.id, label: component.label,
                         net1: n1, net2: n2,
-                        pathLengthMm: length
+                        pathLengthMm: length,
+                        node1: node(component.id, "1", net: n1),
+                        node2: node(component.id, "2", net: n2)
                     ))
                 }
             case .subpart, .screw:
@@ -251,17 +339,19 @@ struct PneumaticNetwork {
                     else { continue }
                     let pinId = connectorPinSimulationId(componentId: component.id, pinKey: key)
                     let pinLabel = "\(component.label).\(component.connectorPinName(key))"
+                    let pinNode = node(component.id, key, net: net)
                     switch signal {
                     case .input:
-                        inputs.append(Input(id: pinId, label: pinLabel, netId: net))
+                        inputs.append(Input(id: pinId, label: pinLabel, netId: net,
+                                            nodeId: pinNode))
                     case .output:
                         probes.append(Probe(id: pinId, label: pinLabel,
-                                            kind: .port, netId: net))
+                                            kind: .port, netId: net, nodeId: pinNode))
                     case .bidirectional:
                         probes.append(Probe(id: pinId, label: pinLabel,
-                                            kind: .port, netId: net))
+                                            kind: .port, netId: net, nodeId: pinNode))
                         inputs.append(Input(id: pinId, label: pinLabel,
-                                            netId: net, soft: true))
+                                            netId: net, soft: true, nodeId: pinNode))
                     }
                 }
             }
@@ -273,8 +363,14 @@ struct PneumaticNetwork {
         // stored `netId` is this level's (pre-merge) id, resolved for pressure
         // through the flatten remap by `SimulationState.pressure(probe:)`.
         for tp in doc.physical.testPoints {
+            // Resolve the pre-merge net id here (build time) so the probe's
+            // node works in both engine modes; the mid-channel tap vertex is
+            // registered by ChannelGraph under (testPointId, "tap").
+            let canonical = netIdRemap[tp.netId] ?? tp.netId
             probes.append(Probe(id: tp.id, label: tp.name,
-                                kind: .port, netId: tp.netId, isTestPoint: true))
+                                kind: .port, netId: tp.netId,
+                                nodeId: node(tp.id, "tap", net: canonical),
+                                isTestPoint: true))
         }
 
         let capacitanceByNet = nodeCapacitances(doc: doc)
@@ -288,7 +384,8 @@ struct PneumaticNetwork {
             probes: probes,
             transistors: transistors,
             resistors: resistors,
-            interChannelLeaks: InternalLeakGeometry.leaks(in: doc)
+            interChannelLeaks: InternalLeakGeometry.leaks(in: doc),
+            channelGraph: channelGraph
         )
     }
 

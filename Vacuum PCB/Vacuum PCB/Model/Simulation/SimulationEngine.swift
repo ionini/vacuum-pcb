@@ -23,39 +23,51 @@ enum SimulationEngine {
         inputs: [UUID: Double],
         transistorOpenness: inout [UUID: Double]
     ) {
-        // Anchor table: net id → fixed pressure value. ATM vents and any
-        // input toggled to atmosphere pin their nets at 1.0. Inputs toggled
+        // Routed-channel subdivision: when the user gives channels a per-mm
+        // resistance, every routed net splits into its `ChannelGraph` nodes
+        // and each device attaches at its own bore's vertex. At the default
+        // 0 the graph is ignored and the solve is the historical
+        // one-node-per-net system, bit-for-bit.
+        let graph = network.channelGraph
+        let subdivided = params.channelResistancePerMm > 0 && !graph.isEmpty
+
+        // Anchor table: node id → fixed pressure value. ATM vents and any
+        // input toggled to atmosphere pin their nodes at 1.0. Inputs toggled
         // to vacuum are *not* anchored — they join the shared pump manifold
         // below, so they share the pump's finite Q-vs-P budget rather than
         // acting as perfect infinite sources.
         var anchored: [UUID: Double] = [:]
         for boundary in network.hardBoundaries {
-            anchored[boundary.netId] = boundary.value
+            anchored[subdivided ? boundary.nodeId : boundary.netId] = boundary.value
         }
-        // Only *hard* inputs clamp their net. Soft (bus) inputs are stamped
+        // Only *hard* inputs clamp their node. Soft (bus) inputs are stamped
         // as finite-conductance edges further below so they never pin a net.
         for input in network.inputs where !input.soft {
             if (inputs[input.id] ?? 1.0) >= 0.5 {
-                anchored[input.netId] = 1.0
+                anchored[subdivided ? input.nodeId : input.netId] = 1.0
             }
         }
 
-        // Manifold-tapped nets: every `vacuumSource` plus every input the
+        // Manifold-tapped nodes: every `vacuumSource` plus every input the
         // user has toggled to Vac. In real hardware these all hang off one
         // physical vacuum line, so they share a single Q-vs-P curve. We
         // tie them together with a stiff conductance below and stamp a
         // single pump edge on a canonical member.
         var manifoldNets = Set<UUID>()
-        for pump in network.pumps { manifoldNets.insert(pump.netId) }
+        for pump in network.pumps {
+            manifoldNets.insert(subdivided ? pump.nodeId : pump.netId)
+        }
         for input in network.inputs where !input.soft && (inputs[input.id] ?? 1.0) < 0.5 {
-            manifoldNets.insert(input.netId)
+            manifoldNets.insert(subdivided ? input.nodeId : input.netId)
         }
 
-        // Build free-net index. Pinned nets get pinned directly in
-        // `pressures`; only free nets become unknowns.
+        // Build free-node index. Pinned nodes get pinned directly in
+        // `pressures`; only free nodes become unknowns. Sub-nodes join the
+        // system only when subdivision is active.
         var freeIndex: [UUID: Int] = [:]
         var freeIds: [UUID] = []
-        for net in network.nets {
+        let solverNets: [Net] = subdivided ? network.nets + graph.subNodes : network.nets
+        for net in solverNets {
             if anchored[net.id] == nil {
                 freeIndex[net.id] = freeIds.count
                 freeIds.append(net.id)
@@ -88,7 +100,9 @@ enum SimulationEngine {
 
             // 1. Capacitance + previous-state RHS.
             for (idx, netId) in freeIds.enumerated() {
-                let c = network.capacitanceByNet[netId] ?? params.nodeBaseCapacitance
+                let c = subdivided
+                    ? (graph.capacitanceByNode[netId] ?? params.nodeBaseCapacitance)
+                    : (network.capacitanceByNet[netId] ?? params.nodeBaseCapacitance)
                 let cOverDt = c / dt
                 y[idx * n + idx] += cOverDt
                 rhs[idx] += cOverDt * (pressures[netId] ?? 1.0)
@@ -99,7 +113,25 @@ enum SimulationEngine {
                 let length = max(0.1, r.pathLengthMm)
                 let g = 1.0 / (length * params.resistorResistancePerMm)
                 stamp(&y, &rhs, n: n, freeIndex: freeIndex, anchored: anchored,
-                      net1: r.net1, net2: r.net2, g: g)
+                      net1: subdivided ? r.node1 : r.net1,
+                      net2: subdivided ? r.node2 : r.net2, g: g)
+            }
+
+            // 2b. Channel spans. Only when the user models channel resistance:
+            // each routed run between two sub-nodes conducts inversely to its
+            // length. Zero-length spans are stiff ties (island bridges, via
+            // bores); every span's conductance is capped at the same
+            // stiffness the pump manifold uses, so tiny spans and small
+            // channelR values can't blow up the matrix conditioning (which
+            // shows up as pressures drifting an ulp past the 0…1 range).
+            if subdivided {
+                let tieG = max(params.transistorOnConductance * 200, 1000)
+                for span in graph.spans {
+                    let g = span.lengthMm <= 0 ? tieG
+                        : min(1.0 / (span.lengthMm * params.channelResistancePerMm), tieG)
+                    stamp(&y, &rhs, n: n, freeIndex: freeIndex, anchored: anchored,
+                          net1: span.node1, net2: span.node2, g: g)
+                }
             }
 
             // 3. Shared pump. Every manifold-tapped net (VAC component or
@@ -108,7 +140,7 @@ enum SimulationEngine {
             // to a canonical one with a stiff edge — they collapse to one
             // node in the matrix — then stamp a single pump edge from the
             // canonical net to the virtual `pumpMaxVacuum` anchor.
-            let manifoldFreeOrdered: [UUID] = network.nets.compactMap {
+            let manifoldFreeOrdered: [UUID] = solverNets.compactMap {
                 manifoldNets.contains($0.id) && freeIndex[$0.id] != nil ? $0.id : nil
             }
             if let canonical = manifoldFreeOrdered.first {
@@ -131,11 +163,13 @@ enum SimulationEngine {
             // 4. Transistor edges. Conductance depends on gate net pressure
             // (whatever was last solved / anchored).
             for t in network.transistors {
-                let gatePressure = anchored[t.gateNet] ?? pressures[t.gateNet] ?? 1.0
+                let gateNode = subdivided ? t.gateNode : t.gateNet
+                let gatePressure = anchored[gateNode] ?? pressures[gateNode] ?? 1.0
                 let g = params.conductance(forGatePressure: gatePressure)
                 transistorOpenness[t.id] = openness(forGatePressure: gatePressure, params: params)
                 stamp(&y, &rhs, n: n, freeIndex: freeIndex, anchored: anchored,
-                      net1: t.aNet, net2: t.bNet, g: g)
+                      net1: subdivided ? t.aNode : t.aNet,
+                      net2: subdivided ? t.bNode : t.bNet, g: g)
             }
 
             // 4b. Soft (bus) input drives. A bidirectional connector pin the
@@ -149,7 +183,7 @@ enum SimulationEngine {
             // it isn't in `freeIndex` and the soft drive is correctly ignored.
             for input in network.inputs where input.soft {
                 guard let raw = inputs[input.id], !raw.isNaN else { continue }
-                guard let idx = freeIndex[input.netId] else { continue }
+                guard let idx = freeIndex[subdivided ? input.nodeId : input.netId] else { continue }
                 let target = raw < 0.5 ? params.pumpMaxVacuum : 1.0
                 let g = params.busDriveConductance
                 y[idx * n + idx] += g
@@ -166,9 +200,21 @@ enum SimulationEngine {
             // a sealed system reproduces the historical behaviour bit-for-bit.
             if params.leakConductance > 0 {
                 let g = params.leakConductance
-                for idx in 0..<n {
-                    y[idx * n + idx] += g
-                    rhs[idx] += g * 1.0  // atmosphere
+                if subdivided {
+                    // A subdivided net carries the same total leak as its
+                    // single-node form, split across its nodes in proportion
+                    // to each node's share of the net's volume — so turning
+                    // channel resistance on doesn't multiply the board's leak.
+                    for (idx, nodeId) in freeIds.enumerated() {
+                        let share = graph.leakShareByNode[nodeId] ?? 1.0
+                        y[idx * n + idx] += g * share
+                        rhs[idx] += g * share * 1.0  // atmosphere
+                    }
+                } else {
+                    for idx in 0..<n {
+                        y[idx * n + idx] += g
+                        rhs[idx] += g * 1.0  // atmosphere
+                    }
                 }
             }
 
@@ -187,10 +233,25 @@ enum SimulationEngine {
             }
 
             // 5. Solve. Dense Gaussian elimination — N is small (number of
-            // free nets, typically <30 for hobby designs).
+            // free nets, typically <30 for hobby designs; channel subdivision
+            // grows it by the routed vertex count).
             solve(matrix: &y, rhs: &rhs, n: n, into: &solution)
             for (idx, netId) in freeIds.enumerated() {
-                pressures[netId] = solution[idx]
+                // Physical range is 0…1 (perfect vacuum … atmosphere); every
+                // anchor and source lives inside it, so anything outside is
+                // elimination round-off. Clamp here so numeric dust never
+                // reaches the UI (SwiftUI's ProgressView warns on 1 + 1e-9)
+                // or compounds through the C/dt memory term.
+                pressures[netId] = min(1.0, max(0.0, solution[idx]))
+            }
+        }
+
+        // Keep node-addressed readers (test-point probes, port bores) valid
+        // when subdivision is off: every sub-node mirrors its hub. Skipped
+        // while subdivided — the solve writes real per-node values then.
+        if !subdivided {
+            for (sub, hub) in graph.hubBySubNode {
+                pressures[sub] = pressures[hub] ?? 1.0
             }
         }
     }

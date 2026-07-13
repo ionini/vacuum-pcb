@@ -22,12 +22,15 @@ user. (It cannot validate *visual* things — layout/rendering still need eyes.)
 From the repo root:
 
 ```sh
-swift build
+swift build -c release
 ```
 
-The binary lands at `.build/debug/vacuum-cli`. Rebuild after any change to the
-model or simulation code. `swift build` is independent of the Xcode project and
-of `xcodebuild` — it links Euclid as a local SwiftPM package.
+The binary lands at `.build/release/vacuum-cli`. Rebuild after any change to
+the model or simulation code. `swift build` is independent of the Xcode project
+and of `xcodebuild` — it links Euclid as a local SwiftPM package. Release
+matters now: the default `channelR` subdivides routed nets, which grows the
+solve enough that a debug binary is ~20× slower on settle runs (a debug build
+at `.build/debug/vacuum-cli` still works for quick checks).
 
 ## Commands
 
@@ -61,18 +64,33 @@ BIN=.build/debug/vacuum-cli
 - `--param NAME=VALUE`  Override a `SimulationParameters` field. Repeatable.
   Names: `resistance`, `flow`, `pumpMax`, `onConductance`, `offConductance`,
   `gateThreshold`, `gateHysteresis`, `capacitance`, `busDrive`, `droop`,
-  `leak`, `dt`.
-  Higher `resistance` (e.g. 0.15) + `flow` (e.g. 30) sharpen logic levels on
-  bus/latch designs. `leak` (default 0 = perfectly sealed) bleeds every net
-  toward atmosphere; raise it to make held vacuum decay on a visible timescale
-  (e.g. a register cell losing its bit unless refreshed).
+  `leak`, `channelR`, `internalLeak`, `dt`.
+  Defaults are bench-calibrated (Jul 2026): `gateThreshold` 0.9 (membranes
+  actuate at ≈ −0.1 atm), `gateHysteresis` 0.03, `onConductance` 0.42 (an
+  open membrane is barely stronger than an S resistor — fitted from the
+  bus-readback ladder's 0.05 atm leg drop; `busDrive` matches it),
+  `resistance` 0.45, `pumpMax` 0.4 (the bench pump measured directly:
+  −0.6 atm; the weaker bench pump is 0.7), `flow` 0.09 (the pump edge
+  doubles as the *external supply line* — the bench tube; it isn't a
+  route, so `channelR` can't see it; board-fitted — a bare-tube divider
+  measures ≈ 0.13, the gap is an open question), `channelR` 0.006
+  (coupon-measured: 40/80 mm dividers, exact R ∝ length; routed nets
+  subdivide into channel nodes: supply
+  runs, bus legs and vent runs drop pressure under flow, and probes/test
+  points read their actual tap position), `leak` 0.025. So a default run
+  reproduces the bench: rails sag under static pull-up draw, recover as the
+  draw changes, and logic margins are as thin as the printed board's.
+  For the old idealised digital behaviour use
+  `--param flow=30 --param channelR=0 --param onConductance=5
+  --param resistance=0.3` (ideal manifold, lossless channels, perfect
+  valves); `--param leak=0` seals the board perfectly.
 - `--epsilon N`  Settle threshold for `--phase` (default 1e-5).
 - `--json`      Machine-readable output — parse this when asserting exact values.
 
 Example — validate a 4-bit register stores and reads back:
 
 ```sh
-"$BIN" simulate reg.vpcb --param resistance=0.15 --param flow=30 \
+"$BIN" simulate reg.vpcb \
   --phase "WRITE=atm,READ=vac,B0=vac,B1=vac,B2=vac,B3=vac" \  # write 1111
   --phase "READ=atm,B0=atm,B1=atm,B2=atm,B3=atm" \            # release/hold
   --phase "WRITE=vac"                                          # read back -> LEDs
@@ -97,10 +115,13 @@ the design — read the topology, don't assume.
 ## Gotchas
 
 - A **hard** input toggled to `vac` joins the shared pump manifold and only
-  reaches `pumpMaxVacuum` (default 0.1), not full vacuum — matching the app. If
-  a gate needs deeper vacuum than the rail delivers, it won't switch.
+  reaches `pumpMaxVacuum` (default 0.4, the measured bench pump), not full
+  vacuum — matching the app. If a gate needs deeper vacuum than the rail
+  delivers, it won't switch.
 - A transistor opens only when its gate net drops below `gateThreshold`
-  (default 0.3); a net partially pulled but still above that won't toggle it.
+  (default 0.9, i.e. −0.1 atm); fully closed needs the net back above
+  threshold + hysteresis (0.93), so a logic-0 that sags below that leaves
+  the gate partially conducting.
 - Identical probe readings across different `--set` values usually mean either
   the drive isn't reaching the gate (verify with `inspect`/topology) or the
   input can't pull the gate past threshold — not necessarily a bug.

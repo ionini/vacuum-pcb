@@ -87,6 +87,18 @@ struct SimulationParameters: Equatable {
     /// pump without overwhelming it.
     var leakConductance: Double
 
+    /// Flow resistance of routed transport channels, per millimetre of
+    /// polyline. At 0 the historical model applies — a net is one
+    /// zero-resistance node and a channel is pure volume. Positive values
+    /// subdivide each routed net into its `ChannelGraph` and every span
+    /// conducts at `1/(length × this)`, so long supply runs, bus legs,
+    /// connector hops and vent runs drop pressure under flow — the bench
+    /// reality a lumped net can't show. Transport bores (≈1.5 mm) are far
+    /// wider than resistor serpentines (≈0.7 mm), so calibrated values sit
+    /// well below `resistorResistancePerMm`. Costs solver size; big boards
+    /// can set 0 for the fast idealised solve.
+    var channelResistancePerMm: Double
+
     /// Channel-to-channel leak scale (net→net, vs `leakConductance` which is
     /// net→atmosphere). Models an imperfectly-printed plate where neighbouring
     /// channels bleed into each other through the thin wall between them — same
@@ -96,38 +108,66 @@ struct SimulationParameters: Equatable {
     /// board leaks more than a loose one at the same setting. 0 = sealed.
     var internalLeakConductance: Double
 
-    // Defaults are sized for crisp digital-style swings on the canonical
-    // NMOS inverter while still letting an unloaded net equalize back to
-    // atmosphere in a couple of seconds. We want G_off ≪ G_resistor ≪
-    // G_on. Capacitances are kept low so the visible time constant for a
-    // small resistor (S, 12 mm) is around 1 s; large resistors lag
-    // noticeably more without dragging into uncomfortable territory.
+    // Defaults are calibrated against bench measurements of printed boards
+    // (Jul 2026: D-latch bus-test board, two diaphragm pumps, pressure
+    // sensor on test points and the VAC inlet) rather than idealised digital
+    // swings. We still want G_off ≪ G_resistor ≪ G_on, but the device
+    // numbers follow the hardware:
     //
-    // Gate threshold defaults to 0.3 — the transistor only opens when the
-    // gate is reasonably close to vacuum, so a partially-pulled gate net
-    // doesn't accidentally trigger the switch. Bumping it back up toward
-    // 0.5 from the sidebar slider widens the activation band.
+    // - Gate threshold 0.9: real membranes actuate at ≈ −0.1 atm of gate
+    //   vacuum — far more sensitive than the old 0.3 guess. The ramp
+    //   (hysteresis 0.03) is tight because the silicone snaps rather than
+    //   ramps. Critically, threshold + hysteresis (the fully-closed point,
+    //   0.93) must stay below a NAND's logic-0 output (≈ 0.95 at these
+    //   defaults) or "off" transistors keep conducting and cross-coupled
+    //   pairs collapse — threshold, ramp, R/mm and on-conductance moved
+    //   together for that reason.
+    // - On-conductance 0.42: fitted from the bus-readback ladder (rail −0.25,
+    //   D0 −0.20 through two pass transistors — the 0.05 atm leg drop pins
+    //   it). A real open membrane is a thin lens-shaped gap under the
+    //   dimple, barely stronger than an S resistor — nothing like the old
+    //   "5.0 ≈ perfect valve" guess.
+    // - R/mm 0.45 rebalances pull-ups against the weaker vent paths so a
+    //   vented logic-0 stays clear of the 0.93 off-point.
     static let defaults = SimulationParameters(
-        resistorResistancePerMm: 0.15,
-        transistorOnConductance: 5.0,
+        resistorResistancePerMm: 0.45,
+        transistorOnConductance: 0.42,
         transistorOffConductance: 0.0005,
-        gateThreshold: 0.3,
-        gateHysteresis: 0.08,
+        gateThreshold: 0.9,
+        gateHysteresis: 0.03,
         nodeBaseCapacitance: 0.10,
         channelCapacitancePerMm: 0.04,
         dtSeconds: 0.01,
         timeScale: 1.0,
-        // Pump defaults are tuned for clean digital-style swings rather than
-        // a specific weak bench pump: a strong deadhead near full vacuum
-        // (P_scaled ≈ 0.1, ~−91 kPa) so a Vac-driven net clears the 0.3 gate
-        // threshold and actually switches a transistor, and a generous free
-        // flow so rails hold their vacuum under load. The user can dial these
-        // back toward a measured curve from the sidebar sliders.
-        pumpMaxVacuum: 0.1,
-        pumpFlowCapacity: 30.0,
-        busDriveConductance: 5.0,
+        // Bench baseline (Jul 13 2026 convention): pump measured directly
+        // with the working plumbing reads −0.6 atm. (An earlier −0.7 reading
+        // likely came from a more direct hookup.) The weaker bench pump only
+        // manages −0.3 (pumpMaxVacuum 0.7).
+        pumpMaxVacuum: 0.4,
+        // The pump edge's conductance doubles as the *external supply line*
+        // (it isn't a route, so `channelResistancePerMm` can't see it). 0.09
+        // is fitted so a zero-flag board run lands on the measured rails
+        // (−0.20…−0.25 under 1–2 pull-ups of static draw, READ-toggle wiggle
+        // included). NOTE the open discrepancy: a bare-tube divider measures
+        // the supply path at ≈ 0.13 — the board behaves as if fed through
+        // ~2× that restriction (entry fitting? extra draw?). This stays the
+        // board-fitted value until that gap is resolved. Crank it toward 30
+        // to model an ideal manifold right at the barb.
+        pumpFlowCapacity: 0.09,
+        // Matches `transistorOnConductance` by design (see its doc): an
+        // externally-driven bus pin behaves like one more membrane valve
+        // to a rail, and the bench drive arrives through the same kind of
+        // socket + tube.
+        busDriveConductance: 0.42,
         pumpDroopExponent: -0.14,
         leakConductance: 0.025,
+        // Measured directly (Jul 13 2026): 40 mm and 80 mm straight-channel
+        // divider coupons independently give 0.0067 and 0.0069/mm with exact
+        // R ∝ length scaling — same order as the Poiseuille estimate
+        // (resistor R/mm × (0.7/1.5)⁴ ≈ 0.014) and as the earlier 0.004
+        // board-behaviour fit. Set to 0 for the fast idealised solve (one
+        // node per net, channels = pure volume).
+        channelResistancePerMm: 0.006,
         internalLeakConductance: 0.0
     )
 

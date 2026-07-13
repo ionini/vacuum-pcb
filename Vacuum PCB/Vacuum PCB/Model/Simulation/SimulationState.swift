@@ -90,7 +90,8 @@ final class SimulationState {
         self.flattenedDoc = prepared.flattened.document
         self.netIdRemap = prepared.flattened.netIdRemap
         self.assemblyBoards = prepared.boards
-        self.network = PneumaticNetwork.build(from: prepared.flattened.document)
+        self.network = PneumaticNetwork.build(from: prepared.flattened.document,
+                                              netIdRemap: prepared.flattened.netIdRemap)
         self.pressureByNet = initialPressures(for: network)
     }
 
@@ -116,7 +117,8 @@ final class SimulationState {
     func rebuild(from document: CircuitDocument) {
         let prepared = Self.prepare(document)
         let flattened = prepared.flattened
-        let next = PneumaticNetwork.build(from: flattened.document)
+        let next = PneumaticNetwork.build(from: flattened.document,
+                                          netIdRemap: flattened.netIdRemap)
         self.flattenedDoc = flattened.document
         self.netIdRemap = flattened.netIdRemap
         self.assemblyBoards = prepared.boards
@@ -246,12 +248,12 @@ final class SimulationState {
         pressure(net: netIdRemap[netId] ?? netId)
     }
 
-    /// Convenience: pressure observed at a component's first fluid pin via
-    /// its net id (used by probe rendering for output ports / LEDs). Test-point
-    /// probes store this level's pre-merge net id, so resolve them through the
-    /// flatten remap (`rawNet`); other probes already store flattened ids.
+    /// Convenience: pressure observed at a probe's solver node. `nodeId` is
+    /// resolved at network build — the canonical net for ordinary probes, the
+    /// mid-channel tap vertex for test points when channel subdivision is
+    /// active — and the engine keeps node pressures valid in both modes.
     func pressure(probe: PneumaticNetwork.Probe) -> Double {
-        probe.isTestPoint ? pressure(rawNet: probe.netId) : pressure(net: probe.netId)
+        pressure(net: probe.nodeId)
     }
 
     private func initialPressures(for network: PneumaticNetwork) -> [UUID: Double] {
