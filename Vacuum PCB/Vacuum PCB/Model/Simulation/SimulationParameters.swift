@@ -122,16 +122,23 @@ struct SimulationParameters: Equatable {
     //   defaults) or "off" transistors keep conducting and cross-coupled
     //   pairs collapse — threshold, ramp, R/mm and on-conductance moved
     //   together for that reason.
-    // - On-conductance 0.42: fitted from the bus-readback ladder (rail −0.25,
-    //   D0 −0.20 through two pass transistors — the 0.05 atm leg drop pins
-    //   it). A real open membrane is a thin lens-shaped gap under the
-    //   dimple, barely stronger than an S resistor — nothing like the old
-    //   "5.0 ≈ perfect valve" guess.
+    // - On-conductance 1.0: measured 2026-07-14 on the single-transistor
+    //   divider rig (Transistor test.vpcb). At full-on the source node sits
+    //   ~0.02 below atm across an L reference (drop 0.40 vs 0.02 ⇒
+    //   G_on ≈ 20·G_L), which the model reproduces at onConductance ≈ 1.0–1.5;
+    //   1.0 sits inside the ±near-atm-noise band. The earlier 0.42 was the
+    //   SHALLOW-gate bus-readback leg-drop (gate ~−0.25); the deep-gate value
+    //   is higher because real membrane conductance rises with gate vacuum. A
+    //   single number can't capture that gate-depth dependence — a
+    //   differential/gate-depth model can (branch claude/differential-valve-
+    //   proto) — but 1.0 is the deep-gate value that lets cross-coupled
+    //   latches hold state (the register now latches both ways) while keeping
+    //   the inverter board matching the bench.
     // - R/mm 0.45 rebalances pull-ups against the weaker vent paths so a
     //   vented logic-0 stays clear of the 0.93 off-point.
     static let defaults = SimulationParameters(
         resistorResistancePerMm: 0.45,
-        transistorOnConductance: 0.42,
+        transistorOnConductance: 1.0,
         transistorOffConductance: 0.0005,
         gateThreshold: 0.9,
         gateHysteresis: 0.03,
