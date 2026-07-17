@@ -658,6 +658,37 @@ func reportExport(dest: String, bodies: [(name: String, mesh: Mesh)], bytes: Int
     }
 }
 
+func reportBambuExport(_ r: BambuExport.WriteResult, dir: URL,
+                       margins: PlateBuilder.ModifierMargins, json: Bool) {
+    let mb = r.modelMesh.bounds, xb = r.modifierMesh.bounds
+    func size(_ b: Bounds) -> [String: Double] { ["x": b.max.x - b.min.x, "y": b.max.y - b.min.y, "z": b.max.z - b.min.z] }
+    if json {
+        printJSON([
+            "dir": dir.path,
+            "units": "millimeters",
+            "modifierMarginXY": margins.xy, "modifierMarginZ": margins.z,
+            "model": ["file": r.modelURL.lastPathComponent, "polygons": r.modelMesh.polygons.count, "size": size(mb)],
+            "modifier": ["file": r.modifierURL.lastPathComponent, "polygons": r.modifierMesh.polygons.count, "size": size(xb)],
+            "manifest": r.manifestURL?.lastPathComponent as Any,
+        ])
+        return
+    }
+    print("wrote Bambu Studio export → \(dir.path)")
+    print(String(format: "  model    %@  polys=%d  bbox=%.1f×%.1f×%.1f mm  (plates laid out for print)",
+                 r.modelURL.lastPathComponent, r.modelMesh.polygons.count,
+                 mb.max.x - mb.min.x, mb.max.y - mb.min.y, mb.max.z - mb.min.z))
+    print(String(format: "  modifier %@  polys=%d  bbox=%.1f×%.1f×%.1f mm  (margins xy=%g z=%g mm)",
+                 r.modifierURL.lastPathComponent, r.modifierMesh.polygons.count,
+                 xb.max.x - xb.min.x, xb.max.y - xb.min.y, xb.max.z - xb.min.z,
+                 margins.xy, margins.z))
+    for aux in r.auxiliaryURLs { print("  body     \(aux.lastPathComponent)  (separate object, no modifier)") }
+    if let manifest = r.manifestURL { print("  manifest \(manifest.lastPathComponent)") }
+    if r.modifierMesh.polygons.isEmpty {
+        print("⚠ the modifier is empty — this board has no print-critical pneumatic features to envelope")
+    }
+    print("Next: select \(r.modelURL.lastPathComponent) + \(r.modifierURL.lastPathComponent) in Bambu Studio, load as ONE object, set the _modifier part to Modifier — no Split needed.")
+}
+
 func reportSweep(_ sw: Validators.SweepResult, json: Bool) {
     if json {
         printJSON([
@@ -1078,6 +1109,23 @@ USAGE:
       and watertightness; exits non-zero (file still written) if any solid is
       not watertight, since a slicer would reject it.
 
+  vacuum-cli export <file.vpcb> --bambu [--out DIR] [--modifier-xy MM]
+                    [--modifier-z MM] [--no-manifest] [--json]
+      "Export for Bambu Studio": write two aligned STLs — <base>_model.stl
+      (top + bottom plate laid out side by side ON THE BED, bottom plate
+      pre-flipped to print orientation) and <base>_modifier.stl (a
+      print-critical modifier envelope grown around the channels, valve
+      chambers, vias and their surrounding walls/roofs/floors, each plate's
+      shells carrying that plate's layout transform). Select the two together
+      in Bambu Studio, load as one multipart object, switch <base>_modifier to
+      a Modifier, slice — no "Split objects" step (splitting would detach the
+      modifier). The stencil / mold frame (no pneumatics) are written as
+      separate <base>_stencil.stl / <base>_mold.stl objects when present.
+      Also writes <base>_bambu_export.json (unless --no-manifest). --out is
+      the destination directory (default: a <base>_bambu folder beside the
+      input). --modifier-xy / --modifier-z set the wall / roof-floor margins
+      in mm (defaults 1.0 / 0.6).
+
   vacuum-cli sweep <file.vpcb> [--max-combos N] [--param ...] [--json]
       Drive every 0/1 combination of the inputs, solve each to convergence,
       assert they all settle (catches oscillation / metastability), and print
@@ -1189,6 +1237,9 @@ var maxCombos = 4096
 var holds: [String: Double] = [:]
 var flattenFull = false
 var volumesMode = false
+var bambu = false
+var writeManifest = true
+var modifierMargins = PlateBuilder.ModifierMargins.defaults
 
 var i = 0
 while i < args.count {
@@ -1198,6 +1249,16 @@ while i < args.count {
     case "--all-nets": showAllNets = true
     case "--flatten", "--full": flattenFull = true
     case "--volumes": volumesMode = true
+    case "--bambu": bambu = true
+    case "--no-manifest": writeManifest = false
+    case "--modifier-xy":
+        i += 1
+        guard i < args.count, let v = Double(args[i]), v >= 0 else { fail("error: --modifier-xy needs a non-negative number (mm)") }
+        modifierMargins.xy = v
+    case "--modifier-z":
+        i += 1
+        guard i < args.count, let v = Double(args[i]), v >= 0 else { fail("error: --modifier-z needs a non-negative number (mm)") }
+        modifierMargins.z = v
     case "--steps":
         i += 1
         guard i < args.count, let n = Int(args[i]) else { fail("error: --steps needs an integer") }
@@ -1427,6 +1488,27 @@ do {
         if !r.pass { exit(1) }
 
     case "export":
+        if bambu {
+            // Two aligned STLs (+ optional manifest) for Bambu Studio: the
+            // printable model and a print-critical modifier envelope around
+            // the channels / valves / vias. Same coordinate space, so they
+            // load as one multipart object.
+            let base = BambuExport.sanitizedBaseName(path)
+            // --out is the destination directory; default to a <base>_bambu
+            // folder next to the source .vpcb.
+            let dir = outPath.map { URL(fileURLWithPath: $0) }
+                ?? URL(fileURLWithPath: path).deletingLastPathComponent()
+                    .appendingPathComponent("\(base)_bambu")
+            let r = try BambuExport.writeDirectory(
+                doc: doc, baseName: base, directory: dir,
+                margins: modifierMargins, includeManifest: writeManifest
+            )
+            reportBambuExport(r, dir: dir, margins: modifierMargins, json: json)
+            // Signal unusable geometry (empty model or modifier) while still
+            // leaving the files on disk for inspection.
+            if r.modelMesh.polygons.isEmpty || r.modifierMesh.polygons.isEmpty { exit(1) }
+            break
+        }
         let bodies = exportBodies(PlateBuilder.build(doc))
         if bodies.isEmpty {
             fail("error: nothing to export — the board produced no printable solids (empty outline?)")

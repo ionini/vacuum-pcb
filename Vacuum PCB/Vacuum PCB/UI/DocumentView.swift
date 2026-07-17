@@ -1,5 +1,6 @@
 import SwiftUI
 import Euclid
+import UniformTypeIdentifiers
 
 struct DocumentView: View {
     @Binding var document: VPCBDocument
@@ -41,6 +42,10 @@ struct DocumentView: View {
     @State private var volumeMeshes: [String: Mesh] = [:]
     @State private var isBuilding = false
     @State private var showExporter = false
+    /// Bambu Studio export: a folder document (model + modifier STLs + manifest)
+    /// prebuilt off-thread and handed to `.fileExporter`.
+    @State private var showBambuExporter = false
+    @State private var bambuExportDocument: BambuExportDocument?
     @State private var buildToken = 0
     /// Bumped whenever the built geometry (plates + volume cavity meshes) is
     /// swapped in, so `Scene3DView` rebuilds its scene nodes only then — not on a
@@ -79,7 +84,9 @@ struct DocumentView: View {
 
     enum ExportAction {
         case saveSTL
+        case exportBambu
         case openInBambuStudio
+        case openInBambuWithModifier
         case openInFlowSimulator
     }
 
@@ -205,6 +212,15 @@ struct DocumentView: View {
             contentType: .stl,
             defaultFilename: stlFilename
         ) { _ in }
+        // "Export for Bambu Studio": a folder holding the model + modifier STLs
+        // (+ manifest). Written as a directory so the two aligned STLs land
+        // side by side, ready to multi-select in Bambu Studio.
+        .fileExporter(
+            isPresented: $showBambuExporter,
+            document: bambuExportDocument,
+            contentType: .folder,
+            defaultFilename: "\(bambuBaseName)_bambu"
+        ) { _ in bambuExportDocument = nil }
         // Pinned library snapshots flow down to every sub-part-resolving view
         // (schematic symbols, physical canvas, expanded subpart) so the UI
         // matches what the CAD pipeline exports rather than reflecting
@@ -614,7 +630,9 @@ struct DocumentView: View {
             flowSimulatorInstalled: flowSimulatorInstalled,
             isAssembly: document.circuit.isAssembly,
             onSaveSTL: { triggerExport(.saveSTL) },
+            onExportBambu: { triggerExport(.exportBambu) },
             onOpenBambu: { triggerExport(.openInBambuStudio) },
+            onOpenBambuWithModifier: { triggerExport(.openInBambuWithModifier) },
             onOpenFlow: { triggerExport(.openInFlowSimulator) }
         )
     }
@@ -631,6 +649,32 @@ struct DocumentView: View {
     private var stlFilename: String {
         let c = document.circuit.logic.components.count
         return c == 0 ? "vacuum-pcb" : "vacuum-pcb-\(c)components"
+    }
+
+    /// Filesystem-safe base for the Bambu export's files (`<base>_model.stl`,
+    /// `<base>_modifier.stl`, …).
+    private var bambuBaseName: String { BambuExport.sanitizedBaseName(stlFilename) }
+
+    /// Builds the Bambu export payload (model + modifier STLs + manifest) off
+    /// the main thread — reusing the already-built preview plates for the
+    /// model — then presents the folder exporter. `triggerExport` has already
+    /// ensured `built` is fresh (rebuilding first if the preview was dirty).
+    private func prepareBambuExport() {
+        guard let built else { return }
+        // Match the snapshot the preview built from, so the modifier lines up
+        // with the plates (test points excluded from both when toggled off).
+        var snapshot = document.circuit
+        if !includeTestPoints { snapshot.physical.testPoints = [] }
+        let base = bambuBaseName
+        isBuilding = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let payload = BambuExport.payload(doc: snapshot, baseName: base, prebuiltModel: built)
+            DispatchQueue.main.async {
+                self.bambuExportDocument = BambuExportDocument(files: payload.files)
+                self.isBuilding = false
+                self.showBambuExporter = true
+            }
+        }
     }
 
     // MARK: - Export actions
@@ -651,9 +695,17 @@ struct DocumentView: View {
         switch action {
         case .saveSTL:
             showExporter = true
+        case .exportBambu:
+            prepareBambuExport()
         case .openInBambuStudio:
             #if canImport(AppKit)
             openInBambuStudio()
+            #else
+            break
+            #endif
+        case .openInBambuWithModifier:
+            #if canImport(AppKit)
+            openInBambuStudio(withModifier: true)
             #else
             break
             #endif
@@ -732,9 +784,13 @@ struct DocumentView: View {
         }
     }
 
-    private func openInBambuStudio() {
+    private func openInBambuStudio(withModifier: Bool = false) {
         guard let built else { return }
         guard let bambuURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.bambuStudioBundleID) else {
+            return
+        }
+        if withModifier {
+            openInBambuStudioWithModifier(bambuURL: bambuURL, built: built)
             return
         }
         // makeWatertight stitches the hairline cracks Euclid's BSP CSG leaves
@@ -760,6 +816,51 @@ struct DocumentView: View {
         NSWorkspace.shared.open([url], withApplicationAt: bambuURL, configuration: config) { _, error in
             if let error {
                 NSLog("vpcb: NSWorkspace.open(Bambu Studio) failed: \(error)")
+            }
+        }
+    }
+
+    /// Builds the model + print-critical modifier (off-thread, reusing the
+    /// already-built plates for the model) into the temp dir and opens *both*
+    /// STLs in Bambu Studio at once — that's what makes Bambu offer to load
+    /// them as a single (multipart) object. The two share PlateBuilder's
+    /// coordinate space, so they stay aligned; the user then switches the
+    /// `_modifier` part to a Modifier. No manifest is written for this path.
+    private func openInBambuStudioWithModifier(bambuURL: URL, built: PlateBuilder.Output) {
+        // Match the preview's snapshot so the modifier lines up with the plates.
+        var snapshot = document.circuit
+        if !includeTestPoints { snapshot.physical.testPoints = [] }
+        let base = bambuBaseName
+        isBuilding = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let payload = BambuExport.payload(doc: snapshot, baseName: base,
+                                              includeManifest: false, prebuiltModel: built)
+            let dir = FileManager.default.temporaryDirectory
+            var urls: [URL] = []
+            do {
+                // Only the model + modifier pair goes to Bambu — handing the
+                // stencil/mold along would fold them into the same multipart
+                // object when the user answers "yes" to the load-together
+                // prompt. They're separate objects; use the folder export
+                // when they're needed.
+                for file in payload.files where payload.pairFilenames.contains(file.name) {
+                    let url = dir.appendingPathComponent(file.name)
+                    try file.data.write(to: url, options: .atomic)
+                    urls.append(url)
+                }
+            } catch {
+                NSLog("vpcb: failed to write STLs for Bambu Studio: \(error)")
+                DispatchQueue.main.async { self.isBuilding = false }
+                return
+            }
+            DispatchQueue.main.async {
+                self.isBuilding = false
+                let config = NSWorkspace.OpenConfiguration()
+                NSWorkspace.shared.open(urls, withApplicationAt: bambuURL, configuration: config) { _, error in
+                    if let error {
+                        NSLog("vpcb: NSWorkspace.open(Bambu Studio) failed: \(error)")
+                    }
+                }
             }
         }
     }
@@ -924,13 +1025,22 @@ struct ExportMenuButton: View {
     /// a tooltip so the user knows why.
     let isAssembly: Bool
     let onSaveSTL: () -> Void
+    let onExportBambu: () -> Void
     let onOpenBambu: () -> Void
+    let onOpenBambuWithModifier: () -> Void
     let onOpenFlow: () -> Void
 
     var body: some View {
         Menu {
             Button("Save STL file…", action: onSaveSTL)
+            Button("Export for Bambu Studio…", action: onExportBambu)
+            Divider()
             Button("Open in Bambu Studio", action: onOpenBambu)
+                .disabled(!bambuStudioInstalled)
+            // Opens model + modifier together so Bambu offers "load as one
+            // object" — remember to switch the _modifier part to a Modifier,
+            // or it prints as solid.
+            Button("Open in Bambu Studio (with Modifier)", action: onOpenBambuWithModifier)
                 .disabled(!bambuStudioInstalled)
             Button("Open in Flow Simulator", action: onOpenFlow)
                 .disabled(!flowSimulatorInstalled)

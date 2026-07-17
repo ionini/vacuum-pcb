@@ -1260,6 +1260,247 @@ enum PlateBuilder {
         return Mesh(polys)
     }
 
+    // MARK: - Bambu Studio print-critical modifier envelope
+
+    /// Growth applied to each print-critical pneumatic feature when building
+    /// the Bambu Studio *modifier* mesh (`buildModifier`), in millimetres.
+    /// Kept in one place so the values are easy to retune after a first
+    /// slicing test.
+    struct ModifierMargins: Equatable, Codable {
+        /// Radial / cross-sectional growth — pushes the envelope out into the
+        /// side walls around channels, vias and valve bodies.
+        var xy: Double
+        /// Vertical growth past a feature's own top/bottom — pushes the
+        /// envelope into the roofs above and floors below the pneumatics.
+        var z: Double
+        init(xy: Double = 1.0, z: Double = 0.6) { self.xy = xy; self.z = z }
+        /// `modifierMarginXY = 1.0`, `modifierMarginZ = 0.6`.
+        static let defaults = ModifierMargins()
+    }
+
+    /// Builds one mesh enveloping every print-critical pneumatic feature —
+    /// routed channels (incl. bends/junctions), resistor serpentines, vias and
+    /// vertical drop bores, transistor valve chambers + sealing pads, edge
+    /// port bores, LED dimples and testing-point taps — each *grown* by
+    /// `margins` so the envelope overlaps the surrounding printed walls, roofs
+    /// and floors rather than sitting inside the empty channel void.
+    ///
+    /// Intended to be loaded into Bambu Studio alongside the model STL and
+    /// switched to a Modifier volume. Regenerated from the same primitives
+    /// `build(_:)` cuts (inflated, and deliberately NOT subtracted from the
+    /// plate), on the same `flattened()` document, in the same world-mm space
+    /// with no export transform — so it lines up 1:1 with `build(_:)`'s plate
+    /// meshes. It is fine for the envelope to extend through empty space:
+    /// Bambu applies modifier settings only where it overlaps printed material.
+    ///
+    /// Primitive shells are concatenated (like `volumeMesh` and the multi-solid
+    /// model STL), not CSG-unioned: overlapping / disconnected closed shells
+    /// are acceptable for a modifier (slicers union them per layer), and
+    /// concatenation keeps the export deterministic and cheap.
+    ///
+    /// `plate` filters the envelope to features carved into one plate — the
+    /// Bambu export lays the two plates out side by side for printing, so each
+    /// plate's modifier shells must travel with their own plate. `nil` keeps
+    /// everything (both plates, in design space). A cross-silicone via belongs
+    /// to *both* plates: its full-span envelope is emitted for each plate it
+    /// passes through (the part poking past a laid-out plate is harmless —
+    /// modifiers only act where they overlap printed material).
+    static func buildModifier(
+        _ doc: CircuitDocument, margins: ModifierMargins = .defaults,
+        plate: Plate? = nil
+    ) -> Mesh {
+        let doc = doc.flattened()
+        let m = doc.manufacturing
+        let outline = doc.physical.boardOutline
+        let topInnerZ = m.siliconeThickness / 2
+        let bottomInnerZ = -m.siliconeThickness / 2
+        let topMidZ = m.midZ(for: Layer(plate: .top, depth: 0))
+        let bottomMidZ = m.midZ(for: Layer(plate: .bottom, depth: 0))
+        let mXY = max(0, margins.xy)
+        let mZ = max(0, margins.z)
+        let channelR = m.channelDiameter / 2
+
+        func innerZ(_ plate: Plate) -> Double { plate == .top ? topInnerZ : bottomInnerZ }
+        // Plate filter: nil = keep everything.
+        func wants(_ p: Plate) -> Bool { plate == nil || plate == p }
+
+        var polys: [Polygon] = []
+
+        // A horizontal round tube (channel / resistor) grown to an anisotropic
+        // capsule: radius `r+mXY` across, half-height `r+mZ` tall. Built as
+        // spheres at each waypoint + cylinders between (channelMesh's shape,
+        // but polygon-concatenated, no CSG) then Z-scaled about the midline so
+        // the roof/floor margin is honoured independently of the wall margin.
+        func tubePolys(_ waypoints: [Point], baseRadius r: Double, midZ: Double) -> [Polygon] {
+            guard !waypoints.isEmpty else { return [] }
+            let xyR = r + mXY
+            guard xyR > 0 else { return [] }
+            var parts: [Polygon] = []
+            for p in waypoints {
+                parts += Mesh.sphere(radius: xyR, slices: 16)
+                    .translated(by: Vector(p.x, p.y, midZ)).polygons
+            }
+            for i in 0..<max(0, waypoints.count - 1) {
+                let a = waypoints[i], b = waypoints[i + 1]
+                let dx = b.x - a.x, dy = b.y - a.y
+                let len = (dx * dx + dy * dy).squareRoot()
+                guard len > 0 else { continue }
+                let theta = atan2(dy, dx)
+                parts += Mesh.cylinder(radius: xyR, height: len, slices: 16)
+                    .rotated(by: Euclid.Rotation.roll(.radians(.pi / 2 - theta)))
+                    .translated(by: Vector((a.x + b.x) / 2, (a.y + b.y) / 2, midZ)).polygons
+            }
+            let sZ = (r + mZ) / xyR
+            guard abs(sZ - 1) > 1e-9 else { return parts }
+            return Mesh(parts)
+                .translated(by: Vector(0, 0, -midZ))
+                .scaled(by: Vector(1, 1, sZ))
+                .translated(by: Vector(0, 0, midZ))
+                .polygons
+        }
+
+        // A vertical bore (via / drop bore / test tap): radius grown by mXY and
+        // the Z span extended by mZ past each end into the roof/floor material.
+        func verticalPolys(at p: Point, zA: Double, zB: Double, baseRadius r: Double) -> [Polygon] {
+            let radius = r + mXY
+            let lo = min(zA, zB) - mZ, hi = max(zA, zB) + mZ
+            let len = hi - lo
+            guard len > 0, radius > 0 else { return [] }
+            return Mesh.cylinder(radius: radius, height: len, slices: 24)
+                .rotated(by: Euclid.Rotation.pitch(.halfPi))
+                .translated(by: Vector(p.x, p.y, (lo + hi) / 2)).polygons
+        }
+
+        let componentsById = Dictionary(uniqueKeysWithValues: doc.logic.components.map { ($0.id, $0) })
+        let pinsPerLayer = collectPinPositions(doc: doc, m: m, componentsById: componentsById)
+        let pinSnapTol = m.dimpleDiameter / 2 + 0.5
+
+        // 1. Channels — same extended waypoint polyline `build` cuts, grown.
+        for route in doc.physical.routes {
+            for segment in route.segments where wants(segment.layer.plate) {
+                let positions = extendedWaypointPositions(
+                    for: segment,
+                    pinsOnLayer: pinsPerLayer[segment.layer]?[route.netId] ?? [],
+                    tolerance: pinSnapTol
+                )
+                polys += tubePolys(positions, baseRadius: channelR, midZ: m.midZ(for: segment.layer))
+            }
+        }
+
+        // 2. Component features.
+        for placement in doc.physical.placements {
+            guard let component = componentsById[placement.componentId] else { continue }
+            switch component.kind {
+            case .transistor:
+                // Gate valve chamber (dome), grown radially. `dimpleMesh` clips
+                // it to its own plate so it can't balloon across the board.
+                if wants(placement.layer) {
+                    var mi = m; mi.dimpleDiameter += 2 * mXY
+                    polys += dimpleMesh(at: placement.position, layer: placement.layer, m: mi,
+                                        topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ).polygons
+                }
+                // Source/drain sealing pads on the opposite plate, grown and
+                // merged across the seal strip (reduced `sep`) so the whole
+                // sealing area is enveloped, not just the two lobes.
+                let padPlate = placement.layer.opposite
+                if wants(padPlate) {
+                    let pads = filletedPadsSolid(
+                        R: m.padsDiameter / 2 + mXY,
+                        sep: max(0.1, m.padsSeparation - 2 * mXY),
+                        fillet: 0
+                    )
+                    .rotated(by: Euclid.Rotation.roll(.radians(placement.rotation.radians)))
+                    .translated(by: Vector(placement.position.x, placement.position.y, innerZ(padPlate)))
+                    polys += pads.polygons
+                }
+                // Vertical drop bores: channel midline → silicone face at each pin.
+                for pin in component.footprint(m).pins {
+                    let pinLayer = placement.resolvedLayer(of: pin, on: component)
+                    guard wants(pinLayer.plate) else { continue }
+                    polys += verticalPolys(at: placement.worldPosition(of: pin),
+                                           zA: m.midZ(for: pinLayer), zB: innerZ(pinLayer.plate),
+                                           baseRadius: channelR)
+                }
+            case .resistor:
+                // One box over the whole serpentine footprint. Inflating the
+                // 0.6 mm serpentine tube and CSG-unioning its ~dozens of
+                // overlapping legs (the first attempt) made Euclid's BSP emit
+                // degenerate faces and bulged past the footprint; the box is
+                // watertight by construction, tighter, and still covers the
+                // thin inter-leg walls — the actual print-critical part.
+                guard wants(placement.layer) else { break }
+                let halfLen = ManufacturingConstants.resistorFootprintLength / 2
+                let halfWid = ManufacturingConstants.resistorFootprintWidth / 2
+                let rMidZ = m.midZ(for: Layer(plate: placement.layer, depth: placement.depth))
+                let boxSize = Vector(
+                    2 * (halfLen + mXY),
+                    2 * (halfWid + mXY),
+                    m.resistorChannelDiameter + 2 * mZ
+                )
+                polys += Mesh.cube(size: boxSize)
+                    .rotated(by: Euclid.Rotation.roll(.radians(placement.rotation.radians)))
+                    .translated(by: Vector(placement.position.x, placement.position.y, rMidZ))
+                    .polygons
+            case .port, .vacuumSource, .atmVent:
+                guard wants(placement.layer) else { break }
+                var mi = m; mi.portBoreDiameter += 2 * mXY
+                polys += portBoreMesh(placement: placement, outline: outline, m: mi,
+                                      topMidZ: topMidZ, bottomMidZ: bottomMidZ).polygons
+            case .led:
+                if wants(placement.layer) {
+                    var mi = m; mi.ledDimpleDiameter += 2 * mXY
+                    polys += ledDimpleMesh(at: placement.position, layer: placement.layer, m: mi,
+                                           topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ).polygons
+                }
+                for pin in component.footprint(m).pins {
+                    let pinLayer = placement.resolvedLayer(of: pin, on: component)
+                    guard wants(pinLayer.plate) else { continue }
+                    polys += verticalPolys(at: placement.worldPosition(of: pin),
+                                           zA: m.midZ(for: pinLayer), zB: innerZ(pinLayer.plate),
+                                           baseRadius: channelR)
+                }
+            case .subpart, .screw, .connector:
+                // Subparts are already flattened away above; screws and
+                // connectors are structural, not print-critical pneumatics.
+                break
+            }
+        }
+
+        // 3. Vias — vertical passages spanning the twin layers, grown. Same
+        // XY-dedup + ≥2-layer rule `build` uses.
+        struct ViaGroup { var position: Point; var layers: Set<Layer> }
+        var viaGroups: [ViaGroup] = []
+        for route in doc.physical.routes {
+            for segment in route.segments {
+                for wp in segment.waypoints where wp.kind == .via {
+                    if let idx = viaGroups.firstIndex(where: { approxEqualXY($0.position, wp.position) }) {
+                        viaGroups[idx].layers.insert(segment.layer)
+                    } else {
+                        viaGroups.append(ViaGroup(position: wp.position, layers: [segment.layer]))
+                    }
+                }
+            }
+        }
+        for group in viaGroups where group.layers.count >= 2
+            && group.layers.contains(where: { wants($0.plate) }) {
+            let zs = group.layers.map { m.midZ(for: $0) }
+            polys += verticalPolys(at: group.position, zA: zs.min()!, zB: zs.max()!, baseRadius: channelR)
+        }
+
+        // 4. Testing points — vertical taps from a tapped channel out to the
+        // outer face, grown radially + extended.
+        for tp in doc.physical.testPoints where wants(tp.plate) {
+            guard let world = doc.physical.testPointWorld(tp) else { continue }
+            let midZ = m.midZ(for: Layer(plate: tp.plate, depth: tp.depth))
+            let outerZ = tp.plate == .top
+                ? topInnerZ + m.plateThickness(forLayerCount: doc.physical.topLayers)
+                : bottomInnerZ - m.plateThickness(forLayerCount: doc.physical.bottomLayers)
+            polys += verticalPolys(at: world, zA: midZ, zB: outerZ, baseRadius: channelR)
+        }
+
+        return Mesh(polys)
+    }
+
     /// Flat-floored box for one channel segment, occupying the lower half of the
     /// bore (from the bore floor up to the midline). Same Y-aligned-then-rolled
     /// convention as the segment cylinders so it lands exactly along the segment.
