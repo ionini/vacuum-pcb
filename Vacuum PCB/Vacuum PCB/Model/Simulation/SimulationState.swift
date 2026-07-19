@@ -110,6 +110,23 @@ final class SimulationState {
     /// clock leaked an observation-tracking node every frame).
     @ObservationIgnored private var lastTick: Date?
 
+    /// Serial worker that runs the engine's fixed-`dt` step batches off the
+    /// main thread — same GCD pattern as the validation battery and the 3D
+    /// preview rebuild. Handoff is by value both ways: a batch captures
+    /// snapshots of the network / params / inputs / working dictionaries,
+    /// and hands fresh dictionaries back to the main actor when it's done.
+    @ObservationIgnored private let stepQueue =
+        DispatchQueue(label: "com.ionini.vacuumpcb.simulate-step", qos: .userInitiated)
+
+    /// True while a batch is out on `stepQueue`, so the pump never has two
+    /// batches racing each other (the worker is stateless; ordering lives here).
+    @ObservationIgnored private var stepInFlight = false
+
+    /// Generation stamp for in-flight batches. `reset()` / `rebuild(...)` bump
+    /// it, so a batch that was integrating the *old* network or pre-reset
+    /// pressures is discarded on completion instead of resurrecting them.
+    @ObservationIgnored private var stepEpoch = 0
+
     init(document: CircuitDocument) {
         let prepared = Self.prepare(document)
         self.flattenedDoc = prepared.flattened.document
@@ -164,10 +181,13 @@ final class SimulationState {
         network = next
         networkRevision &+= 1
         _ = existingNetIds  // silence
-        // The integrator restarts from the freshly published pressures.
+        // The integrator restarts from the freshly published pressures; any
+        // batch still out on the step worker was integrating the old network
+        // and gets discarded on completion.
         workingPressures = nil
         workingTransistors = nil
         sincePublish = 0
+        stepEpoch &+= 1
         if let highlighted = highlightedComponentId,
            !flattenedDoc.logic.components.contains(where: { $0.id == highlighted }) {
             highlightedComponentId = nil
@@ -185,6 +205,8 @@ final class SimulationState {
         workingPressures = nil
         workingTransistors = nil
         sincePublish = 0
+        // Discard any in-flight step batch — it started from pre-reset state.
+        stepEpoch &+= 1
         refreshFlows()
     }
 
@@ -201,71 +223,106 @@ final class SimulationState {
         if elapsed > 0 { advance(wallSeconds: elapsed) }
     }
 
-    /// Advance the simulator by `wallSeconds` of real time. Takes as many
-    /// fixed-`dt` steps as fit, leaving any remainder in the accumulator.
+    /// Advance the simulator by `wallSeconds` of real time: bank the scaled
+    /// sim-time and hand the integration to the background step worker.
     ///
-    /// The observable dictionaries are copied to local vars for the step
-    /// loop and written back once at the end — without that, every step
-    /// would publish an `@Observable` change and SwiftUI would invalidate
-    /// every probe, every transistor row, and both canvases up to eight
-    /// times per frame.
+    /// The fixed-`dt` step loop used to run inline here, on the main thread.
+    /// A Time Profiler trace of the flow animation on a channel-subdivided
+    /// board (2026-07-19, `sim.trace`) showed `SimulationEngine.step` owning
+    /// 92% of a fully pegged main thread — physics was starving every frame
+    /// the UI wanted to draw. The steps now run in batches on `stepQueue`;
+    /// the main actor only banks time, hands out batches, and folds results
+    /// back in on the same ~20 Hz publish cadence as before.
     func advance(wallSeconds: Double) {
         guard isPlaying else { return }
-        let scaledSeconds = wallSeconds * max(0, params.timeScale)
-        simAccumulator += scaledSeconds
+        simAccumulator += wallSeconds * max(0, params.timeScale)
+        sincePublish += wallSeconds
+        pumpStepBatch()
+    }
+
+    /// Hand the next fixed-`dt` batch to the step worker, if one is due and
+    /// none is in flight.
+    ///
+    /// One batch is roughly one 60 Hz frame's worth of sim-time at the
+    /// current `timeScale` (we hold `dt` small for per-step accuracy and buy
+    /// speed by taking *more* steps, not bigger ones) — small enough that a
+    /// fresh input toggle or slider change reaches the engine within about a
+    /// frame of sim work, big enough that the queue hop is noise. Banked
+    /// backlog beyond the old 4×-slack ceiling is dropped, the same policy
+    /// as the old inline loop: under sustained overload (or an OS-level
+    /// stall) the sim runs slower than the requested multiple instead of
+    /// snowballing a catch-up burst — and, now, instead of freezing the UI.
+    private func pumpStepBatch() {
+        guard isPlaying, !stepInFlight else { return }
         let dt = max(params.dtSeconds, 1e-6)
         guard simAccumulator >= dt else { return }
-        // Step into non-observable working copies so each fixed step doesn't
-        // publish an `@Observable` change. Seed from the published state the
-        // first time, and whenever `reset()` / `rebuild(...)` cleared them.
-        var localPressures = workingPressures ?? pressureByNet
-        var localTransistors = workingTransistors ?? transistorOpenness
-        // Per-tick fixed-step budget. It scales with `timeScale` so a fast
-        // clock actually advances that much sim-time — we hold `dt` small for
-        // per-step accuracy and buy speed by taking *more* steps, not bigger
-        // ones. The budget is what one 60 Hz frame would need at this speed,
-        // times a 4× slack so ordinary clock jitter is absorbed without
-        // dropping time, and it stays bounded by an absolute ceiling. Hitting
-        // the ceiling drains the backlog so a real stall (e.g. the app paused
-        // by the OS) can't snowball into an unrecoverable catch-up burst — the
-        // sim just runs slower than the requested multiple under that load.
         let nominalFrame = 1.0 / 60.0
         let targetSteps = Int((nominalFrame * max(0, params.timeScale) / dt).rounded(.up))
-        let maxSteps = min(2000, max(8, targetSteps * 4))
-        var steps = 0
-        while simAccumulator >= dt && steps < maxSteps {
-            SimulationEngine.step(
-                network: network, params: params,
-                pressures: &localPressures,
-                inputs: inputPressures,
-                transistorOpenness: &localTransistors
-            )
-            simAccumulator -= dt
-            steps += 1
-        }
-        if steps == maxSteps {
-            // Drop the rest of the backlog instead of catching up forever.
+        let maxBacklog = min(2000, max(8, targetSteps * 4))
+        let batch = min(max(1, targetSteps), Int(simAccumulator / dt))
+        simAccumulator -= Double(batch) * dt
+        if simAccumulator > Double(maxBacklog) * dt {
             simAccumulator = 0
         }
-        // Account the sim-time we actually integrated this frame so the test
-        // runner's sim-time waits track real integration progress (and pause
-        // when the sim is paused / starved).
-        elapsedSimSeconds += Double(steps) * dt
-        workingPressures = localPressures
-        workingTransistors = localTransistors
 
-        // Throttle the publish to SwiftUI. Reassigning these two observable
-        // dictionaries is the single most expensive thing the simulator does —
-        // it re-renders the schematic canvas and re-evaluates every live row in
-        // the inspector sidebar. At the clock's 60 Hz that pegged the main
-        // thread; ~20 Hz is visually smooth for a heatmap and cuts that work
-        // roughly 3×.
-        sincePublish += wallSeconds
-        guard sincePublish >= publishInterval else { return }
-        sincePublish = 0
-        pressureByNet = localPressures
-        transistorOpenness = localTransistors
-        refreshFlows()
+        stepInFlight = true
+        let epoch = stepEpoch
+        let net = network
+        let prm = params
+        let inp = inputPressures
+        // Seed from the working copies (published state the first time, and
+        // whenever `reset()` / `rebuild(...)` cleared them) — the worker owns
+        // its own value copies for the duration of the batch.
+        let seedPressures = workingPressures ?? pressureByNet
+        let seedTransistors = workingTransistors ?? transistorOpenness
+        stepQueue.async { [weak self] in
+            var pressures = seedPressures
+            var transistors = seedTransistors
+            for _ in 0..<batch {
+                SimulationEngine.step(
+                    network: net, params: prm,
+                    pressures: &pressures,
+                    inputs: inp,
+                    transistorOpenness: &transistors
+                )
+            }
+            DispatchQueue.main.async {
+                self?.completeStepBatch(epoch: epoch, steps: batch, dt: dt,
+                                        pressures: pressures, transistors: transistors)
+            }
+        }
+    }
+
+    /// Fold a finished batch back into main-actor state, publish on the
+    /// throttled cadence, and chain the next batch if sim-time is still
+    /// banked (so a heavy board keeps integrating flat-out without waiting
+    /// for the next clock tick). A batch that raced a `reset()` /
+    /// `rebuild(...)` — epoch mismatch — is discarded: it was integrating a
+    /// network or state that no longer exists.
+    private func completeStepBatch(
+        epoch: Int, steps: Int, dt: Double,
+        pressures: [UUID: Double], transistors: [UUID: Double]
+    ) {
+        stepInFlight = false
+        guard epoch == stepEpoch else { return }
+        workingPressures = pressures
+        workingTransistors = transistors
+        // Account the sim-time actually integrated so the test runner's
+        // sim-time waits track real progress (and stall when the sim is
+        // paused / starved).
+        elapsedSimSeconds += Double(steps) * dt
+
+        // Throttle the publish to SwiftUI. Reassigning the two observable
+        // dictionaries re-renders the schematic canvas and re-evaluates every
+        // live row in the inspector sidebar — ~20 Hz is visually smooth for a
+        // heatmap and keeps that cost bounded.
+        if sincePublish >= publishInterval {
+            sincePublish = 0
+            pressureByNet = pressures
+            transistorOpenness = transistors
+            refreshFlows()
+        }
+        pumpStepBatch()
     }
 
     /// Rebuild the flow readout from the currently published pressures. Rides

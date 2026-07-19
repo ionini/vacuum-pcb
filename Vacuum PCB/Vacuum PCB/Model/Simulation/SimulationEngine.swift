@@ -95,8 +95,8 @@ enum SimulationEngine {
         // One pass is enough when gate states change slowly. Two gives us a
         // little extra robustness when an input flip causes a cascade.
         for _ in 0..<2 {
-            for i in 0..<(n * n) { y[i] = 0 }
-            for i in 0..<n { rhs[i] = 0 }
+            y.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
+            rhs.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
 
             // 1. Capacitance + previous-state RHS.
             for (idx, netId) in freeIds.enumerated() {
@@ -308,46 +308,63 @@ enum SimulationEngine {
     /// Gaussian elimination with partial pivoting on a row-major flat
     /// matrix. Writes the solution into the caller-provided buffer to
     /// avoid an allocation on every step.
+    ///
+    /// The loops run on raw buffer pointers: at thousands of solves per
+    /// second the checked `Array` subscript's bounds test plus COW
+    /// uniqueness probe were the largest single cost in the 2026-07-19
+    /// flow-animation trace (~30% of the pegged main thread, all inside
+    /// this O(n³) kernel). The arithmetic and its order are unchanged, so
+    /// results stay bit-identical to the checked version.
     private static func solve(matrix: inout [Double], rhs: inout [Double], n: Int, into x: inout [Double]) {
         guard n > 0 else { return }
-        for k in 0..<n {
-            // Partial pivot — find the row with the largest |matrix[r][k]|
-            // and swap rows k and maxRow so the pivot is well-conditioned.
-            var maxRow = k
-            var maxVal = abs(matrix[k * n + k])
-            for r in (k + 1)..<n {
-                let v = abs(matrix[r * n + k])
-                if v > maxVal { maxVal = v; maxRow = r }
-            }
-            if maxRow != k {
-                for c in 0..<n {
-                    let tmp = matrix[k * n + c]
-                    matrix[k * n + c] = matrix[maxRow * n + c]
-                    matrix[maxRow * n + c] = tmp
+        matrix.withUnsafeMutableBufferPointer { m in
+        rhs.withUnsafeMutableBufferPointer { b in
+        x.withUnsafeMutableBufferPointer { xb in
+            for k in 0..<n {
+                let kRow = k * n
+                // Partial pivot — find the row with the largest |matrix[r][k]|
+                // and swap rows k and maxRow so the pivot is well-conditioned.
+                var maxRow = k
+                var maxVal = abs(m[kRow + k])
+                for r in (k + 1)..<n {
+                    let v = abs(m[r * n + k])
+                    if v > maxVal { maxVal = v; maxRow = r }
                 }
-                let tmp = rhs[k]; rhs[k] = rhs[maxRow]; rhs[maxRow] = tmp
-            }
-            let pivot = matrix[k * n + k]
-            if abs(pivot) < 1e-12 {
-                // Singular column — leave row as-is, treat unknown as previous value.
-                continue
-            }
-            for r in (k + 1)..<n {
-                let factor = matrix[r * n + k] / pivot
-                if factor == 0 { continue }
-                for c in k..<n {
-                    matrix[r * n + c] -= factor * matrix[k * n + c]
+                if maxRow != k {
+                    let mRow = maxRow * n
+                    for c in 0..<n {
+                        let tmp = m[kRow + c]
+                        m[kRow + c] = m[mRow + c]
+                        m[mRow + c] = tmp
+                    }
+                    let tmp = b[k]; b[k] = b[maxRow]; b[maxRow] = tmp
                 }
-                rhs[r] -= factor * rhs[k]
+                let pivot = m[kRow + k]
+                if abs(pivot) < 1e-12 {
+                    // Singular column — leave row as-is, treat unknown as previous value.
+                    continue
+                }
+                for r in (k + 1)..<n {
+                    let rRow = r * n
+                    let factor = m[rRow + k] / pivot
+                    if factor == 0 { continue }
+                    for c in k..<n {
+                        m[rRow + c] -= factor * m[kRow + c]
+                    }
+                    b[r] -= factor * b[k]
+                }
+            }
+            for k in stride(from: n - 1, through: 0, by: -1) {
+                let kRow = k * n
+                var sum = b[k]
+                for c in (k + 1)..<n {
+                    sum -= m[kRow + c] * xb[c]
+                }
+                let pivot = m[kRow + k]
+                xb[k] = abs(pivot) < 1e-12 ? b[k] : sum / pivot
             }
         }
-        for k in stride(from: n - 1, through: 0, by: -1) {
-            var sum = rhs[k]
-            for c in (k + 1)..<n {
-                sum -= matrix[k * n + c] * x[c]
-            }
-            let pivot = matrix[k * n + k]
-            x[k] = abs(pivot) < 1e-12 ? rhs[k] : sum / pivot
+        }
         }
     }
 }
