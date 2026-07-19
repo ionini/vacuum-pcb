@@ -168,6 +168,7 @@ struct SimulatePhysicalCanvas: View {
         let stroke = max(2.0, document.manufacturing.channelDiameter * transform.ptsPerMm * 0.85)
         let style = StrokeStyle(lineWidth: stroke, lineCap: .round, lineJoin: .round)
         let graph = state.network.channelGraph
+        let maxVac = state.params.pumpMaxVacuum
         var spanCovered = Set<UUID>()
 
         for span in graph.spans where span.polyline.count >= 2 {
@@ -188,7 +189,8 @@ struct SimulatePhysicalCanvas: View {
                 let a = span.polyline[k - 1], b = span.polyline[k]
                 guard a.layer == b.layer, visible.contains(a.layer) else { continue }
                 let tMid = total > 0 ? (cum[k - 1] + cum[k]) / (2 * total) : 0.5
-                let color = PressureColor.strokeColor(for: p1 + (p2 - p1) * tMid)
+                let color = PressureColor.strokeColor(for: p1 + (p2 - p1) * tMid,
+                                                      maxVacuum: maxVac)
                 var path = Path()
                 path.move(to: transform.toScreen(a.p))
                 path.addLine(to: transform.toScreen(b.p))
@@ -197,7 +199,8 @@ struct SimulatePhysicalCanvas: View {
         }
 
         for route in flat.physical.routes where !spanCovered.contains(route.netId) {
-            let color = PressureColor.strokeColor(for: state.pressure(net: route.netId))
+            let color = PressureColor.strokeColor(for: state.pressure(net: route.netId),
+                                                  maxVacuum: maxVac)
             for segment in route.segments {
                 guard visible.contains(segment.layer) else { continue }
                 let pts = segment.waypoints.map { transform.toScreen($0.position) }
@@ -220,7 +223,8 @@ struct SimulatePhysicalCanvas: View {
                   visible.contains(segment.layer),
                   let world = flat.physical.testPointWorld(tp) else { continue }
             let c = transform.toScreen(world)
-            let color = PressureColor.strokeColor(for: state.pressure(rawNet: tp.netId))
+            let color = PressureColor.strokeColor(for: state.pressure(rawNet: tp.netId),
+                                                  maxVacuum: state.params.pumpMaxVacuum)
             ctx.stroke(
                 Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)),
                 with: .color(color), style: StrokeStyle(lineWidth: 2)
@@ -313,8 +317,9 @@ struct SimulatePhysicalCanvas: View {
                           component: Component, placement: Placement,
                           center: CGPoint, pressure: Double) {
         let m = document.manufacturing
-        let stroke = PressureColor.strokeColor(for: pressure)
-        let fill = PressureColor.color(for: pressure).opacity(0.5)
+        let maxVac = state.params.pumpMaxVacuum
+        let stroke = PressureColor.strokeColor(for: pressure, maxVacuum: maxVac)
+        let fill = PressureColor.color(for: pressure, maxVacuum: maxVac).opacity(0.5)
         switch component.kind {
         case .transistor:
             let r = m.dimpleDiameter / 2 * transform.ptsPerMm

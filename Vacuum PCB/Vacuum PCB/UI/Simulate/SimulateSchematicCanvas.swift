@@ -77,16 +77,18 @@ private struct SchematicCanvasLayer: View {
         let remap = state.netIdRemap
         let openness = state.transistorOpenness
         let highlighted = state.highlightedComponentId
+        let maxVacuum = state.params.pumpMaxVacuum
 
         return Canvas { ctx, _ in
             // Centre the drawing on the schematic origin so symbols/wires at
             // negative coordinates aren't clipped at the canvas edge — same fix
             // as the editor's `NetLinesView`. See `SchematicCanvasBounds`.
             ctx.translateBy(x: SchematicCanvasBounds.origin, y: SchematicCanvasBounds.origin)
-            drawNets(in: ctx, pressures: pressures, remap: remap)
+            drawNets(in: ctx, pressures: pressures, remap: remap, maxVacuum: maxVacuum)
             drawMatings(in: ctx)
             drawComponents(in: ctx, pressures: pressures, remap: remap,
-                           openness: openness, highlighted: highlighted)
+                           openness: openness, highlighted: highlighted,
+                           maxVacuum: maxVacuum)
         }
         // Oversized, origin-centred frame so negative schematic space is drawn
         // rather than clipped. The `.offset` is render-only.
@@ -99,10 +101,11 @@ private struct SchematicCanvasLayer: View {
 
     /// One stroked line per net edge, coloured by the net's current pressure.
     /// Layout rules live in `NetEdgeBuilder`, so the look matches the editor.
-    private func drawNets(in ctx: GraphicsContext, pressures: [UUID: Double], remap: [UUID: UUID]) {
+    private func drawNets(in ctx: GraphicsContext, pressures: [UUID: Double],
+                          remap: [UUID: UUID], maxVacuum: Double) {
         for net in SchematicWireGeometry.render(in: document, railTaps: showRailTaps) {
             let pressure = rawNetPressure(net.netId, pressures: pressures, remap: remap)
-            let stroke = PressureColor.strokeColor(for: pressure)
+            let stroke = PressureColor.strokeColor(for: pressure, maxVacuum: maxVacuum)
             for edge in net.edges {
                 ctx.stroke(
                     WireRouter.roundedPath(edge.points, radius: 9),
@@ -159,7 +162,8 @@ private struct SchematicCanvasLayer: View {
         pressures: [UUID: Double],
         remap: [UUID: UUID],
         openness: [UUID: Double],
-        highlighted: UUID?
+        highlighted: UUID?,
+        maxVacuum: Double
     ) {
         for component in document.logic.components where component.kind != .screw {
             let pos = document.schematic.position(for: component.id) ?? Point(x: 200, y: 200)
@@ -168,8 +172,8 @@ private struct SchematicCanvasLayer: View {
                 .metrics(for: component, snapshots: document.librarySnapshots)
                 .rotated(by: document.schematic.rotation(for: component.id))
             let pressure = nodePressure(component: component, pressures: pressures, remap: remap)
-            let fill = PressureColor.color(for: pressure).opacity(0.55)
-            let stroke = PressureColor.strokeColor(for: pressure)
+            let fill = PressureColor.color(for: pressure, maxVacuum: maxVacuum).opacity(0.55)
+            let stroke = PressureColor.strokeColor(for: pressure, maxVacuum: maxVacuum)
 
             let rect = CGRect(
                 x: center.x - metrics.size.width / 2,

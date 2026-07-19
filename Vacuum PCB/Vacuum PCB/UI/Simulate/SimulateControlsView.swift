@@ -252,7 +252,8 @@ struct SimulateControlsView: View {
             .frame(width: 110)
             Spacer()
             Circle()
-                .fill(PressureColor.color(for: current))
+                .fill(PressureColor.color(for: current,
+                                          maxVacuum: state.params.pumpMaxVacuum))
                 .frame(width: 12, height: 12)
         }
     }
@@ -359,7 +360,8 @@ private struct ProbeRow: View {
                 .frame(width: 38, alignment: .trailing)
             ProgressView(value: pressure)
                 .progressViewStyle(.linear)
-                .tint(PressureColor.strokeColor(for: pressure))
+                .tint(PressureColor.strokeColor(for: pressure,
+                                                maxVacuum: state.params.pumpMaxVacuum))
                 .animation(nil, value: pressure)
         }
     }
@@ -398,7 +400,8 @@ private struct NetRow: View {
         let pressure = state.pressure(net: net.id)
         HStack(spacing: 6) {
             Circle()
-                .fill(PressureColor.color(for: pressure))
+                .fill(PressureColor.color(for: pressure,
+                                          maxVacuum: state.params.pumpMaxVacuum))
                 .frame(width: 10, height: 10)
             Text(net.label)
                 .font(.caption.monospacedDigit())
@@ -420,7 +423,8 @@ private struct NetPressureDot: View {
 
     var body: some View {
         Circle()
-            .fill(PressureColor.color(for: state.pressure(net: netId)))
+            .fill(PressureColor.color(for: state.pressure(net: netId),
+                                      maxVacuum: state.params.pumpMaxVacuum))
             .frame(width: 12, height: 12)
     }
 }

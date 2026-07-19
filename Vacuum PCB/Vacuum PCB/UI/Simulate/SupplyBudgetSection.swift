@@ -76,7 +76,8 @@ struct SupplyBudgetSection: View {
                 .frame(width: 44, alignment: .trailing)
             ProgressView(value: 1 - railPressure)
                 .progressViewStyle(.linear)
-                .tint(PressureColor.strokeColor(for: railPressure))
+                .tint(PressureColor.strokeColor(for: railPressure,
+                                                maxVacuum: state.params.pumpMaxVacuum))
                 .animation(nil, value: railPressure)
             Text("dh \(String(format: "%.2f", state.params.pumpMaxVacuum))")
                 .font(.caption2.monospacedDigit())
