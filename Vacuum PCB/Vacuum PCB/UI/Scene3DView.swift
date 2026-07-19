@@ -208,9 +208,10 @@ struct Scene3DView {
         // Screen-space ambient occlusion. Darkens contact lines and crevices
         // where geometry curves inward — gives same-colour adjacent features
         // (e.g. two channel tubes meeting at a waypoint) a visible seam in
-        // both the "Channels" and "Both" preview modes. Plates currently
-        // don't write to the depth buffer (see plateGeometry), so they don't
-        // participate in SSAO — only the feature solids do. Radius is in
+        // both the "Channels" and "Both" preview modes. Plates render in the
+        // transparent pass (their depth writes come from the single-layer
+        // prepass, see plateGeometry), so SSAO — resolved from the opaque
+        // geometry — still keys off the feature solids. Radius is in
         // scene units (mm); 2.5 mm picks up channel-junction crevices and
         // dimple boundaries without smearing across the whole part.
         c.camera.screenSpaceAmbientOcclusionIntensity = 1.5
@@ -374,12 +375,34 @@ struct Scene3DView {
         // opacity so `applyBodyOpacity` can retune it live on the same
         // material without rebuilding geometry.
         material.diffuse.contents = color
-        material.transparency = CGFloat(bodyOpacity)
+        material.transparency = Self.bodyTransparency(bodyOpacity)
+        // Blend only the nearest surface. The plate mesh is the *carved*
+        // solid, so a view ray crosses its outer skin, every channel wall,
+        // and the back skin; plain alpha blending stacks all of those layers
+        // in triangle order (CSG output — arbitrary), so raising the opacity
+        // slider darkened the pile instead of solidifying the skin, with the
+        // carved routes reading through at any setting. `.singleLayer` culls
+        // the blend to the front surface — and only takes effect when the
+        // material also writes depth (verified with an offscreen renderer:
+        // without the depth write SceneKit silently ignores the mode). The
+        // depth write happens in the transparent pass, after the opaque
+        // feature solids have already rendered, so channels still show
+        // through a low-opacity body in "Both" mode.
+        material.transparencyMode = .singleLayer
+        material.writesToDepthBuffer = true
         material.isDoubleSided = true
         material.lightingModel = .blinn
-        material.writesToDepthBuffer = false
         geometry.materials = [material]
         return geometry
+    }
+
+    /// Body opacity mapped to material transparency, held a hair below fully
+    /// opaque: at exactly 1.0 SceneKit reclassifies the plates as opaque-pass
+    /// geometry, where their walls z-fight the coincident feature solids and
+    /// the single-layer blend path no longer applies. 0.995 is visually
+    /// indistinguishable from solid while staying on the transparent path.
+    private static func bodyTransparency(_ opacity: Double) -> CGFloat {
+        CGFloat(min(opacity, 0.995))
     }
 
     /// Push the current `bodyOpacity` onto the live printed-body materials
@@ -387,7 +410,7 @@ struct Scene3DView {
     /// opacity slider refreshes without the per-node geometry rebuild.
     private func applyBodyOpacity(coordinator c: Coordinator) {
         for node in [c.topNode, c.bottomNode, c.stencilNode, c.moldNode] {
-            node.geometry?.firstMaterial?.transparency = CGFloat(bodyOpacity)
+            node.geometry?.firstMaterial?.transparency = Self.bodyTransparency(bodyOpacity)
         }
     }
 
