@@ -54,6 +54,10 @@ struct DocumentView: View {
     /// Per-element visibility of the 3D preview (which plates / channels / mold
     /// parts are shown). Starts on the plates-plus-channels preset.
     @State private var previewVisibility: PreviewVisibility = .both
+    /// Opacity of the printed body (plates / silicone sheet / casting frame)
+    /// in the 3D preview; feature channels stay opaque. Persisted so the
+    /// user's preferred translucency survives relaunches.
+    @AppStorage("previewBodyOpacity") private var previewBodyOpacity = 0.55
     /// When off, testing points are excluded from the built geometry entirely —
     /// no bore in the preview and none in the exported STL. Unlike the
     /// `PreviewVisibility` flags (which only hide scene nodes), this feeds the
@@ -334,6 +338,7 @@ struct DocumentView: View {
                     moldFrame: built.moldFrame,
                     boardOutline: document.circuit.physical.boardOutline,
                     visibility: previewVisibility,
+                    bodyOpacity: previewBodyOpacity,
                     volumeMeshes: volumeMeshes,
                     highlightedIDs: highlightedVolumeIDs,
                     geometryRevision: geometryRevision,
@@ -396,6 +401,17 @@ struct DocumentView: View {
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
+
+            HStack(spacing: 5) {
+                Image(systemName: "circle.lefthalf.filled")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Slider(value: $previewBodyOpacity, in: 0.1...1.0)
+                    .controlSize(InputPlatform.isTouch ? .regular : .small)
+                    .frame(width: InputPlatform.isTouch ? 120 : 90)
+            }
+            .help("Body opacity — how solid the printed plates (and silicone " +
+                  "sheet / casting frame) render. Channels stay opaque.")
         }
         .padding(8)
         .glassEffect(in: .rect(cornerRadius: 10))

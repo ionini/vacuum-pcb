@@ -33,6 +33,11 @@ final class SimulationState {
 
     var params: SimulationParameters = .defaults
 
+    /// Bumped whenever `network` / `flattenedDoc` are replaced (`rebuild`),
+    /// so views can key derived-geometry caches (e.g. the flow overlay's
+    /// polylines) off a cheap Int compare instead of a document compare.
+    private(set) var networkRevision: Int = 0
+
     /// User-controlled input port pressures keyed by input component id.
     /// Default 1.0 (atmosphere) for any input not yet toggled.
     var inputPressures: [UUID: Double] = [:]
@@ -56,8 +61,17 @@ final class SimulationState {
     /// to its body on the board. nil = nothing highlighted.
     var highlightedComponentId: UUID?
 
-    /// Whether the integrator advances on each clock tick.
-    var isPlaying: Bool = false
+    /// Whether the integrator advances on each clock tick. Driven by the
+    /// toolbar Play/Pause button and by the Simulate tab's appear/disappear
+    /// (the tab pauses the sim on the way out and resumes it on the way in).
+    ///
+    /// Resuming resets the tick baseline: the clock only runs while the tab
+    /// is mounted, so after a stretch on another tab `lastTick` is stale and
+    /// the first tick back would otherwise integrate the whole absence as one
+    /// catch-up burst.
+    var isPlaying: Bool = false {
+        didSet { if isPlaying && !oldValue { lastTick = nil } }
+    }
 
     /// Sim-time accumulator so the engine takes fixed steps even when the
     /// view's clock tick is jittery. Drained on each tick. `@ObservationIgnored`
@@ -148,6 +162,7 @@ final class SimulationState {
         let liveTransistorIds = Set(next.transistors.map(\.id))
         transistorOpenness = transistorOpenness.filter { liveTransistorIds.contains($0.key) }
         network = next
+        networkRevision &+= 1
         _ = existingNetIds  // silence
         // The integrator restarts from the freshly published pressures.
         workingPressures = nil

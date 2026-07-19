@@ -18,8 +18,10 @@ struct SupplyBudgetSection: View {
     var body: some View {
         let report = state.flows
         if report.railPressure != nil || !report.externalDrives.isEmpty {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Supply").font(.subheadline).bold()
+            // Collapsed by default (and remembered): the ranked consumer list
+            // grows with the board and was crowding out the tuning sliders.
+            // While collapsed the row builders below aren't evaluated at all.
+            CollapsibleSection("Supply", storageKey: "inspectorSupplyExpanded") {
                 if let railPressure = report.railPressure {
                     pumpRow(report)
                     railRow(railPressure)

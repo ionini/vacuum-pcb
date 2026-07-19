@@ -298,9 +298,14 @@ struct SimulateControlsView: View {
 
     @ViewBuilder private var transistors: some View {
         if !state.network.transistors.isEmpty {
-            Text("Transistors").font(.subheadline).bold()
-            ForEach(state.network.transistors) { t in
-                TransistorRow(state: state, transistor: t)
+            // Collapsed by default (and remembered): one live row per
+            // transistor gets long on real boards, and collapsing skips
+            // building the 20 Hz readout rows entirely.
+            CollapsibleSection("Transistors (\(state.network.transistors.count))",
+                               storageKey: "inspectorTransistorsExpanded") {
+                ForEach(state.network.transistors) { t in
+                    TransistorRow(state: state, transistor: t)
+                }
             }
         }
     }

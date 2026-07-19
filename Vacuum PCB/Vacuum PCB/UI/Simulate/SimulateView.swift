@@ -23,7 +23,11 @@ struct SimulateView: View {
     /// before the Inspector toggle on the trailing edge.
     let exportMenu: ExportMenuButton
 
-    @State private var viewMode: ViewMode = .schematic
+    /// Which canvas (schematic or physical heatmap) the tab shows. AppStorage
+    /// rather than @State: DocumentView's detail `switch` tears this view down
+    /// on every tab change, so plain view state snapped back to Schematic
+    /// each time the user left and returned.
+    @AppStorage("simulateViewMode") private var viewMode: ViewMode = .schematic
     /// Layer-visibility filter for the physical heatmap. Mirrors the editor's
     /// per-layer pills so the user can isolate T0 / B0 / etc. while tracing
     /// pressure flow. Schematic mode ignores this.
@@ -33,7 +37,7 @@ struct SimulateView: View {
     /// supply draw is the overlay's whole point — and remembered per app.
     @AppStorage("simulateShowFlow") private var showFlow = true
 
-    enum ViewMode: Hashable { case schematic, physical }
+    enum ViewMode: String, Hashable { case schematic, physical }
 
     var body: some View {
         splitContent
@@ -43,6 +47,13 @@ struct SimulateView: View {
                 // added components / nets show up in the heatmap immediately.
                 state.rebuild(from: new)
             }
+            // Tab visibility doubles as the transport switch: the sim clock
+            // below only ticks while this tab is mounted anyway, so leaving
+            // pauses the integrator (instead of latching `isPlaying` with no
+            // clock) and returning resumes it. Setting `isPlaying` resets the
+            // tick baseline, so the return never integrates the absence.
+            .onAppear { state.isPlaying = true }
+            .onDisappear { state.isPlaying = false }
             .toolbar { simulateToolbar }
     }
 

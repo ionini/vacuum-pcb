@@ -98,6 +98,11 @@ struct Scene3DView {
     var boardOutline: Rect
     /// Which elements of the stack are shown. Drives per-node `isHidden`.
     var visibility: PreviewVisibility
+    /// Opacity of the printed-body materials (plates, silicone sheet, casting
+    /// frame), 0…1. Feature solids stay opaque regardless — the body fades,
+    /// the channels don't. Applied to the live materials on change, so the
+    /// slider never forces a geometry rebuild.
+    var bodyOpacity: Double = 0.55
     /// Every physical-volume cavity mesh, keyed by `Volume.id`. Each becomes a
     /// hidden — but hit-testable — node so a click in the scene resolves to a
     /// volume; the highlighted subset is un-hidden and tinted.
@@ -134,6 +139,9 @@ struct Scene3DView {
         /// Geometry revision whose nodes are currently live, so a highlight- or
         /// visibility-only refresh can skip the (costlier) node rebuild.
         var lastGeometryRevision: Int?
+        /// Body opacity currently baked into the plate/stencil/mold materials,
+        /// so a refresh only touches them when the slider actually moved.
+        var lastBodyOpacity: Double?
         let camera = SCNCamera()
         let cameraNode = SCNNode()
         var lastOutline: Rect?
@@ -217,6 +225,7 @@ struct Scene3DView {
         applyGeometries(coordinator: c)
         applyVolumeNodes(coordinator: c)
         c.lastGeometryRevision = geometryRevision
+        c.lastBodyOpacity = bodyOpacity
         applyHighlight(coordinator: c)
         applyVisibility(coordinator: c)
         applyFraming(coordinator: c, animated: false)
@@ -273,6 +282,11 @@ struct Scene3DView {
             applyGeometries(coordinator: c)
             applyVolumeNodes(coordinator: c)
             c.lastGeometryRevision = geometryRevision
+            c.lastBodyOpacity = bodyOpacity
+        }
+        if c.lastBodyOpacity != bodyOpacity {
+            applyBodyOpacity(coordinator: c)
+            c.lastBodyOpacity = bodyOpacity
         }
         applyHighlight(coordinator: c)
         applyVisibility(coordinator: c)
@@ -356,13 +370,25 @@ struct Scene3DView {
     private func plateGeometry(for mesh: Mesh, color: PlatformColor) -> SCNGeometry {
         let geometry = SCNGeometry(mesh)
         let material = SCNMaterial()
-        material.diffuse.contents = color.withAlphaComponent(0.55)
-        material.transparency = 0.55
+        // Full-alpha diffuse; `transparency` alone carries the user's body
+        // opacity so `applyBodyOpacity` can retune it live on the same
+        // material without rebuilding geometry.
+        material.diffuse.contents = color
+        material.transparency = CGFloat(bodyOpacity)
         material.isDoubleSided = true
         material.lightingModel = .blinn
         material.writesToDepthBuffer = false
         geometry.materials = [material]
         return geometry
+    }
+
+    /// Push the current `bodyOpacity` onto the live printed-body materials
+    /// (plates, stencil, mold). Cheap — mutates existing materials — so the
+    /// opacity slider refreshes without the per-node geometry rebuild.
+    private func applyBodyOpacity(coordinator c: Coordinator) {
+        for node in [c.topNode, c.bottomNode, c.stencilNode, c.moldNode] {
+            node.geometry?.firstMaterial?.transparency = CGFloat(bodyOpacity)
+        }
     }
 
     /// Feature solids are rendered opaque and slightly emissive so they pop
