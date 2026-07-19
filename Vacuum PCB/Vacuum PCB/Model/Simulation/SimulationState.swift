@@ -91,8 +91,22 @@ final class SimulationState {
     /// after `reset()` / `rebuild(...)` clear them. Keeping the fine-grained
     /// fixed steps off the observable properties is what lets us publish to
     /// SwiftUI at a throttled rate (see `advance`).
+    ///
+    /// Two shapes, one live at a time: the compiled path carries
+    /// `workingRun` (Int-indexed arrays, zero UUID hashing per step) and the
+    /// dictionaries stay nil; a network with no free nodes falls back to the
+    /// legacy dictionary step and carries `workingPressures` /
+    /// `workingTransistors` instead.
     @ObservationIgnored private var workingPressures: [UUID: Double]?
     @ObservationIgnored private var workingTransistors: [UUID: Double]?
+    @ObservationIgnored private var workingRun: SimulationEngine.RunState?
+
+    /// Compiled Int-indexed step tables, rebuilt on the worker whenever the
+    /// network revision, subdivision flag, or hard-input toggle set moves
+    /// (`SimulationEngine.compile`). Cached here between batches so a steady
+    /// sim never re-hashes a UUID.
+    @ObservationIgnored private var workingCompiled: SimulationEngine.CompiledNetwork?
+    @ObservationIgnored private var workingCompiledRevision: Int = 0
 
     /// Real wall-time accumulated since we last published pressures to the
     /// observable properties. We integrate at the fine fixed `dt` for fidelity
@@ -186,6 +200,8 @@ final class SimulationState {
         // and gets discarded on completion.
         workingPressures = nil
         workingTransistors = nil
+        workingRun = nil
+        workingCompiled = nil
         sincePublish = 0
         stepEpoch &+= 1
         if let highlighted = highlightedComponentId,
@@ -204,6 +220,9 @@ final class SimulationState {
         elapsedSimSeconds = 0
         workingPressures = nil
         workingTransistors = nil
+        // The compiled tables survive a reset (same network, same toggles) —
+        // only the integrated state restarts from the fresh seed.
+        workingRun = nil
         sincePublish = 0
         // Discard any in-flight step batch — it started from pre-reset state.
         stepEpoch &+= 1
@@ -270,27 +289,88 @@ final class SimulationState {
         let net = network
         let prm = params
         let inp = inputPressures
-        // Seed from the working copies (published state the first time, and
-        // whenever `reset()` / `rebuild(...)` cleared them) — the worker owns
-        // its own value copies for the duration of the batch.
+        let revision = networkRevision
+        // Compiled-path carry: hand the cached tables and run arrays to the
+        // worker. `workingRun` is nilled here so the worker holds the only
+        // reference and can mutate the arrays in place, copy-free; it comes
+        // back (or is superseded) in `completeStepBatch`.
+        let cachedCompiled = workingCompiled
+        let cachedRevision = workingCompiledRevision
+        let cachedRun = workingRun
+        workingRun = nil
+        // Seed dictionaries for whenever there's no carried run to continue
+        // from (first batch, and after `reset()` / `rebuild(...)`).
         let seedPressures = workingPressures ?? pressureByNet
         let seedTransistors = workingTransistors ?? transistorOpenness
         stepQueue.async { [weak self] in
-            var pressures = seedPressures
-            var transistors = seedTransistors
-            for _ in 0..<batch {
-                SimulationEngine.step(
-                    network: net, params: prm,
-                    pressures: &pressures,
-                    inputs: inp,
-                    transistorOpenness: &transistors
-                )
+            // Reuse the compiled tables while their signature holds; any
+            // move (rebuild, channel-subdivision toggle, hard input flip)
+            // recompiles here, off the main thread.
+            let subdivided = SimulationEngine.isSubdivided(network: net, params: prm)
+            let hard = SimulationEngine.hardInputStates(network: net, inputs: inp)
+            let cacheValid = cachedRevision == revision
+                && cachedCompiled?.subdivided == subdivided
+                && cachedCompiled?.hardInputStates == hard
+            let compiled = cacheValid
+                ? cachedCompiled!
+                : SimulationEngine.compile(network: net, params: prm, hardInputStates: hard)
+            // Base state: continue the carried run when the compile still
+            // matches; rebase it through dictionaries when the compile
+            // moved; else start from the seed dictionaries.
+            func baseDictionaries() -> ([UUID: Double], [UUID: Double]) {
+                if let c = cachedCompiled, let r = cachedRun {
+                    let out = SimulationEngine.publish(compiled: c, state: r)
+                    return (out.pressures, out.transistorOpenness)
+                }
+                return (seedPressures, seedTransistors)
             }
-            DispatchQueue.main.async {
-                self?.completeStepBatch(epoch: epoch, steps: batch, dt: dt,
-                                        pressures: pressures, transistors: transistors)
+
+            if compiled.freeCount > 0 {
+                var run: SimulationEngine.RunState
+                if cacheValid, let carried = cachedRun {
+                    run = carried
+                } else {
+                    let (p, t) = baseDictionaries()
+                    run = SimulationEngine.makeRunState(
+                        compiled: compiled, pressures: p, transistorOpenness: t)
+                }
+                let soft = SimulationEngine.softInputValues(network: net, inputs: inp)
+                for _ in 0..<batch {
+                    SimulationEngine.step(compiled: compiled, params: prm,
+                                          state: &run, softInputValues: soft)
+                }
+                DispatchQueue.main.async {
+                    self?.completeStepBatch(epoch: epoch, steps: batch, dt: dt,
+                                            revision: revision,
+                                            result: .compiled(compiled, run))
+                }
+            } else {
+                // Degenerate network (every node anchored, or no nets at
+                // all): the legacy dictionary step handles it.
+                var (pressures, transistors) = baseDictionaries()
+                for _ in 0..<batch {
+                    SimulationEngine.step(
+                        network: net, params: prm,
+                        pressures: &pressures,
+                        inputs: inp,
+                        transistorOpenness: &transistors
+                    )
+                }
+                DispatchQueue.main.async {
+                    self?.completeStepBatch(epoch: epoch, steps: batch, dt: dt,
+                                            revision: revision,
+                                            result: .dictionaries(compiled, pressures, transistors))
+                }
             }
         }
+    }
+
+    /// What one worker batch hands back: the compiled tables it stepped with
+    /// (cached for the next batch) plus the integrated state — Int-indexed
+    /// arrays on the compiled path, dictionaries on the degenerate path.
+    private enum StepBatchResult {
+        case compiled(SimulationEngine.CompiledNetwork, SimulationEngine.RunState)
+        case dictionaries(SimulationEngine.CompiledNetwork, [UUID: Double], [UUID: Double])
     }
 
     /// Fold a finished batch back into main-actor state, publish on the
@@ -300,13 +380,25 @@ final class SimulationState {
     /// `rebuild(...)` — epoch mismatch — is discarded: it was integrating a
     /// network or state that no longer exists.
     private func completeStepBatch(
-        epoch: Int, steps: Int, dt: Double,
-        pressures: [UUID: Double], transistors: [UUID: Double]
+        epoch: Int, steps: Int, dt: Double, revision: Int,
+        result: StepBatchResult
     ) {
         stepInFlight = false
         guard epoch == stepEpoch else { return }
-        workingPressures = pressures
-        workingTransistors = transistors
+        switch result {
+        case let .compiled(compiled, run):
+            workingCompiled = compiled
+            workingCompiledRevision = revision
+            workingRun = run
+            workingPressures = nil
+            workingTransistors = nil
+        case let .dictionaries(compiled, pressures, transistors):
+            workingCompiled = compiled
+            workingCompiledRevision = revision
+            workingRun = nil
+            workingPressures = pressures
+            workingTransistors = transistors
+        }
         // Account the sim-time actually integrated so the test runner's
         // sim-time waits track real progress (and stall when the sim is
         // paused / starved).
@@ -315,11 +407,19 @@ final class SimulationState {
         // Throttle the publish to SwiftUI. Reassigning the two observable
         // dictionaries re-renders the schematic canvas and re-evaluates every
         // live row in the inspector sidebar — ~20 Hz is visually smooth for a
-        // heatmap and keeps that cost bounded.
+        // heatmap and keeps that cost bounded. The array→dictionary publish
+        // conversion rides the same throttle, so it never runs per step.
         if sincePublish >= publishInterval {
             sincePublish = 0
-            pressureByNet = pressures
-            transistorOpenness = transistors
+            switch result {
+            case let .compiled(compiled, run):
+                let out = SimulationEngine.publish(compiled: compiled, state: run)
+                pressureByNet = out.pressures
+                transistorOpenness = out.transistorOpenness
+            case let .dictionaries(_, pressures, transistors):
+                pressureByNet = pressures
+                transistorOpenness = transistors
+            }
             refreshFlows()
         }
         pumpStepBatch()

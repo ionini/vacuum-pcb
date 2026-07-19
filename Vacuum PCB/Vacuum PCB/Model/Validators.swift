@@ -48,17 +48,38 @@ enum Validators {
         var transistors: [UUID: Double] = [:]
         var steps = 0
         var converged = false
-        for _ in 0..<max(1, maxSteps) {
-            if steps % 256 == 0, isCancelled?() == true { break }
-            let prev = pressures
-            SimulationEngine.step(
-                network: network, params: params,
-                pressures: &pressures, inputs: inputs, transistorOpenness: &transistors
-            )
-            steps += 1
-            var maxDelta = 0.0
-            for (netId, v) in pressures { maxDelta = max(maxDelta, abs(v - (prev[netId] ?? v))) }
-            if maxDelta < epsilon { converged = true; break }
+        // Inputs are fixed for the whole settle, so one compile serves every
+        // step (the sweep calls this per input combination — each combo
+        // recompiles, thousands of steps reuse it). Zero-free-node networks
+        // take the dictionary path.
+        let compiled = SimulationEngine.compile(
+            network: network, params: params,
+            hardInputStates: SimulationEngine.hardInputStates(network: network, inputs: inputs))
+        if compiled.freeCount > 0 {
+            let soft = SimulationEngine.softInputValues(network: network, inputs: inputs)
+            var run = SimulationEngine.makeRunState(
+                compiled: compiled, pressures: pressures, transistorOpenness: transistors)
+            for _ in 0..<max(1, maxSteps) {
+                if steps % 256 == 0, isCancelled?() == true { break }
+                SimulationEngine.step(compiled: compiled, params: params,
+                                      state: &run, softInputValues: soft)
+                steps += 1
+                if run.lastMaxDelta < epsilon { converged = true; break }
+            }
+            pressures = SimulationEngine.publish(compiled: compiled, state: run).pressures
+        } else {
+            for _ in 0..<max(1, maxSteps) {
+                if steps % 256 == 0, isCancelled?() == true { break }
+                let prev = pressures
+                SimulationEngine.step(
+                    network: network, params: params,
+                    pressures: &pressures, inputs: inputs, transistorOpenness: &transistors
+                )
+                steps += 1
+                var maxDelta = 0.0
+                for (netId, v) in pressures { maxDelta = max(maxDelta, abs(v - (prev[netId] ?? v))) }
+                if maxDelta < epsilon { converged = true; break }
+            }
         }
         return (pressures, converged, steps)
     }

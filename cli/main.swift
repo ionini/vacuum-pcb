@@ -43,16 +43,32 @@ func simulate(
 ) -> (pressures: [UUID: Double], transistors: [UUID: Double]) {
     var pressures = seedPressures(network: network, params: params, inputs: inputs)
     var transistors: [UUID: Double] = [:]
-    for _ in 0..<steps {
-        SimulationEngine.step(
-            network: network,
-            params: params,
-            pressures: &pressures,
-            inputs: inputs,
-            transistorOpenness: &transistors
-        )
+    // Compile once — inputs are fixed for the whole run, so the anchor set
+    // never moves. Networks with no free nodes take the dictionary path.
+    let compiled = SimulationEngine.compile(
+        network: network, params: params,
+        hardInputStates: SimulationEngine.hardInputStates(network: network, inputs: inputs))
+    guard compiled.freeCount > 0 else {
+        for _ in 0..<steps {
+            SimulationEngine.step(
+                network: network,
+                params: params,
+                pressures: &pressures,
+                inputs: inputs,
+                transistorOpenness: &transistors
+            )
+        }
+        return (pressures, transistors)
     }
-    return (pressures, transistors)
+    let soft = SimulationEngine.softInputValues(network: network, inputs: inputs)
+    var run = SimulationEngine.makeRunState(
+        compiled: compiled, pressures: pressures, transistorOpenness: transistors)
+    for _ in 0..<steps {
+        SimulationEngine.step(compiled: compiled, params: params,
+                              state: &run, softInputValues: soft)
+    }
+    let out = SimulationEngine.publish(compiled: compiled, state: run)
+    return (out.pressures, out.transistorOpenness)
 }
 
 // MARK: - Sequenced (stateful) simulation
@@ -98,6 +114,11 @@ func simulateSequence(
     var transistors: [UUID: Double] = [:]
     var seeded = false
     var results: [PhaseResult] = []
+    // Compiled tables persist across phases; a phase that flips a hard input
+    // moves the anchor set, so we publish the carried state back to
+    // dictionaries and recompile.
+    var compiled: SimulationEngine.CompiledNetwork?
+    var run: SimulationEngine.RunState?
 
     for (idx, phase) in phases.enumerated() {
         // Sticky merge: a phase overrides only the labels it names.
@@ -119,23 +140,52 @@ func simulateSequence(
             seeded = true
         }
 
+        let hard = SimulationEngine.hardInputStates(network: network, inputs: inputMap)
+        if compiled == nil || compiled!.hardInputStates != hard {
+            if let c = compiled, let r = run {
+                let out = SimulationEngine.publish(compiled: c, state: r)
+                pressures = out.pressures
+                transistors = out.transistorOpenness
+            }
+            compiled = SimulationEngine.compile(network: network, params: params,
+                                                hardInputStates: hard)
+            run = nil
+        }
+
         var steps = 0
         var converged = false
-        for _ in 0..<max(1, phase.maxSteps) {
-            let prev = pressures
-            SimulationEngine.step(
-                network: network,
-                params: params,
-                pressures: &pressures,
-                inputs: inputMap,
-                transistorOpenness: &transistors
-            )
-            steps += 1
-            var maxDelta = 0.0
-            for (netId, value) in pressures {
-                maxDelta = max(maxDelta, abs(value - (prev[netId] ?? value)))
+        if let c = compiled, c.freeCount > 0 {
+            let soft = SimulationEngine.softInputValues(network: network, inputs: inputMap)
+            var r = run ?? SimulationEngine.makeRunState(
+                compiled: c, pressures: pressures, transistorOpenness: transistors)
+            run = nil
+            for _ in 0..<max(1, phase.maxSteps) {
+                SimulationEngine.step(compiled: c, params: params,
+                                      state: &r, softInputValues: soft)
+                steps += 1
+                if r.lastMaxDelta < epsilon { converged = true; break }
             }
-            if maxDelta < epsilon { converged = true; break }
+            let out = SimulationEngine.publish(compiled: c, state: r)
+            pressures = out.pressures
+            transistors = out.transistorOpenness
+            run = r
+        } else {
+            for _ in 0..<max(1, phase.maxSteps) {
+                let prev = pressures
+                SimulationEngine.step(
+                    network: network,
+                    params: params,
+                    pressures: &pressures,
+                    inputs: inputMap,
+                    transistorOpenness: &transistors
+                )
+                steps += 1
+                var maxDelta = 0.0
+                for (netId, value) in pressures {
+                    maxDelta = max(maxDelta, abs(value - (prev[netId] ?? value)))
+                }
+                if maxDelta < epsilon { converged = true; break }
+            }
         }
         results.append(PhaseResult(
             index: idx, sets: phase.sets, steps: steps,
