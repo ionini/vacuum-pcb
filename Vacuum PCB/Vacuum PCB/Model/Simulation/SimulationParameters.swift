@@ -134,10 +134,21 @@ struct SimulationParameters: Equatable {
     //   proto) — but 1.0 is the deep-gate value that lets cross-coupled
     //   latches hold state (the register now latches both ways) while keeping
     //   the inverter board matching the bench.
-    // - R/mm 0.45 rebalances pull-ups against the weaker vent paths so a
-    //   vented logic-0 stays clear of the 0.93 off-point.
+    // - R/mm 1.5: the effective resistance of the standard resistor printed
+    //   at the current 0.35 mm bore, board-calibrated Jul 17–18 2026 on the
+    //   D-latch bus board (fit range 1.5–2; at 1.5 the R1-limited bus
+    //   readback lands within 0.02 atm of the bench and the 4-bit register's
+    //   readback separation improves vs 0.45). Poiseuille corroborates: the
+    //   0.5 mm-bore-era value 0.45 × (0.5/0.35)⁴ ≈ 1.9. The resistor model
+    //   is bore-blind (length only), so boards printed at the older ~0.5 mm
+    //   bore need resistance ≈ 0.45 to match their bench — e.g. the
+    //   "Inverter tests" calibration board, whose INV1 −0.32 anchor still
+    //   reproduces at 0.45 but reads −0.26 at this default. The pull-up/vent
+    //   balance that motivated 0.45 stays safe: higher R/mm weakens pull-ups
+    //   against vents, so vented logic-0s sit even clearer of the 0.93
+    //   off-point.
     static let defaults = SimulationParameters(
-        resistorResistancePerMm: 0.45,
+        resistorResistancePerMm: 1.5,
         transistorOnConductance: 1.0,
         transistorOffConductance: 0.0005,
         gateThreshold: 0.9,

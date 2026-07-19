@@ -60,7 +60,7 @@ struct SimulateControlsView: View {
                 help: "Resistance per mm of channel inside a resistor. " +
                       "Lower = pressure equalises faster through resistors.",
                 value: $state.params.resistorResistancePerMm,
-                range: 0.05...4.0,
+                range: 0.05...10.0,
                 format: "%.2f"
             )
             tuningSlider(
