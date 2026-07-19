@@ -236,7 +236,7 @@ struct PhysicalCanvasView: View {
 
                 placementBodies
                 placementHitTargets
-                pinHandles
+                pinHandles(in: geo.size)
                 routeHandles
                 selectedWaypointMarkers
                 testPointOverlay
@@ -1044,40 +1044,80 @@ struct PhysicalCanvasView: View {
 
     // MARK: - Pin handles
 
-    private var pinHandles: some View {
+    /// One canvas-worth of pin handles, culled to the viewport. Every handle
+    /// is a live view carrying a tap gesture, a drag gesture, hover tracking
+    /// and a tooltip, and SwiftUI re-walks all of those attachments on every
+    /// frame of an edit — profiled at ~83% of main-thread CPU on a large
+    /// board when one handle existed per pin regardless of visibility. Only
+    /// pins whose screen position lands inside the viewport (plus a margin)
+    /// get a view, and past `pinHandleBudget` in-view pins the layer switches
+    /// off entirely: at that density the 20 pt hit zones are an overlapping
+    /// mush nobody can aim at anyway — zooming in brings the handles back.
+    private func pinHandles(in size: CGSize) -> some View {
         ZStack {
-            ForEach(placementsInPaintOrder, id: \.componentId) { placement in
-                if let component = component(for: placement.componentId) {
-                    ForEach(component.footprint(manufacturing, snapshots: librarySnapshots).pins, id: \.key) { pin in
-                        // Sub-part boundary pins carry their library-internal
-                        // Layer in `FootprintPin.absoluteLayer`, so the same
-                        // resolver call handles both primitives and sub-part
-                        // instance pins.
-                        let pinLayer = placement.resolvedLayer(of: pin, on: component)
-                        if visible.contains(pinLayer) {
-                            let world = placement.worldPosition(of: pin)
-                            let screen = transform.toScreen(world)
-                            let id = placement.componentId
-                            let key = pin.key
-                            PhysicalPinHandle(
-                                pinKey: pinDisplayLabel(component: component, key: pin.key),
-                                layer: pinLayer,
-                                isFirstOfRouting: isFirstRoutingPin(componentId: id, key: key),
-                                onTap: { handlePinTap(componentId: id, pinKey: key) },
-                                onDragChanged: { canvasPt in
-                                    handlePinDragChanged(componentId: id, pinKey: key, at: canvasPt)
-                                },
-                                onDragEnded: { canvasPt in
-                                    handlePinDragEnded(componentId: id, pinKey: key, at: canvasPt)
-                                }
-                            )
-                            .position(screen)
-                            .offset(dragOffset(for: placement.componentId))
-                        }
+            ForEach(visiblePinHandleSpecs(in: size)) { spec in
+                PhysicalPinHandle(
+                    pinKey: spec.label,
+                    layer: spec.layer,
+                    isFirstOfRouting: isFirstRoutingPin(componentId: spec.componentId, key: spec.key),
+                    onTap: { handlePinTap(componentId: spec.componentId, pinKey: spec.key) },
+                    onDragChanged: { canvasPt in
+                        handlePinDragChanged(componentId: spec.componentId, pinKey: spec.key, at: canvasPt)
+                    },
+                    onDragEnded: { canvasPt in
+                        handlePinDragEnded(componentId: spec.componentId, pinKey: spec.key, at: canvasPt)
                     }
-                }
+                )
+                .position(spec.screen)
+                .offset(spec.offset)
             }
         }
+    }
+
+    /// Identity matches the old nested ForEach (placement id × pin key), so
+    /// handle view state survives unrelated redraws the same as before.
+    private struct PinHandleSpec: Identifiable {
+        let componentId: UUID
+        let key: String
+        let label: String
+        let layer: Layer
+        let screen: CGPoint
+        let offset: CGSize
+        var id: String { "\(componentId.uuidString)/\(key)" }
+    }
+
+    /// Above this many in-viewport pins, no handles are shown at all.
+    private static let pinHandleBudget = 400
+
+    private func visiblePinHandleSpecs(in size: CGSize) -> [PinHandleSpec] {
+        // Generous margin so a handle mid-drag (or its label chip) never pops
+        // out at the edge of the window.
+        let viewport = CGRect(origin: .zero, size: size).insetBy(dx: -40, dy: -40)
+        var specs: [PinHandleSpec] = []
+        for placement in placementsInPaintOrder {
+            guard let component = component(for: placement.componentId) else { continue }
+            let off = dragOffset(for: placement.componentId)
+            for pin in component.footprint(manufacturing, snapshots: librarySnapshots).pins {
+                // Sub-part boundary pins carry their library-internal Layer in
+                // `FootprintPin.absoluteLayer`, so the same resolver call
+                // handles both primitives and sub-part instance pins.
+                let pinLayer = placement.resolvedLayer(of: pin, on: component)
+                guard visible.contains(pinLayer) else { continue }
+                let screen = transform.toScreen(placement.worldPosition(of: pin))
+                guard viewport.contains(CGPoint(x: screen.x + off.width,
+                                                y: screen.y + off.height)) else { continue }
+                if specs.count >= Self.pinHandleBudget { return [] }
+                specs.append(PinHandleSpec(
+                    componentId: placement.componentId,
+                    key: pin.key,
+                    label: pinDisplayLabel(component: component, key: pin.key),
+                    layer: pinLayer,
+                    screen: screen,
+                    offset: off
+                ))
+            }
+        }
+        return specs
     }
 
     /// Sub-part pin keys are port UUID strings; map them back to the

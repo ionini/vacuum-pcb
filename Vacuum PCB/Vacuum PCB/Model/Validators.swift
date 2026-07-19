@@ -36,15 +36,20 @@ enum Validators {
     /// Solve from a blank state to convergence, or up to `maxSteps`. "Converged"
     /// means the largest per-net pressure change between steps fell below
     /// `epsilon`; a circuit that never settles is oscillating / metastable.
+    /// `isCancelled` is polled every few hundred steps; a cancelled settle
+    /// returns early with `converged == false` (callers that cancel discard
+    /// the result anyway).
     static func simulateToSettle(
         network: PneumaticNetwork, params: SimulationParameters,
-        inputs: [UUID: Double], maxSteps: Int, epsilon: Double
+        inputs: [UUID: Double], maxSteps: Int, epsilon: Double,
+        isCancelled: (() -> Bool)? = nil
     ) -> (pressures: [UUID: Double], converged: Bool, steps: Int) {
         var pressures = seedPressures(network: network, params: params, inputs: inputs)
         var transistors: [UUID: Double] = [:]
         var steps = 0
         var converged = false
         for _ in 0..<max(1, maxSteps) {
+            if steps % 256 == 0, isCancelled?() == true { break }
             let prev = pressures
             SimulationEngine.step(
                 network: network, params: params,
@@ -111,7 +116,10 @@ enum Validators {
         let rows: [SweepRow]
         /// Non-nil when 2^(#swept inputs) exceeded the cap — the sweep was skipped.
         let tooManyCombos: Int?
-        var allConverged: Bool { tooManyCombos == nil && rows.allSatisfy(\.converged) }
+        /// True when the run was cancelled mid-sweep; `rows` is then partial
+        /// and the result must not be judged (see `allConverged`).
+        var cancelled: Bool = false
+        var allConverged: Bool { !cancelled && tooManyCombos == nil && rows.allSatisfy(\.converged) }
     }
 
     /// Drive every 0/1 combination of the network's inputs (vac=0 / atm=1),
@@ -120,9 +128,12 @@ enum Validators {
     /// of enumerated — e.g. a VAC power rail held at vacuum, so the sweep
     /// doesn't waste a bit toggling the supply off (a non-operational state
     /// that can legitimately fail to settle and isn't a real defect).
+    /// `isCancelled` is polled before every combination (and inside each
+    /// settle); when it fires the partial result comes back `cancelled`.
     static func sweep(
         network: PneumaticNetwork, params: SimulationParameters,
-        maxSteps: Int, epsilon: Double, maxCombos: Int, holds: [String: Double] = [:]
+        maxSteps: Int, epsilon: Double, maxCombos: Int, holds: [String: Double] = [:],
+        isCancelled: (() -> Bool)? = nil
     ) -> SweepResult {
         let swept = network.inputs.filter { holds[$0.label] == nil }
         let held = network.inputs.filter { holds[$0.label] != nil }
@@ -145,6 +156,11 @@ enum Validators {
         var rows: [SweepRow] = []
         rows.reserveCapacity(total)
         for combo in 0..<total {
+            if isCancelled?() == true {
+                return SweepResult(inputLabels: inLabels, probeLabels: probeLabels,
+                                   heldLabels: heldLabels, rows: rows, tooManyCombos: nil,
+                                   cancelled: true)
+            }
             var inputMap = heldMap
             var bits: [Int] = []
             for (k, inp) in swept.enumerated() {
@@ -152,7 +168,8 @@ enum Validators {
                 bits.append(bit)
                 inputMap[inp.id] = bit == 1 ? 1.0 : 0.0
             }
-            let r = simulateToSettle(network: network, params: params, inputs: inputMap, maxSteps: maxSteps, epsilon: epsilon)
+            let r = simulateToSettle(network: network, params: params, inputs: inputMap,
+                                     maxSteps: maxSteps, epsilon: epsilon, isCancelled: isCancelled)
             rows.append(SweepRow(
                 bits: bits, probes: observed.map { r.pressures[$0.nodeId] ?? 1.0 },
                 converged: r.converged, steps: r.steps
@@ -178,16 +195,22 @@ enum Validators {
         let inputCombos: Int
         let keys: [String]
         let failures: [MarginFailure]
-        var pass: Bool { failures.isEmpty }
+        /// True when the run was cancelled before all corners were swept;
+        /// `failures` is then partial and the result must not be judged.
+        var cancelled: Bool = false
+        var pass: Bool { !cancelled && failures.isEmpty }
     }
 
     /// Re-run the exhaustive sweep across ±tol parameter corners and assert no
     /// probe's logic level (<0.5 vac / ≥0.5 atm) flips versus nominal and every
     /// corner still converges. `progress` fires once per corner.
+    /// `isCancelled` is threaded down through every corner's sweep; a cancelled
+    /// run returns early with `cancelled` set (partial `failures`, `pass` false).
     static func margins(
         network: PneumaticNetwork, base: SimulationParameters,
         tol: Double, maxSteps: Int, epsilon: Double, maxCombos: Int,
         holds: [String: Double] = [:],
+        isCancelled: (() -> Bool)? = nil,
         progress: ((_ corner: Int, _ total: Int, _ desc: String, _ converged: Bool, _ flips: Int) -> Void)? = nil
     ) -> MarginResult {
         func level(_ p: Double) -> Int { p < 0.5 ? 0 : 1 }
@@ -208,7 +231,12 @@ enum Validators {
         // default) would only duplicate every existing corner — drop it.
         let keys = allKeys.filter { $0.base != 0 }
         let cornerCount = 1 << keys.count
-        let nominal = sweep(network: network, params: base, maxSteps: maxSteps, epsilon: epsilon, maxCombos: maxCombos, holds: holds)
+        let nominal = sweep(network: network, params: base, maxSteps: maxSteps, epsilon: epsilon,
+                            maxCombos: maxCombos, holds: holds, isCancelled: isCancelled)
+        if nominal.cancelled {
+            return MarginResult(tol: tol, corners: cornerCount, inputCombos: 0,
+                                keys: keys.map(\.name), failures: [], cancelled: true)
+        }
         if let tooMany = nominal.tooManyCombos {
             return MarginResult(tol: tol, corners: cornerCount, inputCombos: 0, keys: keys.map(\.name),
                                 failures: [MarginFailure(label: "nominal", detail: "\(tooMany) input combinations exceed the cap — raise it to brute-force", params: base)])
@@ -216,6 +244,10 @@ enum Validators {
         var failures: [MarginFailure] = []
         if !nominal.allConverged { failures.append(MarginFailure(label: "nominal", detail: "some input combinations never settle", params: base)) }
         for corner in 0..<cornerCount {
+            if isCancelled?() == true {
+                return MarginResult(tol: tol, corners: cornerCount, inputCombos: nominal.rows.count,
+                                    keys: keys.map(\.name), failures: failures, cancelled: true)
+            }
             var p = base
             var desc: [String] = []
             for (j, key) in keys.enumerated() {
@@ -223,7 +255,12 @@ enum Validators {
                 key.set(&p, key.base * (hi ? 1 + tol : 1 - tol))
                 desc.append("\(key.name)\(hi ? "↑" : "↓")")
             }
-            let sw = sweep(network: network, params: p, maxSteps: maxSteps, epsilon: epsilon, maxCombos: maxCombos, holds: holds)
+            let sw = sweep(network: network, params: p, maxSteps: maxSteps, epsilon: epsilon,
+                           maxCombos: maxCombos, holds: holds, isCancelled: isCancelled)
+            if sw.cancelled {
+                return MarginResult(tol: tol, corners: cornerCount, inputCombos: nominal.rows.count,
+                                    keys: keys.map(\.name), failures: failures, cancelled: true)
+            }
             var flips = 0
             for (ri, row) in sw.rows.enumerated() where ri < nominal.rows.count {
                 for (pi, pv) in row.probes.enumerated() where level(pv) != level(nominal.rows[ri].probes[pi]) {

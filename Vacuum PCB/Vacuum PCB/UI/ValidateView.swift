@@ -1,6 +1,18 @@
 import SwiftUI
 import Observation
 
+/// Thread-safe cancellation handle shared between the main actor and the
+/// off-main validation worker. The worker (and the `Validators` sweep loops
+/// it drives) polls `isCancelled`; the model flips it when the run is
+/// superseded or the design changes, so an abandoned run stops burning a
+/// core instead of computing to completion for a result nobody will read.
+final class ValidationCancelFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var flag = false
+    var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return flag }
+    func cancel() { lock.lock(); flag = true; lock.unlock() }
+}
+
 /// Holds the Validate panel's results so they survive tab switches — owned by
 /// `DocumentView` (not by the view), and only reset when the design changes
 /// (`invalidate()`). Runs the shared `Validators` battery off the main actor,
@@ -13,6 +25,8 @@ final class ValidationModel {
     var progressText: String?
     var ranOnce = false
     @ObservationIgnored private var runToken = 0
+    /// Cancellation handle for the in-flight run, if any.
+    @ObservationIgnored private var activeCancel: ValidationCancelFlag?
 
     /// The design's drivable input labels (for the sweep-inputs controls).
     var inputLabels: [String] = []
@@ -91,10 +105,14 @@ final class ValidationModel {
     }
 
     /// Drop stale results — called when the design is edited. Also cancels any
-    /// in-flight run by advancing the token so its posts are ignored.
+    /// in-flight run: the token advance makes its posts land dead, and the
+    /// cancel flag makes the worker itself bail out mid-sweep (before this
+    /// flag existed the superseded run kept a core pinned until it finished).
     func invalidate() {
         guard ranOnce || isRunning else { return }
         runToken += 1
+        activeCancel?.cancel()
+        activeCancel = nil
         isRunning = false
         progressText = nil
         ranOnce = false
@@ -104,6 +122,12 @@ final class ValidationModel {
     func run(snapshot: CircuitDocument, params: SimulationParameters) {
         runToken += 1
         let token = runToken
+        // Supersede any in-flight run for real: without the cancel, each
+        // re-run would stack another full-core worker (the token only
+        // silences the old one's posts, it doesn't stop its compute).
+        activeCancel?.cancel()
+        let cancel = ValidationCancelFlag()
+        activeCancel = cancel
         isRunning = true
         ranOnce = true
         progressText = "Starting…"
@@ -134,43 +158,51 @@ final class ValidationModel {
             func setProgress(_ s: String) {
                 DispatchQueue.main.async { if token == self.runToken { self.progressText = s } }
             }
+            // Polled by the sweep loops (per combination / per settle chunk)
+            // and between gates. The gates themselves that can't check
+            // internally (mesh, collisions) still stop the battery at the
+            // next boundary.
+            let isCancelled: @Sendable () -> Bool = { cancel.isCancelled }
 
-            if onChecks[0] {
+            if onChecks[0], !isCancelled() {
                 setProgress("Connectivity…")
                 post(0, Validators.connectivity(snapshot)) { Self.connectivityReport($0) }
             }
-            if onChecks[1] {
+            if onChecks[1], !isCancelled() {
                 setProgress("Self-containment…")
                 post(1, Validators.staleness(snapshot, libDir: nil)) { Self.stalenessReport($0) }
             }
-            if onChecks[2] {
+            if onChecks[2], !isCancelled() {
                 setProgress("Building plates…")
                 post(2, Validators.mesh(snapshot)) { Self.meshReport($0) }
             }
             // Sweep and Robustness share the (non-trivial) network build, so only
             // pay for it when at least one of them runs.
-            if onChecks[3] || onChecks[4] {
+            if (onChecks[3] || onChecks[4]), !isCancelled() {
                 let net = Validators.buildNetwork(snapshot)
-                if onChecks[3] {
+                if onChecks[3], !isCancelled() {
                     setProgress("Exhaustive sweep…")
                     post(3, Validators.sweep(
-                        network: net, params: params, maxSteps: 20000, epsilon: 1e-5, maxCombos: 4096, holds: holds
+                        network: net, params: params, maxSteps: 20000, epsilon: 1e-5, maxCombos: 4096, holds: holds,
+                        isCancelled: isCancelled
                     )) { Self.sweepReport($0) }
                 }
-                if onChecks[4] {
+                if onChecks[4], !isCancelled() {
                     let marg = Validators.margins(
-                        network: net, base: params, tol: 0.2, maxSteps: 20000, epsilon: 1e-5, maxCombos: 4096, holds: holds
+                        network: net, base: params, tol: 0.2, maxSteps: 20000, epsilon: 1e-5, maxCombos: 4096, holds: holds,
+                        isCancelled: isCancelled
                     ) { c, total, _, _, _ in setProgress("Margins corner \(c)/\(total)…") }
                     post(4, marg) { Self.marginsReport($0) }
                 }
             }
-            if onChecks[5] {
+            if onChecks[5], !isCancelled() {
                 setProgress("Volume collisions…")
                 post(5, Validators.volumeCollisions(snapshot)) { Self.collisionReport($0) }
             }
 
             DispatchQueue.main.async {
                 guard token == self.runToken else { return }
+                self.activeCancel = nil
                 self.isRunning = false
                 self.progressText = nil
             }
