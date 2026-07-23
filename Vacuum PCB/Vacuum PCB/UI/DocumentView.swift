@@ -219,12 +219,21 @@ struct DocumentView: View {
         // "Export for Bambu Studio": a folder holding the model + modifier STLs
         // (+ manifest). Written as a directory so the two aligned STLs land
         // side by side, ready to multi-select in Bambu Studio.
-        .fileExporter(
-            isPresented: $showBambuExporter,
-            document: bambuExportDocument,
-            contentType: .folder,
-            defaultFilename: "\(bambuBaseName)_bambu"
-        ) { _ in bambuExportDocument = nil }
+        //
+        // Hosted on a separate (background) view: SwiftUI gives each view a
+        // single file-exporter presentation slot, so stacking this directly on
+        // the same view as the STL exporter above lets the later modifier win
+        // and silently swallows the STL "Save STL file…" picker. Isolating it
+        // on its own node keeps both pickers independently presentable.
+        .background {
+            Color.clear
+                .fileExporter(
+                    isPresented: $showBambuExporter,
+                    document: bambuExportDocument,
+                    contentType: .folder,
+                    defaultFilename: "\(bambuBaseName)_bambu"
+                ) { _ in bambuExportDocument = nil }
+        }
         // Pinned library snapshots flow down to every sub-part-resolving view
         // (schematic symbols, physical canvas, expanded subpart) so the UI
         // matches what the CAD pipeline exports rather than reflecting
