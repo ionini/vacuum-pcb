@@ -9,13 +9,21 @@ a wider bore plus more flow seal better while still giving a usable resistor
 value?** Bore and flow pull in opposite directions (more flow shrinks the printed
 bore, a wider bore lowers resistance), so they have to be swept together.
 
-    columns (X, left -> right)  resistor bore diameter — GEOMETRY
-    rows    (Y, front -> back)  filament flow ratio    — G-CODE
+    columns (X, left -> right)  resistor bore diameter, per-column mesh
+    rows    (Y, front -> back)  flow ratio, per-object `print_flow_ratio`
 
-The split is forced by where each parameter lives. Bore diameter is part of the
-model, so every column is a separately generated mesh. Flow ratio is a
-*filament* setting — one value per plate, not per object — so it cannot be swept
-in the slicer at all and is stamped onto the sliced G-code afterwards.
+**Both axes live in the 3mf.** Bore diameter is model geometry, so each column is
+a separately generated mesh. Flow ratio uses `print_flow_ratio` — "Object flow
+ratio" in Bambu Studio, a genuine per-object override that multiplies the
+filament's flow ratio for one object only. So the plate slices and prints the
+ordinary way, and a re-slice *reproduces* the sweep instead of destroying it.
+
+Verified equal to G-code post-processing: filament per cell steps
+1.000 / 1.010 / 1.020 / 1.030 / 1.040 / 1.050, matching the stamped file to 0.001.
+
+`apply_matrix.py` is still the only route for **speed and fan**, which have no
+per-object form — and anything it produces is a plain G-code payload that a
+re-slice will silently discard, so `check_sweep.py` matters there.
 
 Every coupon carries its own `bore x flow` label embossed 0.3 mm proud on its top
 face (`vacuum-cli export --label`), so a part still says what it is after it
@@ -30,18 +38,21 @@ channel roof and the top face has no bore mouths, so it is not in a sealing path
 python3 build_plate.py --vpcb "L resistor thinner.vpcb" \
                        --template "Resistor test.3mf" --out sweep
 
-# 2. slice it — in Bambu Studio ("export sliced file"), or headless. Ask for a
-#    .gcode.3mf, not a bare .gcode: that container is what Bambu Studio can send
-#    to the printer (see "Printing it" below).
+# 2. open sweep/bore_flow_sweep.3mf in Bambu Studio, slice, print. That is all —
+#    the flow axis is per-object, so nothing has to be stamped on afterwards.
+
+# 3. optional paranoia, or mandatory if apply_matrix.py was involved:
+python3 check_sweep.py --gcode <sliced .gcode or .gcode.3mf> --map sweep/sweep_map.json
+```
+
+For a **speed or fan** sweep the map carries `speed` / `fan` per cell and the
+G-code has to be post-processed, which brings back the fragility above:
+
+```bash
 /Applications/BambuStudio.app/Contents/MacOS/BambuStudio --slice 1 \
     --export-3mf baseline.gcode.3mf --outputdir sweep sweep/bore_flow_sweep.3mf
-
-# 3. stamp the per-cell flow ratios on
 python3 apply_matrix.py --gcode sweep/baseline.gcode.3mf --map sweep/sweep_map.json \
                         --out sweep/READY.gcode.3mf
-
-# 4. check it before committing hours of printing to it (payload extracted from
-#    each container, or pass plain .gcode files)
 python3 verify.py --before before.gcode --after after.gcode --map sweep/sweep_map.json
 ```
 
@@ -50,14 +61,18 @@ rebuilt around them and nothing about the process is changed, so the sweep is
 anchored to whatever profile the real boards print with. Its objects are
 discarded — only settings are borrowed.
 
-## Printing it — from the microSD card
+## Printing it
 
-**Bambu Studio re-slices a sliced project and silently discards the stamp.**
-Measured, not assumed: a `.gcode` exported from Studio after opening
-`READY.gcode.3mf` came back flat — every row extruding 227.2 mm where the rows
-should span +5%, row 0 byte-comparable to the un-stamped baseline. The container
-carries the models as well as the G-code, so Studio has everything it needs to
-regenerate from the model at the profile's single flow ratio, and the plate looks
+With both axes in the 3mf: slice and send from Bambu Studio like any other plate.
+Nothing to protect, since re-slicing regenerates the sweep.
+
+That was not true of the post-processed route, and the reason is worth keeping for
+the speed/fan case. **Bambu Studio re-slices a sliced project and silently
+discards a G-code stamp.** Measured, not assumed: a `.gcode` exported from Studio
+after opening a stamped `READY.gcode.3mf` came back flat — every row extruding
+227.2 mm where the rows should span +5%, row 0 matching the un-stamped baseline.
+The container carries the models as well as the G-code, so Studio has everything
+it needs to regenerate at the profile's single flow ratio, and the plate looks
 right either way. `check_sweep.py` exists to catch exactly this:
 
 ```bash
@@ -69,14 +84,16 @@ It reports PRESENT / ABSENT / MISMATCH from the file alone: cells in one column
 share geometry exactly, so the ratio of extruded filament between rows of a
 column is the ratio of their flow ratios, no reference needed.
 
-So print the stamped payload **from the printer's microSD card**, where no slicer
-can touch it. Extract it from the repacked container (or keep the plain `.gcode`
-output of step 3) and copy it over. Note the printer will not prompt for filament
-mapping, so the right spool has to be loaded already.
+A stamped payload therefore has to reach the printer without passing back through
+the slicer. Either copy the plain `.gcode` to the printer's microSD, or upload it
+over FTPS (port 990, user `bblp`, password = the printer's Access Code, needs LAN
+Mode on) — which is what Studio's own "send to printer" does under the hood — and
+start it from the printer's screen. Neither route prompts for filament mapping, so
+the right spool has to be loaded already.
 
-The `.gcode.3mf` remains useful as the thing Studio can *send* — a bare `.gcode`
-has nowhere to carry two things the send dialog needs — but only print it if
-`check_sweep.py` still says PRESENT for the payload Studio actually transmits:
+The `.gcode.3mf` container is still what Studio can *send* — a bare `.gcode` has
+nowhere to carry two things the send dialog needs — but only print it if
+`check_sweep.py` says PRESENT for the payload Studio actually transmits:
 
 * the filament mapping table (`Metadata/plate_1.json`, `<filament tray_info_idx=…>`
   in `slice_info.config`) that the send dialog matches against the printer;

@@ -4,28 +4,29 @@
 One plate carrying COLS x ROWS copies of a coupon (the top plate of a board),
 laid out on a deterministic grid:
 
-    columns (X, left -> right)  = resistor bore diameter  — GEOMETRY, from the
-                                  .vpcb with `resistorChannelDiameter` set
-    rows    (Y, front -> back)  = filament flow ratio     — G-CODE, applied
-                                  afterwards by apply_matrix.py
+    columns (X, left -> right)  = resistor bore diameter, from the .vpcb with
+                                  `resistorChannelDiameter` set per column
+    rows    (Y, front -> back)  = flow ratio, via each object's own
+                                  `print_flow_ratio` ("Object flow ratio")
+
+Both axes end up inside the 3mf, so the plate slices and prints the ordinary way
+— and a re-slice reproduces the sweep rather than destroying it. `print_flow_ratio`
+multiplies the filament's flow ratio for one object only; measured E per cell
+steps 1.000/1.010/…/1.050 exactly, matching G-code post-processing to 0.001.
+(apply_matrix.py is still there for speed and fan, which have no per-object form.)
 
 Every coupon gets its own `bore x flow` label embossed on its top face (0.3 mm
 proud, via `vacuum-cli export --label`), so each part still says what it is once
 it leaves the bed. That makes every *cell* a distinct mesh — 24 objects on a
 4 x 6 plate, not 4 objects with 6 instances each.
 
-Bore diameter cannot be swept in the slicer (it is part of the model), and flow
-ratio cannot be swept per object (it is a filament setting), so the sweep is
-split across the two stages. This script does stage 1: mesh generation + plate
-authoring + the cell map that stage 2 and the bench read from.
-
     python3 build_plate.py --vpcb "L resistor thinner.vpcb" \
                            --template "Resistor test.3mf" --out sweep
 
-writes  sweep/bore_flow_sweep.3mf   open in Bambu Studio, slice, export G-code
+writes  sweep/bore_flow_sweep.3mf   open in Bambu Studio, slice, print
         sweep/sweep_map.json        cell -> bore / flow / bed position
         sweep/sweep_map.md          the same table for the lab notebook
-        sweep/collection_sheet.svg  true-scale sheet to lay the coupons out on
+        sweep/collection_sheet.svg  true-scale plate map
 
 The template .3mf supplies the print/filament/printer settings verbatim — the
 plate is rebuilt around them, nothing about the process is changed here.
@@ -211,7 +212,7 @@ def template_metadata(template):
     return head
 
 
-def build_3mf(template, cell_meshes, bores, flows, out_path):
+def build_3mf(template, cell_meshes, bores, flows, sliced_flow_ratio, out_path):
     """Rebuild the template's plate as one labelled object per cell, keeping
     every settings file byte-for-byte."""
     cols, rows = len(bores), len(flows)
@@ -273,6 +274,14 @@ def build_3mf(template, cell_meshes, bores, flows, out_path):
         ms.append(f'  <object id="{wrapper_ids[k]}">')
         ms.append(f'    <metadata key="name" value="{name}"/>')
         ms.append('    <metadata key="extruder" value="1"/>')
+        # `print_flow_ratio` ("Object flow ratio") is a real per-object override in
+        # Bambu Studio, multiplying the filament's flow ratio for this object only.
+        # It makes the flow axis part of the slice, so the plate can be sliced and
+        # sent the ordinary way and a re-slice reproduces the sweep instead of
+        # destroying it. Verified: E per cell steps 1.000/1.010/.../1.050, matching
+        # G-code post-processing to 0.001.
+        ms.append('    <metadata key="print_flow_ratio" '
+                  f'value="{cell_meshes[k]["flow"] / sliced_flow_ratio:.6f}"/>')
         ms.append(f'    <metadata face_count="{faces}"/>')
         ms.append(f'    <part id="{inner_ids[k]}" subtype="normal_part">')
         ms.append(f'      <metadata key="name" value="{name}"/>')
@@ -474,7 +483,8 @@ def main():
         sys.exit(f"error: cells differ in size ({sizes}) — the grid assumes one footprint")
 
     out_3mf = os.path.join(args.out, "bore_flow_sweep.3mf")
-    cells, _, size = build_3mf(args.template, cell_meshes, args.bores, args.flows, out_3mf)
+    cells, _, size = build_3mf(args.template, cell_meshes, args.bores, args.flows,
+                              sliced_flow, out_3mf)
     write_map(cells, args.bores, args.flows, sliced_flow, args.out, size, ref)
     write_collection_sheet(cells, args.bores, args.flows, args.out, size)
 
@@ -486,8 +496,10 @@ def main():
     print(f"  plate footprint {span_x:.1f} x {span_y:.1f} mm on a {BED[0]:.0f} x {BED[1]:.0f} bed "
           f"(gaps {PITCH_X - size[0]:.1f} / {PITCH_Y - size[1]:.1f} mm)")
     print(f"  map: {args.out}/sweep_map.json, sweep_map.md, collection_sheet.svg")
-    print("\nNext: slice it (settings come from the template), export the G-code, then")
-    print(f"  python3 apply_matrix.py --gcode <sliced> --map {args.out}/sweep_map.json")
+    print("  flow is per-object (print_flow_ratio) — both axes are in the 3mf")
+    print("\nNext: open it in Bambu Studio, slice, print. No post-processing needed.")
+    print("To confirm a sliced file really carries the sweep:")
+    print(f"  python3 check_sweep.py --gcode <sliced> --map {args.out}/sweep_map.json")
 
 
 if __name__ == "__main__":
