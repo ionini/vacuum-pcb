@@ -30,16 +30,19 @@ channel roof and the top face has no bore mouths, so it is not in a sealing path
 python3 build_plate.py --vpcb "L resistor thinner.vpcb" \
                        --template "Resistor test.3mf" --out sweep
 
-# 2. slice it — in Bambu Studio, or headless:
-/Applications/BambuStudio.app/Contents/MacOS/BambuStudio \
-    --slice 1 --outputdir sweep/sliced sweep/bore_flow_sweep.3mf
+# 2. slice it — in Bambu Studio ("export sliced file"), or headless. Ask for a
+#    .gcode.3mf, not a bare .gcode: that container is what Bambu Studio can send
+#    to the printer (see "Printing it" below).
+/Applications/BambuStudio.app/Contents/MacOS/BambuStudio --slice 1 \
+    --export-3mf baseline.gcode.3mf --outputdir sweep sweep/bore_flow_sweep.3mf
 
 # 3. stamp the per-cell flow ratios on
-python3 apply_matrix.py --gcode sweep/sliced/plate_1.gcode --map sweep/sweep_map.json
+python3 apply_matrix.py --gcode sweep/baseline.gcode.3mf --map sweep/sweep_map.json \
+                        --out sweep/READY.gcode.3mf
 
-# 4. check it before committing hours of printing to it
-python3 verify.py --before sweep/sliced/plate_1.gcode \
-                  --after sweep/sliced/plate_1_swept.gcode --map sweep/sweep_map.json
+# 4. check it before committing hours of printing to it (payload extracted from
+#    each container, or pass plain .gcode files)
+python3 verify.py --before before.gcode --after after.gcode --map sweep/sweep_map.json
 ```
 
 `--template` supplies the print/filament/printer settings verbatim: the plate is
@@ -47,8 +50,28 @@ rebuilt around them and nothing about the process is changed, so the sweep is
 anchored to whatever profile the real boards print with. Its objects are
 discarded — only settings are borrowed.
 
-Step 3 also accepts a `.gcode.3mf` sliced file and repacks it (md5 included) so
-the plate can still be sent from Bambu Studio or Handy.
+## Printing it
+
+The sweep only exists in the post-processed file. Slicing the plate 3mf in Bambu
+Studio always shows one uniform flow (whatever the profile says), so the preview
+looking identical row to row is correct, not a bug — only the columns differ
+there, since the bore is geometry.
+
+Send the **`.gcode.3mf`**, not a bare `.gcode`. Two things live in the container
+that a loose G-code file has no room for:
+
+* the filament mapping table (`Metadata/plate_1.json`, `<filament tray_info_idx=…>`
+  in `slice_info.config`) that the send dialog matches against the printer;
+* `Metadata/plate_1.gcode.md5`, which `apply_matrix.py` recomputes on repack.
+
+One headless-slicing wrinkle: `BambuStudio --slice` leaves `printer_model_id`
+**empty** in `slice_info.config`, and Bambu Studio then refuses the job with *"Not
+all filaments used in slicing are mapped to the printer"*. `apply_matrix.py`
+fills it in on repack, looking the id up by printer name in the installed
+profiles (`…/Resources/profiles/*/machine/*.json`, `type: machine_model` →
+`model_id`, e.g. "Bambu Lab A1 mini" → `N1`) rather than hardcoding it, and warns
+if no profile matches. A GUI-exported sliced file already has it and is left
+alone.
 
 ## Reading the plate
 

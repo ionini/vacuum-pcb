@@ -26,12 +26,12 @@ Retractions, wipes, travels, layer changes and the start/end G-code are never
 touched.
 """
 import argparse
+import glob
 import hashlib
 import json
 import math
 import os
 import re
-import shutil
 import sys
 import zipfile
 
@@ -112,10 +112,34 @@ class Grid:
         return None
 
 
+PROFILES = "/Applications/BambuStudio.app/Contents/Resources/profiles"
+
+
+def bambu_model_id(printer_model):
+    """Bambu's internal id for a printer ("Bambu Lab A1 mini" -> "N1"), read from
+    the installed profiles rather than hardcoded.
+
+    A `BambuStudio --slice` run leaves `printer_model_id` empty in the sliced
+    project's slice_info.config, and Bambu Studio needs it to map the file's
+    filament onto the printer — without it, sending the job fails with "Not all
+    filaments used in slicing are mapped to the printer".
+    """
+    for path in glob.glob(os.path.join(PROFILES, "*", "machine", "*.json")):
+        try:
+            with open(path) as fh:
+                d = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if d.get("type") == "machine_model" and d.get("name") == printer_model:
+            return d.get("model_id")
+    return None
+
+
 def load_gcode(path):
-    """-> (lines, repack) where repack(new_lines, dest) writes the same
-    container back out. A .gcode.3mf keeps its wrapper so the plate can still be
-    sent from Bambu Studio / Handy."""
+    """-> (lines, repack, entries) where repack(new_lines, dest, patches) writes
+    the same container back out. A .gcode.3mf keeps its wrapper so the plate can
+    still be sent from Bambu Studio / Handy; `entries` is its zip contents (None
+    for a bare .gcode) so the caller can patch sidecar metadata."""
     if path.endswith(".3mf"):
         with zipfile.ZipFile(path) as z:
             inner = [n for n in z.namelist() if re.fullmatch(r"Metadata/plate_\d+\.gcode", n)]
@@ -125,7 +149,7 @@ def load_gcode(path):
             blob = z.read(name).decode("utf-8", "replace")
             entries = {n: z.read(n) for n in z.namelist()}
 
-        def repack(text, dest):
+        def repack(text, dest, patches=None):
             digest = hashlib.md5(text.encode("utf-8")).hexdigest().upper()
             with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as out:
                 for n, data in entries.items():
@@ -133,16 +157,18 @@ def load_gcode(path):
                         data = text.encode("utf-8")
                     elif n == name + ".md5":
                         data = digest.encode("utf-8")
+                    elif patches and n in patches:
+                        data = patches[n]
                     out.writestr(n, data)
-        return blob.splitlines(), repack
+        return blob.splitlines(), repack, entries
 
     with open(path, "r", encoding="utf-8", errors="replace") as fh:
         blob = fh.read()
 
-    def repack(text, dest):
+    def repack(text, dest, patches=None):
         with open(dest, "w", encoding="utf-8") as fh:
             fh.write(text)
-    return blob.splitlines(), repack
+    return blob.splitlines(), repack, None
 
 
 def main():
@@ -163,12 +189,15 @@ def main():
         doc = json.load(fh)
     grid = Grid(doc, args.tol)
     sliced_flow = doc["sliced_flow_ratio"]
-    lines, repack = load_gcode(args.gcode)
+    lines, repack, entries = load_gcode(args.gcode)
 
     limit = args.max_volumetric
+    printer_model = None
     for ln in lines:
         if limit is None and ln.startswith("; filament_max_volumetric_speed = "):
             limit = float(ln.split("=", 1)[1].strip().strip('"'))
+        if ln.startswith("; printer_model = "):
+            printer_model = ln.split("=", 1)[1].strip().strip('"')
         if ln.startswith("; filament_flow_ratio = "):
             got = float(ln.split("=", 1)[1].strip().strip('"'))
             if abs(got - sliced_flow) > 1e-9:
@@ -325,7 +354,24 @@ def main():
             base, ext = os.path.splitext(base)[0], ".gcode" + ext
         dest = base + "_swept" + ext
     text = "\n".join(out) + "\n"
-    repack(text, dest)
+
+    # A headless slice leaves printer_model_id empty, which makes Bambu Studio
+    # refuse to send the job ("Not all filaments ... mapped to the printer").
+    patches = {}
+    model_note = None
+    info = "Metadata/slice_info.config"
+    if entries and info in entries:
+        blob = entries[info].decode("utf-8", "replace")
+        if re.search(r'key="printer_model_id" value=""', blob):
+            model_id = bambu_model_id(printer_model) if printer_model else None
+            if model_id:
+                patches[info] = re.sub(r'(key="printer_model_id" value=)""',
+                                       rf'\1"{model_id}"', blob).encode("utf-8")
+                model_note = f'filled empty printer_model_id = "{model_id}" ({printer_model})'
+            else:
+                model_note = (f"WARNING: printer_model_id is empty and no profile matches "
+                              f"{printer_model!r} — Bambu Studio may refuse to send this job")
+    repack(text, dest, patches)
 
     # --- report --------------------------------------------------------------
     print(f"cells: {len(stats)}   object labels: "
@@ -348,6 +394,8 @@ def main():
     total_out = sum(s["e_out"] for s in stats.values())
     print(f"extrusion inside coupons: {total_in:.1f} -> {total_out:.1f} mm filament "
           f"({100 * (total_out / total_in - 1):+.2f}%)")
+    if model_note:
+        print(model_note)
     print(f"wrote {dest}")
     print("NOTE: the printer's own time/progress estimate (M73) is not recalculated; "
           "clamped moves make the real print slightly longer than the header says.")
