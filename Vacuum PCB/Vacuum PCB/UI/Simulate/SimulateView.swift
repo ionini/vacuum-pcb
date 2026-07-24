@@ -40,8 +40,13 @@ struct SimulateView: View {
     /// moving through (speed ∝ mass flow). On by default — spotting continuous
     /// supply draw is the overlay's whole point — and remembered per app.
     @AppStorage("simulateShowFlow") private var showFlow = true
-    /// 3D view only: the ghosted printed-body slabs around the tube network.
-    @AppStorage("simulate3DShowBody") private var showBody = true
+    /// 3D view: which scene elements show (body slabs / channel network),
+    /// stored raw because the tab teardown would reset plain @State. Driven
+    /// by the canvas's floating preset picker + Layers menu.
+    @AppStorage("simulate3DVisibility") private var visibility3DRaw =
+        Simulate3DVisibility.both.rawValue
+    /// 3D view: ghost-body slab opacity (floating slider).
+    @AppStorage("simulate3DBodyOpacity") private var bodyOpacity3D = 0.35
 
     enum ViewMode: String, Hashable { case schematic, physical, threeD }
 
@@ -99,7 +104,10 @@ struct SimulateView: View {
             case .threeD:
                 Simulate3DCanvas(document: document.circuit, state: state,
                                  visible: visible, showFlow: showFlow,
-                                 showBody: showBody,
+                                 elementVisibility: Binding(
+                                     get: { Simulate3DVisibility(rawValue: visibility3DRaw) },
+                                     set: { visibility3DRaw = $0.rawValue }),
+                                 bodyOpacity: $bodyOpacity3D,
                                  cameraStore: simulate3DCameraStore)
             }
         }
@@ -179,17 +187,10 @@ struct SimulateView: View {
         }
 
         // Layer visibility and the flow overlay apply to the two spatial
-        // views (physical heatmap and 3D); the schematic ignores both.
+        // views (physical heatmap and 3D); the schematic ignores both. The
+        // 3D view's body/channel element toggles live in its floating
+        // control strip (like the Preview tab), not here.
         if viewMode == .physical || viewMode == .threeD {
-            if viewMode == .threeD {
-                ToolbarItem(placement: .automatic) {
-                    Toggle(isOn: $showBody) {
-                        Label("Body", systemImage: "cube.transparent")
-                    }
-                    .help("Show the printed body as ghosted slabs around the " +
-                          "channel network.")
-                }
-            }
             ToolbarItem(placement: .automatic) {
                 Toggle(isOn: $showFlow) {
                     Label("Flow", systemImage: "wind")

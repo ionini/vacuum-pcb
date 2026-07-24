@@ -32,8 +32,13 @@ struct Simulate3DCanvas: View {
     let state: SimulationState
     let visible: LayerVisibility
     let showFlow: Bool
-    /// Ghosted printed-body slabs on/off (toolbar "Body" toggle).
-    let showBody: Bool
+    /// Which scene elements (body slabs / channel network) are shown —
+    /// driven by the floating preset picker + Layers menu, like the 3D
+    /// preview. Owned by SimulateView (AppStorage) so it survives the tab
+    /// teardown.
+    @Binding var elementVisibility: Simulate3DVisibility
+    /// Opacity of the ghosted printed-body slabs (floating slider).
+    @Binding var bodyOpacity: Double
     /// Owned by DocumentView so orbit / zoom survive tab switches.
     let cameraStore: Scene3DCameraStore?
 
@@ -41,7 +46,7 @@ struct Simulate3DCanvas: View {
 
     var body: some View {
         let revision = state.networkRevision
-        ZStack {
+        ZStack(alignment: .top) {
             if let built = model.built {
                 Simulate3DSceneView(
                     geometry: built,
@@ -49,18 +54,20 @@ struct Simulate3DCanvas: View {
                     frame: Self.makeFrame(geometry: built, state: state),
                     visible: visible,
                     showFlow: showFlow,
-                    showBody: showBody,
+                    elementVisibility: elementVisibility,
+                    bodyOpacity: bodyOpacity,
                     cameraStore: cameraStore
                 )
+                controls
             } else {
                 ProgressView("Building 3D view…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             if model.built != nil && model.builtRevision != revision {
                 ProgressView("Rebuilding…")
                     .padding(10)
                     .glassEffect(in: .rect(cornerRadius: 10))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                    .padding(.top, 12)
+                    .padding(.top, 56)
                     .allowsHitTesting(false)
             }
         }
@@ -72,6 +79,72 @@ struct Simulate3DCanvas: View {
             model.requestBuild(revision: new, flat: state.flattenedDoc,
                                network: state.network)
         }
+    }
+
+    /// Floating overlay at the top of the scene: preset segmented picker,
+    /// per-element Layers menu, and the body-opacity slider — the 3D
+    /// preview's control strip, minus the casting elements the simulate
+    /// scene doesn't have.
+    private var controls: some View {
+        HStack(spacing: 8) {
+            Picker("Show", selection: presetSelection) {
+                ForEach(Simulate3DDisplayMode.allCases, id: \.self) { mode in
+                    Text(mode.label).tag(Optional(mode))
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+
+            Menu {
+                Section("Body") {
+                    Toggle("Top plate", isOn: visibilityBinding(.topPlate))
+                    Toggle("Silicone sheet", isOn: visibilityBinding(.sheet))
+                    Toggle("Bottom plate", isOn: visibilityBinding(.bottomPlate))
+                }
+                Section("Channels") {
+                    Toggle("Channel network", isOn: visibilityBinding(.channels))
+                }
+            } label: {
+                Label("Layers", systemImage: "square.3.layers.3d")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+
+            HStack(spacing: 5) {
+                Image(systemName: "circle.lefthalf.filled")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Slider(value: $bodyOpacity, in: 0.1...1.0)
+                    .controlSize(InputPlatform.isTouch ? .regular : .small)
+                    .frame(width: InputPlatform.isTouch ? 120 : 90)
+            }
+            .help("Body opacity — how solid the ghosted plates and silicone " +
+                  "sheet render. The pressure-tinted channels stay opaque.")
+        }
+        .padding(8)
+        .glassEffect(in: .rect(cornerRadius: 10))
+        .padding(.top, 8)
+    }
+
+    /// Maps the element set to/from the named presets: the matching preset,
+    /// or nil (no segment lit) once individual toggles leave any preset.
+    private var presetSelection: Binding<Simulate3DDisplayMode?> {
+        Binding(
+            get: { Simulate3DDisplayMode.allCases.first { $0.visibility == elementVisibility } },
+            set: { if let mode = $0 { elementVisibility = mode.visibility } }
+        )
+    }
+
+    /// On/off binding for one element, used by the Layers menu.
+    private func visibilityBinding(_ element: Simulate3DVisibility) -> Binding<Bool> {
+        Binding(
+            get: { elementVisibility.contains(element) },
+            set: { on in
+                if on { elementVisibility.insert(element) }
+                else  { elementVisibility.remove(element) }
+            }
+        )
     }
 
     /// Resolve every unit's tint and every flow path's strength from the
@@ -158,6 +231,51 @@ struct Simulate3DCanvas: View {
     }
 }
 
+/// Per-element visibility of the simulate scene. The body slabs toggle
+/// independently; the channel network (tinted tubes, component cavities and
+/// the dot swarm riding them) is one element — per-layer channel filtering
+/// stays with the toolbar's plate picker and pills.
+struct Simulate3DVisibility: OptionSet, Hashable {
+    let rawValue: Int
+
+    static let topPlate    = Simulate3DVisibility(rawValue: 1 << 0)
+    static let bottomPlate = Simulate3DVisibility(rawValue: 1 << 1)
+    static let sheet       = Simulate3DVisibility(rawValue: 1 << 2)
+    static let channels    = Simulate3DVisibility(rawValue: 1 << 3)
+
+    /// Ghost body only — the printed stack without the air.
+    static let body: Simulate3DVisibility     = [.topPlate, .bottomPlate, .sheet]
+    /// Everything — the default working view.
+    static let both: Simulate3DVisibility     = [.topPlate, .bottomPlate, .sheet, .channels]
+    /// The air alone, body peeled away.
+    static let channelsOnly: Simulate3DVisibility = [.channels]
+}
+
+/// Named visibility presets for the floating segmented picker, mirroring the
+/// 3D preview's `PreviewDisplayMode` (no Mold — the simulate scene has no
+/// casting geometry).
+enum Simulate3DDisplayMode: String, CaseIterable, Hashable {
+    case bodyOnly
+    case both
+    case channelsOnly
+
+    var label: String {
+        switch self {
+        case .bodyOnly:     return "Body"
+        case .both:         return "Both"
+        case .channelsOnly: return "Channels"
+        }
+    }
+
+    var visibility: Simulate3DVisibility {
+        switch self {
+        case .bodyOnly:     return .body
+        case .both:         return .both
+        case .channelsOnly: return .channelsOnly
+        }
+    }
+}
+
 /// Plain-value snapshot of one publish, handed from SwiftUI to the SceneKit
 /// coordinator. Everything quantised so the apply pass can skip untouched
 /// materials.
@@ -221,7 +339,8 @@ struct Simulate3DSceneView {
     var frame: Simulate3DFrame
     var visible: LayerVisibility
     var showFlow: Bool
-    var showBody: Bool
+    var elementVisibility: Simulate3DVisibility
+    var bodyOpacity: Double
     var cameraStore: Scene3DCameraStore?
 
     // MARK: Coordinator
@@ -256,6 +375,9 @@ struct Simulate3DSceneView {
         var frame: Simulate3DFrame = .idle
         var showFlow = true
         var lastVisible: LayerVisibility?
+        /// Body opacity currently baked into the slab materials, so the
+        /// slider only touches them when it actually moved.
+        var lastBodyOpacity: Double?
         /// Dot spacing (mm) after the pool-budget stretch; recomputed each
         /// publish from the active path set.
         var effectivePeriod: Double = 6
@@ -373,8 +495,7 @@ struct Simulate3DSceneView {
         applyVisibility(coordinator: c)
         applyFrame(coordinator: c)
         c.showFlow = showFlow
-        c.dotsRoot.isHidden = !showFlow
-        applyBodyVisibility(coordinator: c)
+        applyElementVisibility(coordinator: c)
         applyFraming(coordinator: c, animated: false)
         configureCameraController(view.defaultCameraController, target: SCNVector3Zero)
 
@@ -420,8 +541,10 @@ struct Simulate3DSceneView {
         }
         applyFrame(coordinator: c)
         c.showFlow = showFlow
-        c.dotsRoot.isHidden = !showFlow
-        applyBodyVisibility(coordinator: c)
+        applyElementVisibility(coordinator: c)
+        if c.lastBodyOpacity != bodyOpacity {
+            applyBodyOpacity(coordinator: c)
+        }
         c.cameraStore = cameraStore
         if c.lastOutline != geometry.boardOutline {
             applyFraming(coordinator: c, animated: true)
@@ -466,6 +589,7 @@ struct Simulate3DSceneView {
         c.topSlabNode.geometry = slabGeometry(for: geometry.topSlab, color: .systemBlue)
         c.bottomSlabNode.geometry = slabGeometry(for: geometry.bottomSlab, color: .systemTeal)
         c.sheetSlabNode.geometry = slabGeometry(for: geometry.sheetSlab, color: .systemYellow)
+        c.lastBodyOpacity = bodyOpacity
 
         c.geometryRevision = geometryRevision
     }
@@ -579,23 +703,46 @@ struct Simulate3DSceneView {
         c.lastVisible = visible
     }
 
-    private func applyBodyVisibility(coordinator c: Coordinator) {
-        c.topSlabNode.isHidden = !showBody
-        c.bottomSlabNode.isHidden = !showBody
-        c.sheetSlabNode.isHidden = !showBody
+    /// Floating-controls element visibility: body slabs individually, and
+    /// the channel network (tubes + dot swarm) as one element. The dot root
+    /// additionally follows the toolbar Flow toggle.
+    private func applyElementVisibility(coordinator c: Coordinator) {
+        c.topSlabNode.isHidden    = !elementVisibility.contains(.topPlate)
+        c.bottomSlabNode.isHidden = !elementVisibility.contains(.bottomPlate)
+        c.sheetSlabNode.isHidden  = !elementVisibility.contains(.sheet)
+        c.unitsRoot.isHidden      = !elementVisibility.contains(.channels)
+        c.dotsRoot.isHidden       = !showFlow || !elementVisibility.contains(.channels)
     }
 
     // MARK: Materials
 
+    /// Body opacity mapped to material transparency, held a hair below fully
+    /// opaque — at exactly 1.0 SceneKit reclassifies the slabs as opaque-pass
+    /// geometry and the single-layer blend path no longer applies (see
+    /// Scene3DView.bodyTransparency).
+    private static func bodyTransparency(_ opacity: Double) -> CGFloat {
+        CGFloat(min(opacity, 0.995))
+    }
+
+    /// Push the slider's opacity onto the live slab materials — cheap, no
+    /// geometry rebuild.
+    private func applyBodyOpacity(coordinator c: Coordinator) {
+        for node in [c.topSlabNode, c.bottomSlabNode, c.sheetSlabNode] {
+            node.geometry?.firstMaterial?.transparency = Self.bodyTransparency(bodyOpacity)
+        }
+        c.lastBodyOpacity = bodyOpacity
+    }
+
     /// Ghost printed-body slab: the Preview tab's translucent plate recipe
-    /// (single-layer blend + depth write) at a fixed low opacity — enough to
-    /// orient the tubes inside the board without competing with the tints.
+    /// (single-layer blend + depth write) at the user's slider opacity —
+    /// enough to orient the tubes inside the board without competing with
+    /// the tints.
     private func slabGeometry(for mesh: Mesh, color: PlatformColor) -> SCNGeometry? {
         guard !mesh.isEmpty else { return nil }
         let geometry = SCNGeometry(mesh)
         let material = SCNMaterial()
         material.diffuse.contents = color
-        material.transparency = 0.16
+        material.transparency = Self.bodyTransparency(bodyOpacity)
         material.transparencyMode = .singleLayer
         material.writesToDepthBuffer = true
         material.isDoubleSided = true
