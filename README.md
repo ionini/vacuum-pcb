@@ -48,6 +48,11 @@ a route can cross plates mid-net.
    → assemble → plug 17-gauge blunt-tip needles into the edge ports.
 7. **3D Preview** tab shows the merged plate meshes as you go.
 
+Printing docs: [BAMBU_EXPORT.md](BAMBU_EXPORT.md) for slicing print-critical
+features with a modifier volume, [PRINT_SWEEPS.md](PRINT_SWEEPS.md) for finding
+settings empirically (many coupons on one plate) and for the slicer behaviours
+that silently invalidate a plate.
+
 ## Component palette
 
 Eight primitives:

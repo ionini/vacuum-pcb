@@ -1,5 +1,11 @@
 # Export for Bambu Studio (print-critical modifier)
 
+> Related: [PRINT_SWEEPS.md](PRINT_SWEEPS.md) — finding the settings empirically
+> (many coupons, one plate) and the Bambu Studio behaviours worth knowing before
+> trusting a slice: per-object flow ratio, when Studio silently ignores a 3mf's
+> settings or re-slices away a G-code edit, and how it measures the volumetric
+> ceiling.
+
 First-pass workflow for slicing print-critical pneumatic features (channels,
 valve chambers/seals, vias, and the thin walls/roofs/floors around them) with
 different settings in Bambu Studio, using its **modifier volume** feature.
