@@ -43,7 +43,7 @@ def arc_or_line(g, x, y, nx, ny, w):
     return r * (sweep if sweep > 1e-9 else 2 * math.pi)
 
 
-def scan(path, cells, origin, pitch, size, tol):
+def scan(path, cells, origin, pitch, size, tol, sliced_flow):
     """Walk a G-code file, bucketing extrusion by cell and totalling the things
     that must not move."""
     per_cell = {k: {"e": 0.0, "n": 0} for k in cells}
@@ -89,7 +89,10 @@ def scan(path, cells, origin, pitch, size, tol):
                 d = arc_or_line(g, x, y, nx, ny, w)
                 use_f = f if f is not None else pf
                 if d > 1e-4 and use_f:
-                    rate = e * FILAMENT_AREA / d * (use_f / 60.0)
+                    # Compare like the slicer does: geometric rate, with the
+                    # cell's own flow ratio divided back out.
+                    flow = cell["flow"] if inside else sliced_flow
+                    rate = e * FILAMENT_AREA / d * (use_f / 60.0) / flow
                     tot["max_rate"] = max(tot["max_rate"], rate)
             x, y = nx, ny
     return per_cell, tot
@@ -119,8 +122,8 @@ def main():
                 limit = float(ln.split("=", 1)[1].strip().strip('"'))
                 break
 
-    a_cells, a_tot = scan(args.before, cells, origin, pitch, size, args.tol)
-    b_cells, b_tot = scan(args.after, cells, origin, pitch, size, args.tol)
+    a_cells, a_tot = scan(args.before, cells, origin, pitch, size, args.tol, sliced_flow)
+    b_cells, b_tot = scan(args.after, cells, origin, pitch, size, args.tol, sliced_flow)
 
     fails = []
 
@@ -151,10 +154,10 @@ def main():
     check(abs(a_tot["outside_e"] - b_tot["outside_e"]) < 1e-9,
           f"extrusion outside the coupons untouched ({a_tot['outside_e']:.2f} mm)")
 
-    print("volumetric ceiling")
+    print("volumetric ceiling (geometric, as the slicer measures it)")
     if limit:
         check(b_tot["max_rate"] <= limit * SLACK * 1.001,
-              f"peak flow {b_tot['max_rate']:.3f} <= {limit} mm3/s "
+              f"peak geometric flow {b_tot['max_rate']:.3f} <= {limit} mm3/s "
               f"(was {a_tot['max_rate']:.3f} before)")
     else:
         print("  skip  no ceiling found")

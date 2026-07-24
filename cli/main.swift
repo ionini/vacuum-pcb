@@ -1,5 +1,6 @@
 import Foundation
 import Euclid
+import CoreText
 
 // Headless driver for validating Vacuum PCB simulations from the command line.
 //
@@ -687,6 +688,40 @@ func canonicalBodyName(_ raw: String) -> String? {
     }
 }
 
+/// Union a raised text label onto a body's upper face, centred.
+///
+/// For sweep plates: many copies of one coupon differ only by a parameter, and
+/// identical parts are indistinguishable the moment they leave the print bed, so
+/// the label has to be part of the geometry. Glyphs are sunk `sink` mm into the
+/// face so the union has real overlap to stitch rather than a coplanar kiss.
+/// Uses the same CoreText path as `PlateBuilder.testPointLabelMesh`.
+func embossLabel(on mesh: Mesh, text: String, size: Double, emboss: Double) -> Mesh {
+    let sink = 0.02
+    let font = CTFontCreateWithName("Helvetica" as CFString, size, nil)
+    // `Mesh.text` centres its extrusion on z = 0 rather than extruding upward,
+    // so the glyphs are aligned by their own measured bounds below instead of
+    // by an assumed convention.
+    let glyphs = Mesh.text(text, font: font, depth: emboss + sink, detail: 2)
+    guard !glyphs.polygons.isEmpty else {
+        fail("error: --label \"\(text)\" produced no printable glyphs")
+    }
+    let b = mesh.bounds
+    let g = glyphs.bounds
+    if g.max.x - g.min.x > b.max.x - b.min.x || g.max.y - g.min.y > b.max.y - b.min.y {
+        fail(String(format: "error: the label is %.1f×%.1f mm but the face is only %.1f×%.1f mm "
+                    + "— shorten it or drop --label-size",
+                    g.max.x - g.min.x, g.max.y - g.min.y,
+                    b.max.x - b.min.x, b.max.y - b.min.y))
+    }
+    // Centre on the face in XY; in Z, seat the glyph bottoms `sink` mm below the
+    // face so the union has real overlap to stitch, leaving `emboss` mm proud.
+    let placed = glyphs.translated(by: Vector(
+        (b.min.x + b.max.x) / 2 - (g.min.x + g.max.x) / 2,
+        (b.min.y + b.max.y) / 2 - (g.min.y + g.max.y) / 2,
+        (b.max.z - sink) - g.min.z))
+    return mesh.union(placed)
+}
+
 /// A body prints cleanly only if it stitched watertight with a positive
 /// (right-side-out) volume — the same judgement `Validators.mesh` applies.
 func bodyPasses(_ m: Mesh) -> Bool { m.isWatertight && m.signedVolume > 0 }
@@ -1173,6 +1208,10 @@ USAGE:
       --body writes ONE solid instead of the whole set — topPlate,
       bottomPlate, stencil or moldFrame (short forms: top, bottom, mold).
       Useful for printing a single plate as its own object.
+      --label TEXT unions raised Helvetica text onto the (single) body's upper
+      face, centred — so copies that differ only by a swept parameter can still
+      be told apart after they leave the bed. --label-size (default 4 mm) and
+      --label-emboss (default 0.3 mm) tune it; oversized text is an error.
 
   vacuum-cli export <file.vpcb> --bambu [--out DIR] [--modifier-xy MM]
                     [--modifier-z MM] [--no-manifest] [--json]
@@ -1304,6 +1343,9 @@ var flattenFull = false
 var volumesMode = false
 var bambu = false
 var bodySelector: String?
+var labelText: String?
+var labelSize = 4.0
+var labelEmboss = 0.3
 var writeManifest = true
 var modifierMargins = PlateBuilder.ModifierMargins.defaults
 
@@ -1365,6 +1407,18 @@ while i < args.count {
         i += 1
         guard i < args.count else { fail("error: --body needs a NAME (topPlate, bottomPlate, stencil, moldFrame)") }
         bodySelector = args[i]
+    case "--label":
+        i += 1
+        guard i < args.count else { fail("error: --label needs TEXT") }
+        labelText = args[i]
+    case "--label-size":
+        i += 1
+        guard i < args.count, let n = Double(args[i]), n > 0 else { fail("error: --label-size needs a positive number (mm)") }
+        labelSize = n
+    case "--label-emboss":
+        i += 1
+        guard i < args.count, let n = Double(args[i]), n > 0 else { fail("error: --label-emboss needs a positive number (mm)") }
+        labelEmboss = n
     case "--seconds":
         i += 1
         guard i < args.count, let n = Double(args[i]) else { fail("error: --seconds needs a number") }
@@ -1594,6 +1648,14 @@ do {
             if bodies.isEmpty {
                 fail("error: this board has no \(wanted) — it produced \(available.joined(separator: ", "))")
             }
+        }
+        if let text = labelText {
+            guard bodies.count == 1 else {
+                fail("error: --label needs a single solid — pass --body too "
+                     + "(this board produced \(bodies.map(\.name).joined(separator: ", ")))")
+            }
+            bodies[0].mesh = embossLabel(on: bodies[0].mesh, text: text,
+                                        size: labelSize, emboss: labelEmboss)
         }
         // makeWatertight() stitches the hairline cracks Euclid's BSP CSG leaves
         // where curved surfaces meet flat ones; slicers reject non-manifold STLs,

@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """Build a Bambu Studio plate that sweeps resistor bore diameter x flow ratio.
 
-One plate carrying COLS x ROWS copies of the same coupon (the top plate of a
-board), laid out on a deterministic grid:
+One plate carrying COLS x ROWS copies of a coupon (the top plate of a board),
+laid out on a deterministic grid:
 
-    columns (X, left -> right)  = resistor bore diameter  — GEOMETRY, so each
-                                  column is its own mesh, exported from the
+    columns (X, left -> right)  = resistor bore diameter  — GEOMETRY, from the
                                   .vpcb with `resistorChannelDiameter` set
     rows    (Y, front -> back)  = filament flow ratio     — G-CODE, applied
                                   afterwards by apply_matrix.py
+
+Every coupon gets its own `bore x flow` label embossed on its top face (0.3 mm
+proud, via `vacuum-cli export --label`), so each part still says what it is once
+it leaves the bed. That makes every *cell* a distinct mesh — 24 objects on a
+4 x 6 plate, not 4 objects with 6 instances each.
 
 Bore diameter cannot be swept in the slicer (it is part of the model), and flow
 ratio cannot be swept per object (it is a filament setting), so the sweep is
@@ -40,12 +44,18 @@ import zipfile
 # --- the sweep ---------------------------------------------------------------
 
 # Columns: resistor bore diameter, mm. Resistance runs as ~1/d^4 (Poiseuille),
-# so the relative-R column in the map spans ~16x across this list.
-BORES = [0.35, 0.40, 0.45, 0.50, 0.60, 0.70]
+# so the relative-R column in the map spans ~4x across this list.
+BORES = [0.30, 0.35, 0.40, 0.45]
 
 # Rows: *effective* filament flow ratio. apply_matrix.py converts each to a
 # multiplier against the flow ratio the plate was sliced with.
-FLOWS = [0.98, 1.00, 1.02, 1.04, 1.06, 1.08, 1.10, 1.12, 1.14, 1.16]
+FLOWS = [1.01, 1.02, 1.03, 1.04, 1.05, 1.06]
+
+# Every coupon carries its own settings embossed on its top face, so the parts
+# stay identifiable after they leave the bed. Comma decimals to match the
+# labels drawn by hand in Bambu Studio.
+def cell_label(bore, flow):
+    return f"{bore:.2f} x {flow:.2f}".replace(".", ",")
 
 # --- plate geometry ---------------------------------------------------------
 
@@ -128,34 +138,46 @@ def uuid_for(kind, n):
 
 # --- stage 1a: one mesh per bore diameter -----------------------------------
 
-def export_bore_meshes(vpcb, bores, cli, workdir):
-    """Write the .vpcb once per bore with `resistorChannelDiameter` overridden
-    and export its top plate alone. -> [(bore, verts, tris, size)]"""
+def export_cell_meshes(vpcb, bores, flows, cli, workdir, label_size):
+    """One mesh per CELL: the bore comes from the model, and the label naming
+    both parameters is embossed into the geometry, so no two cells share a mesh.
+    -> {(col, row): dict}"""
     with open(vpcb) as fh:
         doc = json.load(fh)
     if "resistorChannelDiameter" not in doc.get("manufacturing", {}):
         sys.exit(f"error: {vpcb} has no manufacturing.resistorChannelDiameter")
 
-    meshes = []
-    for bore in bores:
+    cells = {}
+    for col, bore in enumerate(bores):
         doc["manufacturing"]["resistorChannelDiameter"] = bore
         vp = os.path.join(workdir, f"bore_{bore:.2f}.vpcb")
-        stl = os.path.join(workdir, f"bore_{bore:.2f}.stl")
         with open(vp, "w") as fh:
             json.dump(doc, fh, indent=2)
-        r = subprocess.run([cli, "export", vp, "--body", "topPlate", "--out", stl, "--json"],
-                           capture_output=True, text=True)
-        if r.returncode != 0:
-            sys.exit(f"error: export failed for bore {bore}:\n{r.stdout}\n{r.stderr}")
-        body = json.loads(r.stdout)["bodies"][0]
-        if not body["watertight"]:
-            sys.exit(f"error: bore {bore} top plate is not watertight — a slicer would reject it")
-        verts, tris = read_binary_stl(stl)
-        verts, size = centre_on_origin(verts)
-        meshes.append((bore, verts, tris, size, body["signedVolume"]))
-        print(f"  bore {bore:.2f} mm -> {len(tris)} triangles, "
-              f"{size[0]:.1f}x{size[1]:.1f}x{size[2]:.1f} mm, {body['signedVolume']:.1f} mm3")
-    return meshes
+        for row, flow in enumerate(flows):
+            label = cell_label(bore, flow)
+            stl = os.path.join(workdir, f"c{col}r{row}.stl")
+            r = subprocess.run([cli, "export", vp, "--body", "topPlate",
+                                "--label", label, "--label-size", str(label_size),
+                                "--out", stl, "--json"],
+                               capture_output=True, text=True)
+            if r.returncode != 0:
+                sys.exit(f"error: export failed for bore {bore} / flow {flow}:\n"
+                         f"{r.stdout}\n{r.stderr}")
+            body = json.loads(r.stdout)["bodies"][0]
+            if not body["watertight"]:
+                sys.exit(f"error: c{col}r{row} (bore {bore}, label {label!r}) is not "
+                         "watertight — a slicer would reject it")
+            verts, tris = read_binary_stl(stl)
+            verts, size = centre_on_origin(verts)
+            cells[(col, row)] = {"bore": bore, "flow": flow, "label": label,
+                                 "verts": verts, "tris": tris, "size": size,
+                                 "volume": body["signedVolume"],
+                                 "name": f"b{bore:.2f}-f{flow:.2f}"}
+        print(f"  bore {bore:.2f} mm x {len(flows)} flow labels -> "
+              f"{len(cells[(col, 0)]['tris'])} triangles, "
+              f"{size[0]:.1f}x{size[1]:.1f}x{size[2]:.2f} mm, "
+              f"{cells[(col, 0)]['volume']:.1f} mm3")
+    return cells
 
 
 # --- stage 1b: author the plate ---------------------------------------------
@@ -189,12 +211,12 @@ def template_metadata(template):
     return head
 
 
-def build_3mf(template, meshes, flows, out_path):
-    """Rebuild the template's plate as len(meshes) objects x len(flows)
-    instances, keeping every settings file byte-for-byte."""
-    cols, rows = len(meshes), len(flows)
+def build_3mf(template, cell_meshes, bores, flows, out_path):
+    """Rebuild the template's plate as one labelled object per cell, keeping
+    every settings file byte-for-byte."""
+    cols, rows = len(bores), len(flows)
     centres = grid_positions(cols, rows)
-    size = meshes[0][3]
+    size = cell_meshes[(0, 0)]["size"]
     half = (size[0] / 2, size[1] / 2, size[2] / 2)
 
     # Bed fit is a hard error: an off-bed instance silently disappears in Bambu.
@@ -206,9 +228,11 @@ def build_3mf(template, meshes, flows, out_path):
                 sys.exit(f"error: cell c{c}r{r} at ({cx:.1f},{cy:.1f}) falls off the "
                          f"{BED[0]:.0f}x{BED[1]:.0f} bed — reduce the grid or the pitch")
 
-    names = [f"bore-{m[0]:.2f}" for m in meshes]
-    wrapper_ids = [2 + 2 * i for i in range(cols)]   # mirrors Bambu's even ids
-    inner_ids = [101 + i for i in range(cols)]
+    # Cell order is column-major: c0r0, c0r1, ... so the G-code visits a column
+    # at a time and the object list reads down each bore.
+    order = [(c, r) for c in range(cols) for r in range(rows)]
+    wrapper_ids = {k: 2 + 2 * i for i, k in enumerate(order)}   # Bambu's even ids
+    inner_ids = {k: 101 + i for i, k in enumerate(order)}
 
     model = ['<?xml version="1.0" encoding="UTF-8"?>',
              '<model unit="millimeter" xml:lang="en-US" '
@@ -218,11 +242,11 @@ def build_3mf(template, meshes, flows, out_path):
              'requiredextensions="p">']
     model += template_metadata(template)
     model.append(' <resources>')
-    for i in range(cols):
-        model.append(f'  <object id="{wrapper_ids[i]}" p:UUID="{uuid_for(0xa0, wrapper_ids[i])}" type="model">')
+    for k in order:
+        model.append(f'  <object id="{wrapper_ids[k]}" p:UUID="{uuid_for(0xa0, wrapper_ids[k])}" type="model">')
         model.append('   <components>')
-        model.append(f'    <component p:path="/3D/Objects/object_{inner_ids[i]}.model" '
-                     f'objectid="{inner_ids[i]}" p:UUID="{uuid_for(0xb0, inner_ids[i])}" '
+        model.append(f'    <component p:path="/3D/Objects/object_{inner_ids[k]}.model" '
+                     f'objectid="{inner_ids[k]}" p:UUID="{uuid_for(0xb0, inner_ids[k])}" '
                      f'transform="1 0 0 0 1 0 0 0 1 0 0 0"/>')
         model.append('   </components>')
         model.append('  </object>')
@@ -230,31 +254,30 @@ def build_3mf(template, meshes, flows, out_path):
     model.append(f' <build p:UUID="{uuid_for(0xc0, 1)}">')
 
     cells = []
-    item = 0
-    # Instance order is column-major so instance_id (and therefore the G-code's
-    # "copy N") counts up through the rows of one column: copy = row index.
-    for c in range(cols):
-        for r in range(rows):
-            cx, cy = centres[r][c]
-            model.append(f'  <item objectid="{wrapper_ids[c]}" p:UUID="{uuid_for(0xd0, item)}" '
-                         f'transform="1 0 0 0 1 0 0 0 1 {cx:g} {cy:g} {half[2]:g}" printable="1"/>')
-            cells.append({"col": c, "row": r, "object": names[c], "instance": r,
-                          "bore": meshes[c][0], "flow": flows[r],
-                          "x": round(cx, 3), "y": round(cy, 3)})
-            item += 1
+    for item, k in enumerate(order):
+        c, r = k
+        cx, cy = centres[r][c]
+        model.append(f'  <item objectid="{wrapper_ids[k]}" p:UUID="{uuid_for(0xd0, item)}" '
+                     f'transform="1 0 0 0 1 0 0 0 1 {cx:g} {cy:g} {half[2]:g}" printable="1"/>')
+        cells.append({"col": c, "row": r, "object": cell_meshes[k]["name"], "instance": 0,
+                      "label": cell_meshes[k]["label"],
+                      "bore": cell_meshes[k]["bore"], "flow": cell_meshes[k]["flow"],
+                      "x": round(cx, 3), "y": round(cy, 3)})
     model += [' </build>', '</model>', '']
 
     # model_settings.config: object + part per column, one plate, all instances.
     ms = ['<?xml version="1.0" encoding="UTF-8"?>', '<config>']
-    for i in range(cols):
-        ms.append(f'  <object id="{wrapper_ids[i]}">')
-        ms.append(f'    <metadata key="name" value="{names[i]}"/>')
+    for k in order:
+        name = cell_meshes[k]["name"]
+        faces = len(cell_meshes[k]["tris"])
+        ms.append(f'  <object id="{wrapper_ids[k]}">')
+        ms.append(f'    <metadata key="name" value="{name}"/>')
         ms.append('    <metadata key="extruder" value="1"/>')
-        ms.append(f'    <metadata face_count="{len(meshes[i][2])}"/>')
-        ms.append(f'    <part id="{inner_ids[i]}" subtype="normal_part">')
-        ms.append(f'      <metadata key="name" value="{names[i]}"/>')
+        ms.append(f'    <metadata face_count="{faces}"/>')
+        ms.append(f'    <part id="{inner_ids[k]}" subtype="normal_part">')
+        ms.append(f'      <metadata key="name" value="{name}"/>')
         ms.append('      <metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/>')
-        ms.append(f'      <mesh_stat face_count="{len(meshes[i][2])}" edges_fixed="0" '
+        ms.append(f'      <mesh_stat face_count="{faces}" edges_fixed="0" '
                   'degenerate_facets="0" facets_removed="0" facets_reversed="0" backwards_edges="0"/>')
         ms.append('    </part>')
         ms.append('  </object>')
@@ -264,21 +287,18 @@ def build_3mf(template, meshes, flows, out_path):
            '    <metadata key="locked" value="false"/>',
            '    <metadata key="filament_map_mode" value="Auto For Flush"/>',
            '    <metadata key="filament_maps" value="1"/>']
-    ident = 1000
-    for c in range(cols):
-        for r in range(rows):
-            ms.append('    <model_instance>')
-            ms.append(f'      <metadata key="object_id" value="{wrapper_ids[c]}"/>')
-            ms.append(f'      <metadata key="instance_id" value="{r}"/>')
-            ms.append(f'      <metadata key="identify_id" value="{ident}"/>')
-            ms.append('    </model_instance>')
-            ident += 2
+    for i, k in enumerate(order):
+        ms.append('    <model_instance>')
+        ms.append(f'      <metadata key="object_id" value="{wrapper_ids[k]}"/>')
+        ms.append('      <metadata key="instance_id" value="0"/>')
+        ms.append(f'      <metadata key="identify_id" value="{1000 + 2 * i}"/>')
+        ms.append('    </model_instance>')
     ms += ['  </plate>', '</config>', '']
 
     rels = ['<?xml version="1.0" encoding="UTF-8"?>',
             '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">']
-    for i in range(cols):
-        rels.append(f' <Relationship Target="/3D/Objects/object_{inner_ids[i]}.model" '
+    for i, k in enumerate(order):
+        rels.append(f' <Relationship Target="/3D/Objects/object_{inner_ids[k]}.model" '
                     f'Id="rel-{i + 1}" '
                     'Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>')
     rels += ['</Relationships>', '']
@@ -306,10 +326,10 @@ def build_3mf(template, meshes, flows, out_path):
         z.writestr("3D/3dmodel.model", "\n".join(model))
         z.writestr("3D/_rels/3dmodel.model.rels", "\n".join(rels))
         z.writestr("Metadata/model_settings.config", "\n".join(ms))
-        for i in range(cols):
-            z.writestr(f"3D/Objects/object_{inner_ids[i]}.model",
-                       mesh_model_xml(inner_ids[i], uuid_for(0xe0, inner_ids[i]),
-                                      meshes[i][1], meshes[i][2]))
+        for k in order:
+            z.writestr(f"3D/Objects/object_{inner_ids[k]}.model",
+                       mesh_model_xml(inner_ids[k], uuid_for(0xe0, inner_ids[k]),
+                                      cell_meshes[k]["verts"], cell_meshes[k]["tris"]))
     return cells, centres, size
 
 
@@ -321,15 +341,15 @@ def relative_resistance(bore, ref):
     return (ref / bore) ** 4
 
 
-def write_map(cells, meshes, flows, sliced_flow_ratio, out_dir, size):
-    cols, rows = len(meshes), len(flows)
-    ref = meshes[0][0]
+def write_map(cells, bores, flows, sliced_flow_ratio, out_dir, size, ref):
+    cols, rows = len(bores), len(flows)
     doc = {
         "grid": {"cols": cols, "rows": rows, "pitch_x": PITCH_X, "pitch_y": PITCH_Y,
                  "coupon_size": {"x": size[0], "y": size[1], "z": size[2]}, "bed": BED},
         "axes": {"x": "resistor bore diameter (mm)", "y": "effective flow ratio"},
-        "bores": [m[0] for m in meshes],
+        "bores": bores,
         "flows": flows,
+        "reference_bore": ref,
         "sliced_flow_ratio": sliced_flow_ratio,
         "cells": cells,
     }
@@ -340,13 +360,15 @@ def write_map(cells, meshes, flows, sliced_flow_ratio, out_dir, size):
           f"Plate: {cols} columns (bore) x {rows} rows (flow) = {cols * rows} coupons, "
           f"{size[0]:.0f}x{size[1]:.0f}x{size[2]:.0f} mm each.",
           f"Column pitch {PITCH_X:g} mm, row pitch {PITCH_Y:g} mm. "
-          "**Row 0 is the FRONT of the bed** (low Y), column 0 the left (low X).", "",
+          "**Row 0 is the FRONT of the bed** (low Y), column 0 the left (low X).",
+          "Every coupon carries its own `bore x flow` label embossed on its top face, "
+          "so the plate map is a convenience, not a requirement.", "",
           "## Columns — resistor bore diameter (geometry)", "",
           "| col | bore mm | est. R relative to " + f"{ref:.2f} mm | bed X mm |",
           "|---|---|---|---|"]
     for c in range(cols):
         x = [cell["x"] for cell in cells if cell["col"] == c][0]
-        md.append(f"| {c} | {meshes[c][0]:.2f} | {relative_resistance(meshes[c][0], ref):.3f}x | {x:.1f} |")
+        md.append(f"| {c} | {bores[c]:.2f} | {relative_resistance(bores[c], ref):.3f}x | {x:.1f} |")
     md += ["", "R estimate is ideal Poiseuille (1/d^4) on the *modelled* bore — the point of",
            "the print is that the printed bore is not the modelled one.", "",
            "## Rows — effective flow ratio (G-code)", "",
@@ -357,18 +379,21 @@ def write_map(cells, meshes, flows, sliced_flow_ratio, out_dir, size):
     md += ["", f"Sliced at flow ratio {sliced_flow_ratio:g}; the multiplier is what",
            "apply_matrix.py scales each cell's extrusion by.", "",
            "## Results", "",
-           "| col | row | bore | flow | R measured | leaks? | notes |", "|---|---|---|---|---|---|---|"]
+           "| label on part | col | row | bore | flow | R measured | leaks? | notes |",
+           "|---|---|---|---|---|---|---|---|"]
     for cell in cells:
-        md.append(f"| {cell['col']} | {cell['row']} | {cell['bore']:.2f} | {cell['flow']:.2f} |  |  |  |")
+        md.append(f"| `{cell['label']}` | {cell['col']} | {cell['row']} | {cell['bore']:.2f} "
+                  f"| {cell['flow']:.2f} |  |  |  |")
     md.append("")
     with open(os.path.join(out_dir, "sweep_map.md"), "w") as fh:
         fh.write("\n".join(md))
 
 
-def write_collection_sheet(cells, meshes, flows, out_dir, size):
-    """A true-scale sheet to lay the coupons on as they come off the plate —
-    60 identical parts are indistinguishable once they leave the bed."""
-    cols, rows = len(meshes), len(flows)
+def write_collection_sheet(cells, bores, flows, out_dir, size):
+    """A true-scale plate map: which cell sits where on the bed. Optional now
+    that every coupon is labelled, but still the quickest way to see the
+    layout — and to sort parts as they come off."""
+    cols, rows = len(bores), len(flows)
     pad, label = 22.0, 10.0
     w = pad * 2 + cols * PITCH_X
     h = pad * 2 + rows * PITCH_Y + label
@@ -389,11 +414,11 @@ def write_collection_sheet(cells, meshes, flows, out_dir, size):
             s.append(f'<rect x="{x:.2f}" y="{y:.2f}" width="{size[0]:.2f}" height="{size[1]:.2f}" '
                      'fill="none" stroke="#888" stroke-width="0.25" stroke-dasharray="1.5 1"/>')
             s.append(f'<text x="{x + 1:.2f}" y="{y + size[1] / 2 + 1.1:.2f}" font-size="2.6" '
-                     f'fill="#333">c{c}r{r} {meshes[c][0]:.2f} / {flows[r]:.2f}</text>')
+                     f'fill="#333">c{c}r{r} {bores[c]:.2f} / {flows[r]:.2f}</text>')
     for c in range(cols):
         x = pad + c * PITCH_X + PITCH_X / 2
         s.append(f'<text x="{x:.2f}" y="{label + pad - 3:.2f}" font-size="3.2" '
-                 f'text-anchor="middle" font-weight="bold">{meshes[c][0]:.2f}</text>')
+                 f'text-anchor="middle" font-weight="bold">{bores[c]:.2f}</text>')
     for r in range(rows):
         y = label + pad + (rows - 1 - r) * PITCH_Y + PITCH_Y / 2 + 1
         s.append(f'<text x="{pad - 3:.2f}" y="{y:.2f}" font-size="3.2" '
@@ -416,6 +441,11 @@ def main():
     ap.add_argument("--cli", default="./.build/release/vacuum-cli")
     ap.add_argument("--bores", type=float, nargs="+", default=BORES)
     ap.add_argument("--flows", type=float, nargs="+", default=FLOWS)
+    ap.add_argument("--label-size", type=float, default=4.0,
+                    help="embossed label font size, mm (default 4)")
+    ap.add_argument("--ref-bore", type=float, default=None,
+                    help="bore the relative-R column is quoted against "
+                         "(default: the .vpcb's own resistorChannelDiameter)")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -426,26 +456,33 @@ def main():
     print(f"          {settings['print_settings_id']}, flow ratio {sliced_flow:g}, "
           f"nozzle {settings['nozzle_diameter'][0]} mm, layer {settings['layer_height']} mm")
 
-    print(f"exporting {len(args.bores)} bore variants of {os.path.basename(args.vpcb)}:")
+    ref = args.ref_bore
+    if ref is None:
+        with open(args.vpcb) as fh:
+            ref = float(json.load(fh)["manufacturing"]["resistorChannelDiameter"])
+    print(f"exporting {len(args.bores)} x {len(args.flows)} labelled coupons from "
+          f"{os.path.basename(args.vpcb)} (R quoted against its own {ref:g} mm bore):")
     work = tempfile.mkdtemp(prefix="print_sweep.")
     try:
-        meshes = export_bore_meshes(args.vpcb, args.bores, args.cli, work)
+        cell_meshes = export_cell_meshes(args.vpcb, args.bores, args.flows,
+                                         args.cli, work, args.label_size)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
-    sizes = {tuple(round(v, 3) for v in m[3]) for m in meshes}
+    sizes = {tuple(round(v, 3) for v in m["size"]) for m in cell_meshes.values()}
     if len(sizes) != 1:
-        sys.exit(f"error: bore variants differ in size ({sizes}) — the grid assumes one footprint")
+        sys.exit(f"error: cells differ in size ({sizes}) — the grid assumes one footprint")
 
     out_3mf = os.path.join(args.out, "bore_flow_sweep.3mf")
-    cells, _, size = build_3mf(args.template, meshes, args.flows, out_3mf)
-    write_map(cells, meshes, args.flows, sliced_flow, args.out, size)
-    write_collection_sheet(cells, meshes, args.flows, args.out, size)
+    cells, _, size = build_3mf(args.template, cell_meshes, args.bores, args.flows, out_3mf)
+    write_map(cells, args.bores, args.flows, sliced_flow, args.out, size, ref)
+    write_collection_sheet(cells, args.bores, args.flows, args.out, size)
 
-    span_x = (len(meshes) - 1) * PITCH_X + size[0]
+    span_x = (len(args.bores) - 1) * PITCH_X + size[0]
     span_y = (len(args.flows) - 1) * PITCH_Y + size[1]
     print(f"\nwrote {out_3mf}")
-    print(f"  {len(cells)} coupons, {len(meshes)} bores x {len(args.flows)} flow ratios")
+    print(f"  {len(cells)} labelled coupons, {len(args.bores)} bores x "
+          f"{len(args.flows)} flow ratios")
     print(f"  plate footprint {span_x:.1f} x {span_y:.1f} mm on a {BED[0]:.0f} x {BED[1]:.0f} bed "
           f"(gaps {PITCH_X - size[0]:.1f} / {PITCH_Y - size[1]:.1f} mm)")
     print(f"  map: {args.out}/sweep_map.json, sweep_map.md, collection_sheet.svg")

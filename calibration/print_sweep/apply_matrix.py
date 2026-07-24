@@ -17,11 +17,10 @@ an independent cross-check of the geometric assignment.
 
 What is rewritten, inside a coupon's footprint only:
   * E on extrusion moves            x flow multiplier (target / sliced flow ratio)
-  * F on extrusion moves            x speed factor, and clamped so the higher
-                                    flow cannot exceed filament_max_volumetric_speed
-                                    — the slicer applies that limit at slice
-                                    time, so scaling E past it would silently
-                                    under-extrude instead of slowing down
+  * F on extrusion moves            x speed factor, clamped to
+                                    filament_max_volumetric_speed the way the
+                                    slicer measures it (geometrically, before
+                                    flow ratio — see the clamp for why)
   * M106 (part fan) inside a labelled object block, when the map sets fan
 Retractions, wipes, travels, layer changes and the start/end G-code are never
 touched.
@@ -245,10 +244,11 @@ def main():
             continue
 
         key = (cell["col"], cell["row"])
-        if obj is not None:
-            # Cross-check: instance order is column-major, so copy == row.
-            if obj[2] != cell["row"] and (obj, key) not in mismatch:
-                mismatch.append((obj, key))
+        if obj is not None and cell.get("object"):
+            # Cross-check the geometric assignment against the slicer's own
+            # object name, which build_plate.py set per cell.
+            if cell["object"] not in obj[0] and (obj[0], key) not in mismatch:
+                mismatch.append((obj[0], key))
 
         flow_mult = cell["flow"] / sliced_flow
         speed_mult = cell.get("speed", 1.0)
@@ -263,14 +263,25 @@ def main():
             f_new *= speed_mult
 
         # Re-apply the volumetric ceiling the slicer honoured at slice time.
-        # SLACK absorbs the slicer's own rounding: without it every move it had
-        # already brought exactly to the ceiling would be re-clamped.
+        #
+        # Bambu applies max_volumetric_speed to the *geometric* extrusion rate,
+        # before the flow-ratio multiplier: sparse infill comes out of the slicer
+        # at 2.5 x 1.01 = 2.525 mm^3/s of actual filament, i.e. exactly 2.500
+        # once flow ratio is divided out. So the ceiling on the E we write is
+        # limit x this cell's flow ratio — which means a pure flow change needs
+        # no clamping at all, exactly as a native re-slice at that flow ratio
+        # would need none. That is what makes the sweep transferable: what wins
+        # here is what typing the same number into the filament profile gives.
+        # The clamp still binds when speed is swept, which is the case the
+        # slicer really would have slowed down.
+        # SLACK absorbs the slicer's own rounding.
+        ceiling = limit * cell["flow"]
         dist = extruded_length(int(mm.group(1)), x, y, nx, ny, words)
         clamped = False
         if f_new is not None and dist > 1e-4:
             rate = e_new * FILAMENT_AREA / dist * (f_new / 60.0)
-            if rate > limit * SLACK:
-                f_new = limit * 60.0 * dist / (e_new * FILAMENT_AREA)
+            if rate > ceiling * SLACK:
+                f_new = ceiling * 60.0 * dist / (e_new * FILAMENT_AREA)
                 clamped = True
 
         line = re.sub(r"E-?\d*\.?\d+(?:[eE][-+]?\d+)?", "E" + e_str, line, count=1)

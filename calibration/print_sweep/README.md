@@ -17,6 +17,12 @@ model, so every column is a separately generated mesh. Flow ratio is a
 *filament* setting — one value per plate, not per object — so it cannot be swept
 in the slicer at all and is stamped onto the sliced G-code afterwards.
 
+Every coupon carries its own `bore x flow` label embossed 0.3 mm proud on its top
+face (`vacuum-cli export --label`), so a part still says what it is after it
+leaves the bed. That makes each *cell* a distinct mesh: a 4 x 6 plate is 24
+objects, not 4 objects with 6 instances. The label sits ~1.25 mm above the
+channel roof and the top face has no bore mouths, so it is not in a sealing path.
+
 ## Workflow
 
 ```bash
@@ -46,10 +52,10 @@ the plate can still be sent from Bambu Studio or Handy.
 
 ## Reading the plate
 
-Sixty identical-looking coupons are indistinguishable the moment they leave the
-bed, so `collection_sheet.svg` prints at true scale with one labelled box per
-cell — lay each coupon in its box as it comes off. `sweep_map.md` carries the
-same table plus empty columns for measured R and leak result.
+Each coupon is self-identifying, so nothing has to be tracked by position.
+`sweep_map.md` lists every cell with its label and empty columns for measured R
+and leak result; `collection_sheet.svg` prints at true scale as a plate map, handy
+for sorting parts but no longer required.
 
 Row 0 is the **front** of the bed (low Y), column 0 the **left** (low X).
 
@@ -67,35 +73,42 @@ on, so most moves are `G2`/`G3` and the chord under-measures the path by up to
 factor, which is enough to "discover" ceiling violations that are not there.
 `extruded_length()` integrates the arc properly.
 
-## Why the volumetric clamp is not optional
+## The volumetric ceiling, and why the sweep does *not* fight it
 
-The slicer enforces `filament_max_volumetric_speed` (2.5 mm³/s here) at slice
-time — sparse infill comes out at exactly 2.5, i.e. already on the ceiling.
-Scaling E up for a higher flow ratio without touching F would ask for ~2.9 mm³/s
-and the printer would simply fail to keep up: silent under-extrusion, in the
-cells that were supposed to be *over*-extruding. `apply_matrix.py` re-applies the
-ceiling by slowing those moves, which is what the slicer would have done natively.
+`filament_max_volumetric_speed` (2.5 mm³/s here) binds already: sparse infill
+leaves the slicer sitting exactly on it. But measure the filament actually
+commanded and it comes to 2.525 mm³/s — precisely 2.5 × 1.01. **Bambu applies the
+ceiling to the geometric extrusion rate, before the flow-ratio multiplier**, so
+the real limit on the E in the file is `limit × flow_ratio`.
+
+That is why a pure flow-ratio change gets no clamping here. A native re-slice at
+flow 1.06 would not slow down either, so clamping would make the plate print
+*unlike* the thing it is supposed to predict — and the point of the sweep is that
+the winning number can be typed straight into the filament profile. The clamp
+still binds if the map sweeps speed, which is the case the slicer really would
+have slowed. Getting this backwards costs ~11 000 needlessly slowed moves per
+plate and a sweep whose fast rows do not match production.
 
 ## Caveats on the experiment itself
 
-* **R ∝ 1/d⁴.** The bore list spans a ~16x resistance range. The R column in the
-  map is ideal Poiseuille on the *modelled* bore, from the mesh's own measured
-  cross-section (a 0.35 -> 0.50 mm change removes 3.11 mm³ of material, matching
-  a circular bore over 31 mm of channel to 0.3%). The printed bore is not the
-  modelled one — that is the whole point of printing this.
-* **Widening the bore changes the infill, not just the hole.** Across
-  0.35 -> 0.70 mm the slicer converts sparse infill into solid infill around the
-  channel (5130 -> 1930 sparse moves, 24050 -> 33560 solid). Wider-bore columns
-  are therefore denser around the channel, which helps sealing on its own. It is
-  a confound, not a bug, but do not attribute all of the column effect to the
-  bore.
+* **R ∝ 1/d⁴.** The map quotes each column's resistance against the source
+  board's own bore, as ideal Poiseuille on the *modelled* geometry. That model is
+  trustworthy for the mesh: the volume a bore removes matches a circular channel
+  over 31.0 mm to 0.3% (0.35 -> 0.50 mm removes 3.11 mm³ vs 3.10 predicted). The
+  printed bore is not the modelled one — that is the whole point of printing this.
+* **Widening the bore changes the infill, not just the hole.** Over a wide bore
+  range the slicer converts sparse infill into solid around the channel (measured
+  across 0.35 -> 0.70 mm: 5130 -> 1930 sparse moves, 24050 -> 33560 solid).
+  Wider-bore columns are therefore denser around the channel, which helps sealing
+  on its own. A confound, not a bug — but do not attribute all of the column
+  effect to the bore.
 * **By-layer printing is deliberate.** Each coupon's layer lands on plastic that
   cooled while the head visited the other 59, which matches a coupon printed as
   part of a much larger board — not one printed alone. Fan and nozzle
   temperature cannot be swept this way (spin-up and thermal lag are far slower
   than the per-object dwell); `apply_matrix.py` supports both if the map asks,
   but they need sequential printing.
-* **Print time scales with cell count**: ~18.7 min per coupon on the 0.2 nozzle
-  / 6-wall / 20 mm/s-outer-wall profile, so 60 cells is ~18h 40m by layer. A
-  by-layer plate is also all-or-nothing — a failure at layer 15 of 22 costs every
+* **Print time scales with cell count**: ~18.5 min per coupon on the 0.2 nozzle
+  / 6-wall / 20 mm/s-outer-wall profile — 24 cells is 7h 26m, 60 cells 18h 42m. A
+  by-layer plate is also all-or-nothing: a failure near the top layer costs every
   cell. Trimming the flow rows is the cheapest way to cut both.
