@@ -50,15 +50,33 @@ rebuilt around them and nothing about the process is changed, so the sweep is
 anchored to whatever profile the real boards print with. Its objects are
 discarded — only settings are borrowed.
 
-## Printing it
+## Printing it — from the microSD card
 
-The sweep only exists in the post-processed file. Slicing the plate 3mf in Bambu
-Studio always shows one uniform flow (whatever the profile says), so the preview
-looking identical row to row is correct, not a bug — only the columns differ
-there, since the bore is geometry.
+**Bambu Studio re-slices a sliced project and silently discards the stamp.**
+Measured, not assumed: a `.gcode` exported from Studio after opening
+`READY.gcode.3mf` came back flat — every row extruding 227.2 mm where the rows
+should span +5%, row 0 byte-comparable to the un-stamped baseline. The container
+carries the models as well as the G-code, so Studio has everything it needs to
+regenerate from the model at the profile's single flow ratio, and the plate looks
+right either way. `check_sweep.py` exists to catch exactly this:
 
-Send the **`.gcode.3mf`**, not a bare `.gcode`. Two things live in the container
-that a loose G-code file has no room for:
+```bash
+python3 check_sweep.py --gcode "the file I am about to print.gcode" \
+                       --map sweep/sweep_map.json
+```
+
+It reports PRESENT / ABSENT / MISMATCH from the file alone: cells in one column
+share geometry exactly, so the ratio of extruded filament between rows of a
+column is the ratio of their flow ratios, no reference needed.
+
+So print the stamped payload **from the printer's microSD card**, where no slicer
+can touch it. Extract it from the repacked container (or keep the plain `.gcode`
+output of step 3) and copy it over. Note the printer will not prompt for filament
+mapping, so the right spool has to be loaded already.
+
+The `.gcode.3mf` remains useful as the thing Studio can *send* — a bare `.gcode`
+has nowhere to carry two things the send dialog needs — but only print it if
+`check_sweep.py` still says PRESENT for the payload Studio actually transmits:
 
 * the filament mapping table (`Metadata/plate_1.json`, `<filament tray_info_idx=…>`
   in `slice_info.config`) that the send dialog matches against the printer;
