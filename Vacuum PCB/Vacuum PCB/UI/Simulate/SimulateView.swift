@@ -93,7 +93,15 @@ struct SimulateView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background { SimulationClock(state: state) }
+        .background {
+            SimulationClock(state: state)
+            // Space toggles the transport. KeyEventCatcher rather than
+            // .keyboardShortcut so a space typed into the test drawer's
+            // script editor still inserts a space instead of pausing.
+            KeyEventCatcher(handlers: [
+                KeyCodes.space: { state.isPlaying.toggle() },
+            ])
+        }
     }
 
     /// All view-mode / transport / speed controls go in the window toolbar

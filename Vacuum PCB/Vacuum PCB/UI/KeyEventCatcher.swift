@@ -101,6 +101,7 @@ final class KeyEventCatcherView: NSView {
 /// event when running on iPad.
 enum KeyCodes {
     static let delete: UInt16        = 51
+    static let space: UInt16         = 49
     static let forwardDelete: UInt16 = 117
     static let escape: UInt16        = 53
     static let r: UInt16             = 15
