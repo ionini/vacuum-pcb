@@ -1610,7 +1610,7 @@ enum PlateBuilder {
     /// half-space cube so the cutter is bounded at the plate surface; otherwise
     /// the rest of the sphere would render through the silicone gap in the
     /// channels-only view.
-    private static func dimpleMesh(
+    static func dimpleMesh(
         at center: Point, layer: Plate, m: ManufacturingConstants,
         topInnerZ: Double, bottomInnerZ: Double
     ) -> Mesh {
@@ -1645,7 +1645,7 @@ enum PlateBuilder {
     /// (spherical cap intruding into the plate from the silicone-facing
     /// surface) but parameterised by `ledDimpleDiameter` and `ledDimpleDepth`
     /// — both raw values entered by the user, no derivation.
-    private static func ledDimpleMesh(
+    static func ledDimpleMesh(
         at center: Point, layer: Plate, m: ManufacturingConstants,
         topInnerZ: Double, bottomInnerZ: Double
     ) -> Mesh {

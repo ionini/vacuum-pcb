@@ -22,22 +22,28 @@ struct SimulateView: View {
     /// Passed in from DocumentView so the Export menu can sit immediately
     /// before the Inspector toggle on the trailing edge.
     let exportMenu: ExportMenuButton
+    /// Owned by DocumentView (which outlives the per-tab views) so the 3D
+    /// canvas's orbit / zoom survive leaving and returning to the tab — the
+    /// same arrangement as the Preview tab's camera store.
+    let simulate3DCameraStore: Scene3DCameraStore
 
-    /// Which canvas (schematic or physical heatmap) the tab shows. AppStorage
-    /// rather than @State: DocumentView's detail `switch` tears this view down
-    /// on every tab change, so plain view state snapped back to Schematic
-    /// each time the user left and returned.
+    /// Which canvas (schematic, physical heatmap, or 3D) the tab shows.
+    /// AppStorage rather than @State: DocumentView's detail `switch` tears
+    /// this view down on every tab change, so plain view state snapped back
+    /// to Schematic each time the user left and returned.
     @AppStorage("simulateViewMode") private var viewMode: ViewMode = .schematic
-    /// Layer-visibility filter for the physical heatmap. Mirrors the editor's
-    /// per-layer pills so the user can isolate T0 / B0 / etc. while tracing
-    /// pressure flow. Schematic mode ignores this.
+    /// Layer-visibility filter for the physical heatmap and the 3D view.
+    /// Mirrors the editor's per-layer pills so the user can isolate T0 / B0 /
+    /// etc. while tracing pressure flow. Schematic mode ignores this.
     @State private var visible: LayerVisibility = .both
-    /// Physical-view flow overlay: marching dots along every path air is
+    /// Physical/3D flow overlay: marching dots along every path air is
     /// moving through (speed ∝ mass flow). On by default — spotting continuous
     /// supply draw is the overlay's whole point — and remembered per app.
     @AppStorage("simulateShowFlow") private var showFlow = true
+    /// 3D view only: the ghosted printed-body slabs around the tube network.
+    @AppStorage("simulate3DShowBody") private var showBody = true
 
-    enum ViewMode: String, Hashable { case schematic, physical }
+    enum ViewMode: String, Hashable { case schematic, physical, threeD }
 
     var body: some View {
         splitContent
@@ -90,6 +96,11 @@ struct SimulateView: View {
             case .physical:
                 SimulatePhysicalCanvas(document: document.circuit, state: state,
                                        visible: visible, showFlow: showFlow)
+            case .threeD:
+                Simulate3DCanvas(document: document.circuit, state: state,
+                                 visible: visible, showFlow: showFlow,
+                                 showBody: showBody,
+                                 cameraStore: simulate3DCameraStore)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -150,6 +161,7 @@ struct SimulateView: View {
             Picker("View", selection: $viewMode) {
                 Text("Schematic").tag(ViewMode.schematic)
                 Text("Physical").tag(ViewMode.physical)
+                Text("3D").tag(ViewMode.threeD)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -166,8 +178,18 @@ struct SimulateView: View {
             .help(testModel.showPanel ? "Hide the test panel" : "Show the test panel")
         }
 
-        // Layer visibility is only relevant on the physical heatmap.
-        if viewMode == .physical {
+        // Layer visibility and the flow overlay apply to the two spatial
+        // views (physical heatmap and 3D); the schematic ignores both.
+        if viewMode == .physical || viewMode == .threeD {
+            if viewMode == .threeD {
+                ToolbarItem(placement: .automatic) {
+                    Toggle(isOn: $showBody) {
+                        Label("Body", systemImage: "cube.transparent")
+                    }
+                    .help("Show the printed body as ghosted slabs around the " +
+                          "channel network.")
+                }
+            }
             ToolbarItem(placement: .automatic) {
                 Toggle(isOn: $showFlow) {
                     Label("Flow", systemImage: "wind")

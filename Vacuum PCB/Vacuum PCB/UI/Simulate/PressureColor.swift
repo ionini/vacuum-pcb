@@ -55,4 +55,24 @@ enum PressureColor {
         let floor = min(max(maxVacuum, 0), 0.99)
         return max(0, min(1, (pressure - floor) / (1 - floor)))
     }
+
+    /// `depth` exposed for the 3D Simulate view, which quantises ramp
+    /// positions into a small colour LUT so a publish only touches SceneKit
+    /// materials whose colour actually moved.
+    static func rampPosition(for pressure: Double, maxVacuum: Double) -> Double {
+        depth(of: pressure, maxVacuum: maxVacuum)
+    }
+
+    /// Platform-native stroke colour at ramp position `t` (0 = deepest
+    /// reachable vacuum, 1 = atmosphere) for SceneKit materials. Same ramp as
+    /// `strokeColor`, which SwiftUI callers should keep using.
+    static func platformStrokeColor(rampPosition t: Double) -> PlatformColor {
+        let vacuum = (h: 0.60, s: 0.95, b: 0.80)
+        let atm    = (h: 0.60, s: 0.10, b: 0.55)
+        let tt = max(0, min(1, t))
+        return PlatformColor(hue: CGFloat(vacuum.h),
+                             saturation: CGFloat(vacuum.s + tt * (atm.s - vacuum.s)),
+                             brightness: CGFloat(vacuum.b + tt * (atm.b - vacuum.b)),
+                             alpha: 1)
+    }
 }

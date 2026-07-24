@@ -69,6 +69,9 @@ struct DocumentView: View {
     /// inside its SCNView) down. Holding the pose here lets the rebuilt view
     /// replay the user's orbit / zoom instead of snapping to the iso default.
     @State private var cameraStore = Scene3DCameraStore()
+    /// Same arrangement for the Simulate tab's 3D canvas — a separate store,
+    /// so the two 3D views keep independent orbits.
+    @State private var simulateCameraStore = Scene3DCameraStore()
     /// Set whenever the document mutates; cleared after a successful build.
     /// We don't rebuild eagerly any more — CSG is expensive and the user is
     /// almost never on the 3D Preview tab while editing.
@@ -307,7 +310,8 @@ struct DocumentView: View {
                 state: state,
                 testModel: testModel,
                 showInspector: $showInspector,
-                exportMenu: exportMenu
+                exportMenu: exportMenu,
+                simulate3DCameraStore: simulateCameraStore
             )
         } else {
             // Trampoline: spin up the state then re-render. This pattern
