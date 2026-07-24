@@ -47,6 +47,11 @@ struct SimulateView: View {
         Simulate3DVisibility.both.rawValue
     /// 3D view: ghost-body slab opacity (floating slider).
     @AppStorage("simulate3DBodyOpacity") private var bodyOpacity3D = 0.35
+    /// Transport state captured when the hosting window goes off screen
+    /// (window-tab deselected, minimized). nil while the window is visible.
+    /// Restored — not force-played — when the window shows again, so a
+    /// deliberately paused sim stays paused across a tab round-trip.
+    @State private var wasPlayingBeforeHide: Bool?
 
     enum ViewMode: String, Hashable { case schematic, physical, threeD }
 
@@ -120,6 +125,22 @@ struct SimulateView: View {
             KeyEventCatcher(handlers: [
                 KeyCodes.space: { state.isPlaying.toggle() },
             ])
+            // macOS window tabs never unmount this view, so onDisappear
+            // can't pause a document hidden behind another window tab —
+            // without this, every background tab keeps integrating at
+            // 60 Hz. Setting isPlaying on resume resets the tick baseline
+            // (see SimulationState), so no absence is ever integrated.
+            WindowVisibilityCatcher { visible in
+                if visible {
+                    if let was = wasPlayingBeforeHide {
+                        state.isPlaying = was
+                        wasPlayingBeforeHide = nil
+                    }
+                } else {
+                    wasPlayingBeforeHide = state.isPlaying
+                    state.isPlaying = false
+                }
+            }
         }
     }
 
