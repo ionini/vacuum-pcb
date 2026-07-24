@@ -675,6 +675,18 @@ func exportBodies(_ out: PlateBuilder.Output) -> [(name: String, mesh: Mesh)] {
         .map { (name: $0.0, mesh: $0.1) }
 }
 
+/// Resolve a `--body` selector to one of `exportBodies`' names. Accepts the
+/// canonical camelCase name plus the obvious short forms, case-insensitively.
+func canonicalBodyName(_ raw: String) -> String? {
+    switch raw.lowercased() {
+    case "topplate", "top": return "topPlate"
+    case "bottomplate", "bottom": return "bottomPlate"
+    case "stencil": return "stencil"
+    case "moldframe", "mold", "frame": return "moldFrame"
+    default: return nil
+    }
+}
+
 /// A body prints cleanly only if it stitched watertight with a positive
 /// (right-side-out) volume — the same judgement `Validators.mesh` applies.
 func bodyPasses(_ m: Mesh) -> Bool { m.isWatertight && m.signedVolume > 0 }
@@ -1151,13 +1163,16 @@ USAGE:
       Build the printed solids (PlateBuilder) and assert each plate is
       watertight, manifold and non-degenerate — i.e. a slicer will accept it.
 
-  vacuum-cli export <file.vpcb> [--out PATH] [--json]
+  vacuum-cli export <file.vpcb> [--out PATH] [--body NAME] [--json]
       Build the printed solids and write them as a single binary STL — the
       same bodies (top plate, bottom plate, stencil, mold frame), per-body
       makeWatertight() and merge the GUI's "Save STL" / Bambu path produces.
       Defaults to <file>.stl beside the input. Reports each solid's volume
       and watertightness; exits non-zero (file still written) if any solid is
       not watertight, since a slicer would reject it.
+      --body writes ONE solid instead of the whole set — topPlate,
+      bottomPlate, stencil or moldFrame (short forms: top, bottom, mold).
+      Useful for printing a single plate as its own object.
 
   vacuum-cli export <file.vpcb> --bambu [--out DIR] [--modifier-xy MM]
                     [--modifier-z MM] [--no-manifest] [--json]
@@ -1288,6 +1303,7 @@ var holds: [String: Double] = [:]
 var flattenFull = false
 var volumesMode = false
 var bambu = false
+var bodySelector: String?
 var writeManifest = true
 var modifierMargins = PlateBuilder.ModifierMargins.defaults
 
@@ -1345,6 +1361,10 @@ while i < args.count {
         i += 1
         guard i < args.count else { fail("error: --out needs a PATH") }
         outPath = args[i]
+    case "--body":
+        i += 1
+        guard i < args.count else { fail("error: --body needs a NAME (topPlate, bottomPlate, stencil, moldFrame)") }
+        bodySelector = args[i]
     case "--seconds":
         i += 1
         guard i < args.count, let n = Double(args[i]) else { fail("error: --seconds needs a number") }
@@ -1559,9 +1579,21 @@ do {
             if r.modelMesh.polygons.isEmpty || r.modifierMesh.polygons.isEmpty { exit(1) }
             break
         }
-        let bodies = exportBodies(PlateBuilder.build(doc))
+        var bodies = exportBodies(PlateBuilder.build(doc))
         if bodies.isEmpty {
             fail("error: nothing to export — the board produced no printable solids (empty outline?)")
+        }
+        // --body writes ONE named solid instead of the whole set, so a script can
+        // print a single plate without hand-editing the multi-solid STL.
+        if let selector = bodySelector {
+            guard let wanted = canonicalBodyName(selector) else {
+                fail("error: unknown --body \(selector) — expected topPlate, bottomPlate, stencil or moldFrame")
+            }
+            let available = bodies.map(\.name)
+            bodies = bodies.filter { $0.name == wanted }
+            if bodies.isEmpty {
+                fail("error: this board has no \(wanted) — it produced \(available.joined(separator: ", "))")
+            }
         }
         // makeWatertight() stitches the hairline cracks Euclid's BSP CSG leaves
         // where curved surfaces meet flat ones; slicers reject non-manifold STLs,
