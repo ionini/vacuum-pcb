@@ -118,6 +118,20 @@ struct DocumentView: View {
     /// Not persisted into the `.vpcb` (matches the v1 simulation-state scope).
     @State private var testModel = SimTestModel()
 
+    /// How many placed subparts are pinned to an older library version.
+    /// Drives the sidebar's Library section (below Design Rules) with its
+    /// bulk "Update All from Library" button. Recomputed debounced — the
+    /// staleness check hashes whole library documents, too heavy to run
+    /// synchronously on every drag tick of the circuit `onChange`.
+    @State private var outdatedSubparts = 0
+    @State private var outdatedRecompute: Task<Void, Never>?
+
+    #if canImport(AppKit)
+    /// Opens library `.vpcb` files for the View-menu "Open All Subparts as
+    /// Tabs" command (published to the menu via `focusedSceneValue`).
+    @Environment(\.openDocument) private var openDocument
+    #endif
+
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebar
@@ -175,6 +189,7 @@ struct DocumentView: View {
             if document.circuit.isAssembly, !visibleTabs.contains(selectedTab) {
                 selectedTab = .schematic
             }
+            scheduleOutdatedRecompute()
         }
         .onChange(of: includeTestPoints) { _, _ in
             // This flag feeds the build (unlike the scene-visibility toggles),
@@ -196,7 +211,23 @@ struct DocumentView: View {
             // handler so snapshot-only changes still invalidate the preview.
             previewDirty = true
             if selectedTab == .preview { rebuild() }
+            scheduleOutdatedRecompute()
         }
+        // Fires immediately on subscription (initial count) and again on
+        // every library re-index — including the folder watcher's reload
+        // right after a part is saved in another window tab. That's what
+        // flips the sidebar's Library section on without any user action.
+        .onReceive(PartsLibrary.shared.$parts) { _ in
+            scheduleOutdatedRecompute()
+        }
+        #if canImport(AppKit)
+        // Publishes the "Open All Subparts as Tabs" action to the View
+        // menu for whichever document window is frontmost.
+        .focusedSceneValue(\.openAllSubpartTabs, OpenAllSubpartTabsAction(
+            enabled: document.circuit.logic.components.contains { $0.kind == .subpart },
+            run: { SubpartTabs.openAll(from: document.circuit, openDocument: openDocument) }
+        ))
+        #endif
         .onChange(of: selectedTab) { _, newTab in
             // Only rebuild the CSG when the user actually wants to look at
             // the 3D preview. Avoids the per-edit Euclid CSG storm that was
@@ -532,8 +563,47 @@ struct DocumentView: View {
             Section("Design Rules") {
                 DRCSummarySection(circuit: document.circuit, onFocus: focusIssue)
             }
+            // Only materialises when something is actually stale — an
+            // always-on "Library: up to date" row would just be noise.
+            if outdatedSubparts > 0 {
+                Section("Library") {
+                    Label(outdatedSubparts == 1
+                            ? "1 subpart out of date"
+                            : "\(outdatedSubparts) subparts out of date",
+                          systemImage: "arrow.triangle.2.circlepath")
+                        .foregroundStyle(.orange)
+                        .font(.caption)
+                    Button("Update All from Library") { updateAllSubparts() }
+                        .controlSize(.small)
+                        .help("Re-pin every out-of-date subpart instance to the current library version — same as clicking each instance's own Update from Library button, without having to select them. Up-to-date instances are untouched.")
+                }
+            }
         }
         .listStyle(.sidebar)
+    }
+
+    /// Debounced re-count of stale subpart pins. A save in a library tab
+    /// lands as a `PartsLibrary` reload burst, and drags mutate the circuit
+    /// every frame — one hash pass ~0.25 s after the last trigger covers
+    /// both without hashing library docs per tick.
+    private func scheduleOutdatedRecompute() {
+        outdatedRecompute?.cancel()
+        outdatedRecompute = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            outdatedSubparts = document.circuit.outdatedSubpartCount()
+        }
+    }
+
+    /// Bulk Update-from-Library: re-pins every out-of-date subpart instance
+    /// (transitive edits included) in one shot. `refreshAllSnapshots` leaves
+    /// already-current instances untouched, so this is exactly "update all
+    /// subcomponents that need updating".
+    private func updateAllSubparts() {
+        var circuit = document.circuit
+        if CircuitDocument.refreshAllSnapshots(&circuit, libraryLookup: CircuitDocument.sharedLibraryLookup) {
+            document.circuit = circuit
+        }
     }
 
     /// Click handler for an issue row in the sidebar. Asks DRC for the

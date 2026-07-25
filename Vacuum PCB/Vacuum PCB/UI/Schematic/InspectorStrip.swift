@@ -12,6 +12,11 @@ struct InspectorStrip: View {
     @Binding var selection: SchematicSelection
     /// Presentation flag for the connector pin-names editor popover.
     @State private var showingPinNames = false
+    /// Observed so the subpart version-pin badge flips to "Library has
+    /// changes" the moment the library re-indexes — e.g. right after the
+    /// part's own tab is saved — instead of waiting for an unrelated
+    /// re-render.
+    @ObservedObject private var library = PartsLibrary.shared
     #if canImport(AppKit)
     /// Opens a library `.vpcb` in the DocumentGroup (used by the subpart
     /// "Open in Tab" button). The environment action is macOS-only, which
@@ -214,7 +219,7 @@ struct InspectorStrip: View {
     /// is the only way edits in the parts folder reach a placed instance.
     @ViewBuilder
     private func subpartLibrarySync(_ c: Component) -> some View {
-        let live = c.partRef.flatMap { PartsLibrary.shared.part(named: $0) }
+        let live = c.partRef.flatMap { library.part(named: $0) }
         // Compare deep behavioural state — transitive edits (a dep of a
         // dep changed) need to surface as "out of date" too. The shallow
         // `contentHash` strips partRefHash for snapshot-key stability and
@@ -252,31 +257,13 @@ struct InspectorStrip: View {
     }
 
     #if canImport(AppKit)
-    /// Open the subpart's backing library file in the DocumentGroup, then
-    /// re-home the new window as a tab of the window the button was clicked
-    /// in. If the file is already open we just let `openDocument` bring its
-    /// existing window forward instead of moving it.
+    /// Open the subpart's backing library file as a tab of the window the
+    /// button was clicked in. Shared re-homing logic lives in `SubpartTabs`.
     private func openPartFile(_ c: Component) {
         guard let filename = c.partRef else { return }
-        let url = PartsLibrary.folderURL.appendingPathComponent(filename).standardizedFileURL
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
         let host = NSApp.keyWindow
-        let alreadyOpen = NSApp.windows.contains { $0.representedURL?.standardizedFileURL == url }
         Task { @MainActor in
-            guard (try? await openDocument(at: url)) != nil else { return }
-            guard !alreadyOpen, let host else { return }
-            // The window may register a beat after openDocument returns —
-            // poll briefly rather than racing it.
-            for _ in 0..<10 {
-                if let opened = NSApp.windows.first(where: {
-                    $0.representedURL?.standardizedFileURL == url
-                }), opened !== host {
-                    host.addTabbedWindow(opened, ordered: .above)
-                    opened.makeKeyAndOrderFront(nil)
-                    return
-                }
-                try? await Task.sleep(for: .milliseconds(50))
-            }
+            await SubpartTabs.open(filename: filename, host: host, openDocument: openDocument)
         }
     }
     #endif
