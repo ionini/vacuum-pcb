@@ -427,13 +427,22 @@ struct Scene3DView {
         CGFloat(min(opacity, 0.995))
     }
 
+    /// The envelope overlay never goes fully solid: capped at 0.70 on the
+    /// body-opacity scale so the carving inside the region (the whole point
+    /// of showing it, especially in Voids style) stays readable even with the
+    /// plates pushed opaque. Below the cap it follows the slider as usual.
+    private static func envelopeTransparency(_ opacity: Double) -> CGFloat {
+        bodyTransparency(min(opacity, 0.70))
+    }
+
     /// Push the current `bodyOpacity` onto the live printed-body materials
     /// (plates, stencil, mold). Cheap — mutates existing materials — so the
     /// opacity slider refreshes without the per-node geometry rebuild.
     private func applyBodyOpacity(coordinator c: Coordinator) {
-        for node in [c.topNode, c.bottomNode, c.stencilNode, c.moldNode, c.envelopeNode] {
+        for node in [c.topNode, c.bottomNode, c.stencilNode, c.moldNode] {
             node.geometry?.firstMaterial?.transparency = Self.bodyTransparency(bodyOpacity)
         }
+        c.envelopeNode.geometry?.firstMaterial?.transparency = Self.envelopeTransparency(bodyOpacity)
     }
 
     /// Feature solids are rendered opaque and slightly emissive so they pop
@@ -483,7 +492,7 @@ struct Scene3DView {
         // Tracks the body-opacity slider like the plates do (applyBodyOpacity
         // retunes it live); the envelope is body-like — a region of the print,
         // not a feature solid.
-        material.transparency = Self.bodyTransparency(bodyOpacity)
+        material.transparency = Self.envelopeTransparency(bodyOpacity)
         material.transparencyMode = .singleLayer
         material.writesToDepthBuffer = true
         material.isDoubleSided = true
