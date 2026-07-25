@@ -105,6 +105,7 @@ struct DocumentView: View {
         case exportBambu
         case openInBambuStudio
         case openInBambuWithModifier
+        case openInBambuWithVoidModifier
         case openInFlowSimulator
     }
 
@@ -804,6 +805,7 @@ struct DocumentView: View {
             onExportBambu: { triggerExport(.exportBambu) },
             onOpenBambu: { triggerExport(.openInBambuStudio) },
             onOpenBambuWithModifier: { triggerExport(.openInBambuWithModifier) },
+            onOpenBambuWithVoidModifier: { triggerExport(.openInBambuWithVoidModifier) },
             onOpenFlow: { triggerExport(.openInFlowSimulator) }
         )
     }
@@ -882,6 +884,12 @@ struct DocumentView: View {
             #else
             break
             #endif
+        case .openInBambuWithVoidModifier:
+            #if canImport(AppKit)
+            openInBambuStudio(withModifier: true, style: .voids)
+            #else
+            break
+            #endif
         case .openInFlowSimulator:
             #if canImport(AppKit)
             openInFlowSimulator()
@@ -957,13 +965,14 @@ struct DocumentView: View {
         }
     }
 
-    private func openInBambuStudio(withModifier: Bool = false) {
+    private func openInBambuStudio(withModifier: Bool = false,
+                                   style: BambuExport.ModifierStyle = .pneumatics) {
         guard let built else { return }
         guard let bambuURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.bambuStudioBundleID) else {
             return
         }
         if withModifier {
-            openInBambuStudioWithModifier(bambuURL: bambuURL, built: built)
+            openInBambuStudioWithModifier(bambuURL: bambuURL, built: built, style: style)
             return
         }
         // makeWatertight stitches the hairline cracks Euclid's BSP CSG leaves
@@ -999,7 +1008,8 @@ struct DocumentView: View {
     /// them as a single (multipart) object. The two share PlateBuilder's
     /// coordinate space, so they stay aligned; the user then switches the
     /// `_modifier` part to a Modifier. No manifest is written for this path.
-    private func openInBambuStudioWithModifier(bambuURL: URL, built: PlateBuilder.Output) {
+    private func openInBambuStudioWithModifier(bambuURL: URL, built: PlateBuilder.Output,
+                                               style: BambuExport.ModifierStyle = .pneumatics) {
         // Match the preview's snapshot so the modifier lines up with the plates.
         var snapshot = document.circuit
         if !includeTestPoints { snapshot.physical.testPoints = [] }
@@ -1008,6 +1018,7 @@ struct DocumentView: View {
         DispatchQueue.global(qos: .userInitiated).async {
             let payload = BambuExport.payload(doc: snapshot, baseName: base,
                                               margins: .init(snapshot.manufacturing),
+                                              style: style,
                                               includeManifest: false, prebuiltModel: built)
             let dir = FileManager.default.temporaryDirectory
             var urls: [URL] = []
@@ -1209,6 +1220,7 @@ struct ExportMenuButton: View {
     let onExportBambu: () -> Void
     let onOpenBambu: () -> Void
     let onOpenBambuWithModifier: () -> Void
+    let onOpenBambuWithVoidModifier: () -> Void
     let onOpenFlow: () -> Void
 
     var body: some View {
@@ -1222,6 +1234,10 @@ struct ExportMenuButton: View {
             // object" — remember to switch the _modifier part to a Modifier,
             // or it prints as solid.
             Button("Open in Bambu Studio (with Modifier)", action: onOpenBambuWithModifier)
+                .disabled(!bambuStudioInstalled)
+            // The inverted pairing: the global preset keeps the pneumatics,
+            // the modifier claims the voids (assign it LOW infill in Bambu).
+            Button("Open in Bambu Studio (Void Modifier)", action: onOpenBambuWithVoidModifier)
                 .disabled(!bambuStudioInstalled)
             Button("Open in Flow Simulator", action: onOpenFlow)
                 .disabled(!flowSimulatorInstalled)

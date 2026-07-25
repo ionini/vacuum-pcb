@@ -1214,7 +1214,7 @@ USAGE:
       --label-emboss (default 0.3 mm) tune it; oversized text is an error.
 
   vacuum-cli export <file.vpcb> --bambu [--out DIR] [--modifier-xy MM]
-                    [--modifier-z MM] [--no-manifest] [--json]
+                    [--modifier-z MM] [--modifier-voids] [--no-manifest] [--json]
       "Export for Bambu Studio": write two aligned STLs — <base>_model.stl
       (top + bottom plate laid out side by side ON THE BED, bottom plate
       pre-flipped to print orientation) and <base>_modifier.stl (a
@@ -1231,6 +1231,10 @@ USAGE:
       margins in mm (default: the document's own modifierMarginXY/Z — the
       values the GUI's envelope slider / Manufacturing settings edit; files
       from before that field default to 1.0 / 0.6).
+      --modifier-voids INVERTS the modifier: it claims everything that is NOT
+      pneumatic envelope / screw clamp zone / connector footprint, so the
+      global (airtight) preset governs the important regions and the modifier
+      only downgrades the filler (assign it low sparse infill in Bambu).
 
   vacuum-cli sweep <file.vpcb> [--max-combos N] [--param ...] [--json]
       Drive every 0/1 combination of the inputs, solve each to convergence,
@@ -1353,6 +1357,7 @@ var writeManifest = true
 // document's own manufacturing.modifierMarginXY/Z (what the GUI slider set).
 var modifierXYOverride: Double?
 var modifierZOverride: Double?
+var modifierStyle = BambuExport.ModifierStyle.pneumatics
 
 var i = 0
 while i < args.count {
@@ -1364,6 +1369,7 @@ while i < args.count {
     case "--volumes": volumesMode = true
     case "--bambu": bambu = true
     case "--no-manifest": writeManifest = false
+    case "--modifier-voids": modifierStyle = .voids
     case "--modifier-xy":
         i += 1
         guard i < args.count, let v = Double(args[i]), v >= 0 else { fail("error: --modifier-xy needs a non-negative number (mm)") }
@@ -1634,7 +1640,8 @@ do {
                     .appendingPathComponent("\(base)_bambu")
             let r = try BambuExport.writeDirectory(
                 doc: doc, baseName: base, directory: dir,
-                margins: modifierMargins, includeManifest: writeManifest
+                margins: modifierMargins, style: modifierStyle,
+                includeManifest: writeManifest
             )
             reportBambuExport(r, dir: dir, margins: modifierMargins, json: json)
             // Signal unusable geometry (empty model or modifier) while still
