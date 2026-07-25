@@ -408,14 +408,23 @@ struct Simulate3DSceneView {
                 phases[i] = phases[i].truncatingRemainder(dividingBy: period)
 
                 let phase = phases[i] < 0 ? phases[i] + period : phases[i]
-                // Heat = how much of the current strength the slow EMA has
-                // confirmed: a fresh transient runs cool (orange) and a
-                // stream that keeps flowing in sim-time heats to red.
-                let hot = i < sustained.count
-                    ? min(1.0, sustained[i] / max(strength, 1e-6)) : 0
+                // Heat = how well the slow EMA and the current strength
+                // agree: a fresh transient runs cold (EMA still catching
+                // up), a *decaying* one cools again (EMA above the falling
+                // flow — the min/max ratio drops instead of clamping red),
+                // and only a stream that holds its strength in sim-time
+                // saturates to 1.
+                let hot: Double
+                if i < sustained.count {
+                    let ema = sustained[i]
+                    hot = min(ema, strength) / max(max(ema, strength), 1e-6)
+                } else {
+                    hot = 0
+                }
                 let bucket = min(Simulate3DSceneView.strengthBuckets - 1, max(0, Int(strength * 8)))
                     * Simulate3DSceneView.heatBuckets
-                    + min(Simulate3DSceneView.heatBuckets - 1, max(0, Int(hot * 4)))
+                    + min(Simulate3DSceneView.heatBuckets - 1,
+                          max(0, Int(hot * Double(Simulate3DSceneView.heatBuckets))))
                 var s = phase.truncatingRemainder(dividingBy: period)
                 if s > total { continue }
                 while s <= total {
@@ -604,11 +613,13 @@ struct Simulate3DSceneView {
             // a translucent tube is at the mercy of SceneKit's per-object
             // transparent-pass sort, and loses.)
             //
-            // Hue carries persistence: fresh transients stream orange and
-            // settle away; a stream the sim-time EMA has confirmed keeps
-            // flowing runs red — static vent→rail draw, findable at a glance.
-            let color = PlatformColor(hue: CGFloat(0.08 * (1 - heat)),
-                                      saturation: CGFloat(0.9 + 0.1 * heat),
+            // Hue carries persistence across the full blue → green → red
+            // sweep: fresh (or fading) transients run blue, half-confirmed
+            // streams green/yellow, and only flow the sim-time EMA agrees is
+            // sustained reaches red — static vent→rail draw, findable at a
+            // glance.
+            let color = PlatformColor(hue: CGFloat(0.6 * (1 - heat)),
+                                      saturation: 0.9,
                                       brightness: CGFloat(0.55 + 0.45 * strength),
                                       alpha: 1)
             material.diffuse.contents = color
@@ -628,9 +639,9 @@ struct Simulate3DSceneView {
     }
 
     /// Dot bucket grid: brightness rows by |Q| strength, hue columns by
-    /// persistence (orange → red).
+    /// persistence (blue → green → red).
     static let strengthBuckets = 8
-    static let heatBuckets = 4
+    static let heatBuckets = 8
 
     /// Hard ceiling on animated dot nodes; beyond it the spacing stretches.
     private static let dotBudget = 1400
@@ -692,10 +703,10 @@ struct Simulate3DSceneView {
 
         // Dot-heat persistence: a slow sim-time EMA of each path's strength.
         // A transient charge decays before the EMA catches up (dots stay
-        // orange and disappear); a static vent→rail stream holds its
-        // strength until the EMA confirms it and the dots run red. Sim-time,
-        // so the time-scale slider doesn't change what counts as sustained;
-        // pausing freezes it along with everything else.
+        // cold and disappear); a static vent→rail stream holds its strength
+        // until the EMA confirms it and the dots run red. Sim-time, so the
+        // time-scale slider doesn't change what counts as sustained; pausing
+        // freezes it along with everything else.
         let dt = max(0, f.simClock - (c.lastSimClock ?? f.simClock))
         c.lastSimClock = f.simClock
         if c.sustained.count == f.flowStrengths.count, dt > 0 {
