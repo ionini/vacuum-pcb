@@ -600,18 +600,22 @@ struct Simulate3DSceneView {
         c.dotsRoot.childNodes.forEach { $0.removeFromParentNode() }
         c.dotPool = []
         c.bucketGeometries = (0..<(Self.strengthBuckets * Self.heatBuckets)).map { bucket in
-            let sphere = SCNSphere(radius: CGFloat(c.dotRadius))
-            sphere.segmentCount = 10
-            let material = SCNMaterial()
             let strength = (Double(bucket / Self.heatBuckets) + 0.5) / Double(Self.strengthBuckets)
             let heat = (Double(bucket % Self.heatBuckets) + 0.5) / Double(Self.heatBuckets)
+            // |Q| is carried by dot SIZE — trickles are small beads, heavy
+            // draw is fat ones. Size reads across hues, which brightness
+            // (the previous encoding) never did. The top of the range stays
+            // just inside the tube wall so fat dots still read as "in the
+            // bore" through the glass.
+            let sphere = SCNSphere(radius: CGFloat(c.dotRadius * (0.5 + 0.7 * strength)))
+            sphere.segmentCount = 10
+            let material = SCNMaterial()
             material.lightingModel = .constant
-            // Opaque, with strength encoded as brightness instead of alpha:
-            // opaque dots render in the opaque pass, *before* the translucent
-            // tubes blend over them — that ordering is what lets a dot inside
-            // the bore show through the tube wall. (A translucent dot inside
-            // a translucent tube is at the mercy of SceneKit's per-object
-            // transparent-pass sort, and loses.)
+            // Opaque, fully bright: opaque dots render in the opaque pass,
+            // *before* the translucent tubes blend over them — that ordering
+            // is what lets a dot inside the bore show through the tube wall.
+            // (A translucent dot inside a translucent tube is at the mercy
+            // of SceneKit's per-object transparent-pass sort, and loses.)
             //
             // Hue carries persistence across the full blue → green → red
             // sweep: fresh (or fading) transients run blue, half-confirmed
@@ -620,7 +624,7 @@ struct Simulate3DSceneView {
             // glance.
             let color = PlatformColor(hue: CGFloat(0.6 * (1 - heat)),
                                       saturation: 0.9,
-                                      brightness: CGFloat(0.55 + 0.45 * strength),
+                                      brightness: 0.95,
                                       alpha: 1)
             material.diffuse.contents = color
             material.emission.contents = color
