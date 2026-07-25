@@ -289,40 +289,46 @@ struct ManufacturingSettingsView: View {
 
     // MARK: - Sanitisation
 
+    /// Copy-and-mutate, NOT a memberwise rebuild: a rebuild silently resets any
+    /// field someone forgets to list back to its init default on every Apply —
+    /// which is exactly what happened to the envelope margins when they were
+    /// added. With a mutated copy, an unlisted field simply passes through
+    /// unclamped, which is the safe failure mode.
     private func sanitized(_ m: ManufacturingConstants) -> ManufacturingConstants {
-        ManufacturingConstants(
-            plateThickness: max(0.1, m.plateThickness),
-            channelDiameter: max(0.05, m.channelDiameter),
-            portBoreDiameter: max(0.05, m.portBoreDiameter),
-            portBoreTaperDegrees: max(0.0, min(45.0, m.portBoreTaperDegrees)),
-            siliconeThickness: max(0.05, m.siliconeThickness),
-            dimpleDiameter: max(0.1, m.dimpleDiameter),
-            dimpleDepth: max(0.05, m.dimpleDepth),
-            dimpleSphereOffset: max(0.0, m.dimpleSphereOffset),
-            padsDiameter: max(0.1, m.padsDiameter),
-            padsSeparation: max(0.0, m.padsSeparation),
-            padsOffset: max(0.0, m.padsOffset),
-            padsFilletRadius: max(0.0, m.padsFilletRadius),
-            gridPitch: max(0.05, m.gridPitch),
-            minChannelSpacing: max(0.05, m.minChannelSpacing),
-            resistorChannelDiameter: max(0.05, m.resistorChannelDiameter),
-            interLayerWall: max(0.1, m.interLayerWall),
-            plateCornerFillet: max(0.0, m.plateCornerFillet),
-            ledDimpleDiameter: max(0.1, m.ledDimpleDiameter),
-            ledDimpleDepth: max(0.0, m.ledDimpleDepth),
-            screwProtrusion: max(0.0, m.screwProtrusion),
-            screwDomeBaseDiameter: max(ScrewGeometry.headDiameter + 0.2,
-                                       m.screwDomeBaseDiameter),
-            screwHeadDepth: max(0.1, m.screwHeadDepth),
-            screwNutDepth: max(0.1, m.screwNutDepth),
-            stencilThickness: max(0.05, m.stencilThickness),
-            stencilViaPadding: max(0.0, min(2.0, m.stencilViaPadding)),
-            castingMargin: max(0.0, m.castingMargin),
-            moldWallThickness: max(0.0, m.moldWallThickness),
-            minWallThickness: max(0.05, m.minWallThickness),
-            flatBottomChannels: m.flatBottomChannels,
-            testPointLabelSize: max(0.0, m.testPointLabelSize)
-        )
+        var s = m
+        s.plateThickness = max(0.1, m.plateThickness)
+        s.channelDiameter = max(0.05, m.channelDiameter)
+        s.portBoreDiameter = max(0.05, m.portBoreDiameter)
+        s.portBoreTaperDegrees = max(0.0, min(45.0, m.portBoreTaperDegrees))
+        s.siliconeThickness = max(0.05, m.siliconeThickness)
+        s.dimpleDiameter = max(0.1, m.dimpleDiameter)
+        s.dimpleDepth = max(0.05, m.dimpleDepth)
+        s.dimpleSphereOffset = max(0.0, m.dimpleSphereOffset)
+        s.padsDiameter = max(0.1, m.padsDiameter)
+        s.padsSeparation = max(0.0, m.padsSeparation)
+        s.padsOffset = max(0.0, m.padsOffset)
+        s.padsFilletRadius = max(0.0, m.padsFilletRadius)
+        s.gridPitch = max(0.05, m.gridPitch)
+        s.minChannelSpacing = max(0.05, m.minChannelSpacing)
+        s.resistorChannelDiameter = max(0.05, m.resistorChannelDiameter)
+        s.interLayerWall = max(0.1, m.interLayerWall)
+        s.plateCornerFillet = max(0.0, m.plateCornerFillet)
+        s.ledDimpleDiameter = max(0.1, m.ledDimpleDiameter)
+        s.ledDimpleDepth = max(0.0, m.ledDimpleDepth)
+        s.screwProtrusion = max(0.0, m.screwProtrusion)
+        s.screwDomeBaseDiameter = max(ScrewGeometry.headDiameter + 0.2,
+                                      m.screwDomeBaseDiameter)
+        s.screwHeadDepth = max(0.1, m.screwHeadDepth)
+        s.screwNutDepth = max(0.1, m.screwNutDepth)
+        s.stencilThickness = max(0.05, m.stencilThickness)
+        s.stencilViaPadding = max(0.0, min(2.0, m.stencilViaPadding))
+        s.castingMargin = max(0.0, m.castingMargin)
+        s.moldWallThickness = max(0.0, m.moldWallThickness)
+        s.minWallThickness = max(0.05, m.minWallThickness)
+        s.testPointLabelSize = max(0.0, m.testPointLabelSize)
+        s.modifierMarginXY = max(0.0, m.modifierMarginXY)
+        s.modifierMarginZ = max(0.0, m.modifierMarginZ)
+        return s
     }
 
     private func sanitizedSize(_ s: Size) -> Size {
