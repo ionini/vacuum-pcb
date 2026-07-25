@@ -565,6 +565,14 @@ struct Simulate3DSceneView {
             let material = SCNMaterial()
             material.lightingModel = .blinn
             material.isDoubleSided = false
+            // Slightly glassy so the flow dots marching *inside* the bore
+            // read through the tube wall (fully opaque tubes swallowed every
+            // dot narrower than the channel). Single-layer blend + depth
+            // write — the Scene3DView plate recipe — keeps the concatenated
+            // junction spheres from stacking into a darker pile.
+            material.transparency = Self.tubeTransparency
+            material.transparencyMode = .singleLayer
+            material.writesToDepthBuffer = true
             if !unit.mesh.isEmpty {
                 let scnGeometry = SCNGeometry(unit.mesh)
                 scnGeometry.materials = [material]
@@ -606,9 +614,17 @@ struct Simulate3DSceneView {
             let material = SCNMaterial()
             let strength = (Double(bucket) + 0.5) / 8.0
             material.lightingModel = .constant
-            material.diffuse.contents = PlatformColor.systemOrange
-            material.emission.contents = PlatformColor.systemOrange
-            material.transparency = CGFloat(0.55 + 0.45 * strength)
+            // Opaque, with strength encoded as brightness instead of alpha:
+            // opaque dots render in the opaque pass, *before* the translucent
+            // tubes blend over them — that ordering is what lets a dot inside
+            // the bore show through the tube wall. (A translucent dot inside
+            // a translucent tube is at the mercy of SceneKit's per-object
+            // transparent-pass sort, and loses.)
+            let color = PlatformColor(hue: 0.08, saturation: 0.9,
+                                      brightness: CGFloat(0.55 + 0.45 * strength),
+                                      alpha: 1)
+            material.diffuse.contents = color
+            material.emission.contents = color
             sphere.materials = [material]
             return sphere
         }
@@ -625,6 +641,10 @@ struct Simulate3DSceneView {
 
     /// Hard ceiling on animated dot nodes; beyond it the spacing stretches.
     private static let dotBudget = 1400
+
+    /// Channel-tube opacity: solid enough to carry the pressure tint, glassy
+    /// enough that the opaque flow dots inside the bore stay visible.
+    private static let tubeTransparency: CGFloat = 0.72
 
     private func totalPathLength() -> Double {
         geometry.flowPaths.reduce(0) { $0 + $1.totalLength }
