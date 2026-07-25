@@ -42,11 +42,12 @@ struct SimulateView: View {
     @AppStorage("simulateShowFlow") private var showFlow = true
     /// 3D view: which scene elements show (body slabs / channel network),
     /// stored raw because the tab teardown would reset plain @State. Driven
-    /// by the canvas's floating preset picker + Layers menu.
+    /// by the canvas's floating Layers menu.
     @AppStorage("simulate3DVisibility") private var visibility3DRaw =
         Simulate3DVisibility.both.rawValue
-    /// 3D view: ghost-body slab opacity (floating slider).
-    @AppStorage("simulate3DBodyOpacity") private var bodyOpacity3D = 0.35
+    /// 3D view: pressure-tinted tube opacity (floating slider) — lower to
+    /// watch the flow dots inside the bore.
+    @AppStorage("simulate3DTubeOpacity") private var tubeOpacity3D = 0.72
     /// Transport state captured when the hosting window goes off screen
     /// (window-tab deselected, minimized). nil while the window is visible.
     /// Restored — not force-played — when the window shows again, so a
@@ -112,7 +113,7 @@ struct SimulateView: View {
                                  elementVisibility: Binding(
                                      get: { Simulate3DVisibility(rawValue: visibility3DRaw) },
                                      set: { visibility3DRaw = $0.rawValue }),
-                                 bodyOpacity: $bodyOpacity3D,
+                                 tubeOpacity: $tubeOpacity3D,
                                  cameraStore: simulate3DCameraStore)
             }
         }

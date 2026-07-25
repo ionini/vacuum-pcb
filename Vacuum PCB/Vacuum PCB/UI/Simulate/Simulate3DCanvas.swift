@@ -33,12 +33,12 @@ struct Simulate3DCanvas: View {
     let visible: LayerVisibility
     let showFlow: Bool
     /// Which scene elements (body slabs / channel network) are shown —
-    /// driven by the floating preset picker + Layers menu, like the 3D
-    /// preview. Owned by SimulateView (AppStorage) so it survives the tab
-    /// teardown.
+    /// driven by the floating Layers menu. Owned by SimulateView
+    /// (AppStorage) so it survives the tab teardown.
     @Binding var elementVisibility: Simulate3DVisibility
-    /// Opacity of the ghosted printed-body slabs (floating slider).
-    @Binding var bodyOpacity: Double
+    /// Opacity of the pressure-tinted tubes (floating slider): slide down
+    /// to watch the flow dots inside the bore, up for solid tint reading.
+    @Binding var tubeOpacity: Double
     /// Owned by DocumentView so orbit / zoom survive tab switches.
     let cameraStore: Scene3DCameraStore?
 
@@ -55,7 +55,7 @@ struct Simulate3DCanvas: View {
                     visible: visible,
                     showFlow: showFlow,
                     elementVisibility: elementVisibility,
-                    bodyOpacity: bodyOpacity,
+                    tubeOpacity: tubeOpacity,
                     cameraStore: cameraStore
                 )
                 controls
@@ -81,21 +81,12 @@ struct Simulate3DCanvas: View {
         }
     }
 
-    /// Floating overlay at the top of the scene: preset segmented picker,
-    /// per-element Layers menu, and the body-opacity slider — the 3D
-    /// preview's control strip, minus the casting elements the simulate
-    /// scene doesn't have.
+    /// Floating overlay at the top of the scene: the per-element Layers
+    /// menu and the tube-opacity slider. Slimmer than the 3D preview's
+    /// strip — no presets (the menu covers the four elements) and no
+    /// casting geometry in this scene.
     private var controls: some View {
         HStack(spacing: 8) {
-            Picker("Show", selection: presetSelection) {
-                ForEach(Simulate3DDisplayMode.allCases, id: \.self) { mode in
-                    Text(mode.label).tag(Optional(mode))
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
-
             Menu {
                 Section("Body") {
                     Toggle("Top plate", isOn: visibilityBinding(.topPlate))
@@ -115,25 +106,16 @@ struct Simulate3DCanvas: View {
                 Image(systemName: "circle.lefthalf.filled")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Slider(value: $bodyOpacity, in: 0.1...1.0)
+                Slider(value: $tubeOpacity, in: 0.1...1.0)
                     .controlSize(InputPlatform.isTouch ? .regular : .small)
                     .frame(width: InputPlatform.isTouch ? 120 : 90)
             }
-            .help("Body opacity — how solid the ghosted plates and silicone " +
-                  "sheet render. The pressure-tinted channels stay opaque.")
+            .help("Tube opacity — how solid the pressure-tinted channels " +
+                  "render. Slide down to watch the flow dots inside the bore.")
         }
         .padding(8)
         .glassEffect(in: .rect(cornerRadius: 10))
         .padding(.top, 8)
-    }
-
-    /// Maps the element set to/from the named presets: the matching preset,
-    /// or nil (no segment lit) once individual toggles leave any preset.
-    private var presetSelection: Binding<Simulate3DDisplayMode?> {
-        Binding(
-            get: { Simulate3DDisplayMode.allCases.first { $0.visibility == elementVisibility } },
-            set: { if let mode = $0 { elementVisibility = mode.visibility } }
-        )
     }
 
     /// On/off binding for one element, used by the Layers menu.
@@ -243,37 +225,8 @@ struct Simulate3DVisibility: OptionSet, Hashable {
     static let sheet       = Simulate3DVisibility(rawValue: 1 << 2)
     static let channels    = Simulate3DVisibility(rawValue: 1 << 3)
 
-    /// Ghost body only — the printed stack without the air.
-    static let body: Simulate3DVisibility     = [.topPlate, .bottomPlate, .sheet]
-    /// Everything — the default working view.
-    static let both: Simulate3DVisibility     = [.topPlate, .bottomPlate, .sheet, .channels]
-    /// The air alone, body peeled away.
-    static let channelsOnly: Simulate3DVisibility = [.channels]
-}
-
-/// Named visibility presets for the floating segmented picker, mirroring the
-/// 3D preview's `PreviewDisplayMode` (no Mold — the simulate scene has no
-/// casting geometry).
-enum Simulate3DDisplayMode: String, CaseIterable, Hashable {
-    case bodyOnly
-    case both
-    case channelsOnly
-
-    var label: String {
-        switch self {
-        case .bodyOnly:     return "Body"
-        case .both:         return "Both"
-        case .channelsOnly: return "Channels"
-        }
-    }
-
-    var visibility: Simulate3DVisibility {
-        switch self {
-        case .bodyOnly:     return .body
-        case .both:         return .both
-        case .channelsOnly: return .channelsOnly
-        }
-    }
+    /// Everything — the default view (and the AppStorage seed).
+    static let both: Simulate3DVisibility = [.topPlate, .bottomPlate, .sheet, .channels]
 }
 
 /// Plain-value snapshot of one publish, handed from SwiftUI to the SceneKit
@@ -340,7 +293,7 @@ struct Simulate3DSceneView {
     var visible: LayerVisibility
     var showFlow: Bool
     var elementVisibility: Simulate3DVisibility
-    var bodyOpacity: Double
+    var tubeOpacity: Double
     var cameraStore: Scene3DCameraStore?
 
     // MARK: Coordinator
@@ -375,9 +328,9 @@ struct Simulate3DSceneView {
         var frame: Simulate3DFrame = .idle
         var showFlow = true
         var lastVisible: LayerVisibility?
-        /// Body opacity currently baked into the slab materials, so the
+        /// Tube opacity currently baked into the unit materials, so the
         /// slider only touches them when it actually moved.
-        var lastBodyOpacity: Double?
+        var lastTubeOpacity: Double?
         /// Dot spacing (mm) after the pool-budget stretch; recomputed each
         /// publish from the active path set.
         var effectivePeriod: Double = 6
@@ -542,8 +495,8 @@ struct Simulate3DSceneView {
         applyFrame(coordinator: c)
         c.showFlow = showFlow
         applyElementVisibility(coordinator: c)
-        if c.lastBodyOpacity != bodyOpacity {
-            applyBodyOpacity(coordinator: c)
+        if c.lastTubeOpacity != tubeOpacity {
+            applyTubeOpacity(coordinator: c)
         }
         c.cameraStore = cameraStore
         if c.lastOutline != geometry.boardOutline {
@@ -565,12 +518,13 @@ struct Simulate3DSceneView {
             let material = SCNMaterial()
             material.lightingModel = .blinn
             material.isDoubleSided = false
-            // Slightly glassy so the flow dots marching *inside* the bore
-            // read through the tube wall (fully opaque tubes swallowed every
-            // dot narrower than the channel). Single-layer blend + depth
-            // write — the Scene3DView plate recipe — keeps the concatenated
-            // junction spheres from stacking into a darker pile.
-            material.transparency = Self.tubeTransparency
+            // Glassy so the flow dots marching *inside* the bore read
+            // through the tube wall (fully opaque tubes swallowed every dot
+            // narrower than the channel) — how glassy is the user's slider.
+            // Single-layer blend + depth write — the Scene3DView plate
+            // recipe — keeps the concatenated junction spheres from
+            // stacking into a darker pile.
+            material.transparency = Self.clampedOpacity(tubeOpacity)
             material.transparencyMode = .singleLayer
             material.writesToDepthBuffer = true
             if !unit.mesh.isEmpty {
@@ -597,7 +551,7 @@ struct Simulate3DSceneView {
         c.topSlabNode.geometry = slabGeometry(for: geometry.topSlab, color: .systemBlue)
         c.bottomSlabNode.geometry = slabGeometry(for: geometry.bottomSlab, color: .systemTeal)
         c.sheetSlabNode.geometry = slabGeometry(for: geometry.sheetSlab, color: .systemYellow)
-        c.lastBodyOpacity = bodyOpacity
+        c.lastTubeOpacity = tubeOpacity
 
         c.geometryRevision = geometryRevision
     }
@@ -641,10 +595,6 @@ struct Simulate3DSceneView {
 
     /// Hard ceiling on animated dot nodes; beyond it the spacing stretches.
     private static let dotBudget = 1400
-
-    /// Channel-tube opacity: solid enough to carry the pressure tint, glassy
-    /// enough that the opaque flow dots inside the bore stay visible.
-    private static let tubeTransparency: CGFloat = 0.72
 
     private func totalPathLength() -> Double {
         geometry.flowPaths.reduce(0) { $0 + $1.totalLength }
@@ -736,33 +686,38 @@ struct Simulate3DSceneView {
 
     // MARK: Materials
 
-    /// Body opacity mapped to material transparency, held a hair below fully
-    /// opaque — at exactly 1.0 SceneKit reclassifies the slabs as opaque-pass
-    /// geometry and the single-layer blend path no longer applies (see
+    /// Opacity mapped to material transparency, held a hair below fully
+    /// opaque — at exactly 1.0 SceneKit reclassifies the geometry into the
+    /// opaque pass and the single-layer blend path no longer applies (see
     /// Scene3DView.bodyTransparency).
-    private static func bodyTransparency(_ opacity: Double) -> CGFloat {
+    private static func clampedOpacity(_ opacity: Double) -> CGFloat {
         CGFloat(min(opacity, 0.995))
     }
 
-    /// Push the slider's opacity onto the live slab materials — cheap, no
-    /// geometry rebuild.
-    private func applyBodyOpacity(coordinator c: Coordinator) {
-        for node in [c.topSlabNode, c.bottomSlabNode, c.sheetSlabNode] {
-            node.geometry?.firstMaterial?.transparency = Self.bodyTransparency(bodyOpacity)
+    /// Ghost body slabs render at a fixed low opacity; the slider belongs
+    /// to the tubes.
+    private static let slabOpacity = 0.35
+
+    /// Push the slider's opacity onto every live channel-unit material —
+    /// cheap uniform writes, no geometry rebuild.
+    private func applyTubeOpacity(coordinator c: Coordinator) {
+        let value = Self.clampedOpacity(tubeOpacity)
+        for material in c.unitMaterials {
+            material.transparency = value
         }
-        c.lastBodyOpacity = bodyOpacity
+        c.lastTubeOpacity = tubeOpacity
     }
 
     /// Ghost printed-body slab: the Preview tab's translucent plate recipe
-    /// (single-layer blend + depth write) at the user's slider opacity —
-    /// enough to orient the tubes inside the board without competing with
-    /// the tints.
+    /// (single-layer blend + depth write) at a fixed low opacity — enough
+    /// to orient the tubes inside the board without competing with the
+    /// tints.
     private func slabGeometry(for mesh: Mesh, color: PlatformColor) -> SCNGeometry? {
         guard !mesh.isEmpty else { return nil }
         let geometry = SCNGeometry(mesh)
         let material = SCNMaterial()
         material.diffuse.contents = color
-        material.transparency = Self.bodyTransparency(bodyOpacity)
+        material.transparency = Self.clampedOpacity(Self.slabOpacity)
         material.transparencyMode = .singleLayer
         material.writesToDepthBuffer = true
         material.isDoubleSided = true
