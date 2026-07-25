@@ -54,6 +54,17 @@ struct DocumentView: View {
     /// Per-element visibility of the 3D preview (which plates / channels / mold
     /// parts are shown). Starts on the plates-plus-channels preset.
     @State private var previewVisibility: PreviewVisibility = .both
+    /// Print-envelope (modifier volume) overlay mesh + its own revision, so a
+    /// padding tweak refreshes just this node — not the whole scene. Rebuilt
+    /// alongside every full `rebuild()` and by `rebuildEnvelope()` when the
+    /// padding slider commits.
+    @State private var envelopeMesh: Mesh = Mesh([])
+    @State private var envelopeRevision = 0
+    /// Live value while the envelope-padding slider is mid-drag; nil when idle
+    /// (the document's `modifierMarginXY` is then the truth). Committing the
+    /// drag writes the document and clears this — same draft idea as the
+    /// Manufacturing inspector, so dragging doesn't spam document mutations.
+    @State private var envelopePaddingDraft: Double?
     /// Opacity of the printed body (plates / silicone sheet / casting frame)
     /// in the 3D preview; feature channels stay opaque. Persisted so the
     /// user's preferred translucency survives relaunches.
@@ -380,6 +391,8 @@ struct DocumentView: View {
                     bottomFeatures: built.bottomFeatures,
                     stencil: built.stencil,
                     moldFrame: built.moldFrame,
+                    envelope: envelopeMesh,
+                    envelopeRevision: envelopeRevision,
                     boardOutline: document.circuit.physical.boardOutline,
                     visibility: previewVisibility,
                     bodyOpacity: previewBodyOpacity,
@@ -440,6 +453,9 @@ struct DocumentView: View {
                     // the bores leave the preview *and* the exported STL.
                     Toggle("Test points", isOn: $includeTestPoints)
                 }
+                Section("Print") {
+                    Toggle("Print envelope", isOn: visibilityBinding(.envelope))
+                }
             } label: {
                 Label("Layers", systemImage: "square.3.layers.3d")
             }
@@ -456,10 +472,66 @@ struct DocumentView: View {
             }
             .help("Body opacity — how solid the printed plates (and silicone " +
                   "sheet / casting frame) render. Channels stay opaque.")
+
+            if previewVisibility.contains(.envelope) {
+                envelopePaddingControl
+            }
         }
         .padding(8)
         .glassEffect(in: .rect(cornerRadius: 10))
         .padding(.top, 8)
+    }
+
+    /// Envelope padding: live-drafted slider + value readout. Dragging shows
+    /// the value; releasing commits it to the document (both margins — one
+    /// isotropic leak-barrier thickness; the Manufacturing inspector still
+    /// edits XY and Z separately) and regenerates just the envelope mesh.
+    private var envelopePaddingControl: some View {
+        let current = envelopePaddingDraft ?? document.circuit.manufacturing.modifierMarginXY
+        return HStack(spacing: 5) {
+            Image(systemName: "square.dashed")
+                .font(.caption)
+                .foregroundStyle(.purple)
+            Slider(
+                value: Binding(
+                    get: { envelopePaddingDraft ?? document.circuit.manufacturing.modifierMarginXY },
+                    set: { envelopePaddingDraft = $0 }
+                ),
+                in: 0.2...4.0,
+                onEditingChanged: { editing in
+                    guard !editing, let value = envelopePaddingDraft else { return }
+                    document.circuit.manufacturing.modifierMarginXY = value
+                    document.circuit.manufacturing.modifierMarginZ = value
+                    envelopePaddingDraft = nil
+                    rebuildEnvelope()
+                }
+            )
+            .controlSize(InputPlatform.isTouch ? .regular : .small)
+            .frame(width: InputPlatform.isTouch ? 120 : 90)
+            Text(String(format: "%.1f mm", current))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 44, alignment: .leading)
+        }
+        .help("Print-envelope padding — the wall of material around every " +
+              "channel / valve / via the modifier volume claims (e.g. for " +
+              "solid infill). Committing a drag sets both the XY and Z " +
+              "margins; fine-tune them separately in Manufacturing settings.")
+    }
+
+    /// Regenerate just the print-envelope mesh from the current document —
+    /// no plate CSG, so it's quick enough to run on every padding commit.
+    private func rebuildEnvelope() {
+        var snapshot = document.circuit
+        if !includeTestPoints { snapshot.physical.testPoints = [] }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let envelope = PlateBuilder.buildModifier(
+                snapshot, margins: .init(snapshot.manufacturing))
+            DispatchQueue.main.async {
+                self.envelopeMesh = envelope
+                self.envelopeRevision &+= 1
+            }
+        }
     }
 
     /// Maps the per-element visibility set to/from the named presets. The getter
@@ -767,7 +839,9 @@ struct DocumentView: View {
         let base = bambuBaseName
         isBuilding = true
         DispatchQueue.global(qos: .userInitiated).async {
-            let payload = BambuExport.payload(doc: snapshot, baseName: base, prebuiltModel: built)
+            let payload = BambuExport.payload(doc: snapshot, baseName: base,
+                                              margins: .init(snapshot.manufacturing),
+                                              prebuiltModel: built)
             DispatchQueue.main.async {
                 self.bambuExportDocument = BambuExportDocument(files: payload.files)
                 self.isBuilding = false
@@ -933,6 +1007,7 @@ struct DocumentView: View {
         isBuilding = true
         DispatchQueue.global(qos: .userInitiated).async {
             let payload = BambuExport.payload(doc: snapshot, baseName: base,
+                                              margins: .init(snapshot.manufacturing),
                                               includeManifest: false, prebuiltModel: built)
             let dir = FileManager.default.temporaryDirectory
             var urls: [URL] = []
@@ -985,6 +1060,11 @@ struct DocumentView: View {
         if !includeTestPoints { snapshot.physical.testPoints = [] }
         DispatchQueue.global(qos: .userInitiated).async {
             let result = PlateBuilder.build(snapshot)
+            // Print-envelope overlay for the same snapshot. Cheap next to the
+            // plate CSG (polygon concatenation, no booleans), so it rides along
+            // on every rebuild rather than tracking its own dirty flag.
+            let envelope = PlateBuilder.buildModifier(
+                snapshot, margins: .init(snapshot.manufacturing))
             // Whole printed board, subparts flattened — matches what prints, so
             // the volume cavities line up with the geometry above.
             let vols = physicalVolumes(snapshot.flattenedForSimulation().document)
@@ -1000,6 +1080,8 @@ struct DocumentView: View {
                 self.volumes = vols
                 self.volumeMeshes = vmeshes
                 self.geometryRevision &+= 1
+                self.envelopeMesh = envelope
+                self.envelopeRevision &+= 1
                 // Drop any highlighted ids the rebuild no longer has.
                 let live = Set(vols.map(\.id))
                 self.highlightedVolumeIDs.removeAll { !live.contains($0) }

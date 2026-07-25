@@ -1274,6 +1274,12 @@ enum PlateBuilder {
         /// envelope into the roofs above and floors below the pneumatics.
         var z: Double
         init(xy: Double = 1.0, z: Double = 0.6) { self.xy = xy; self.z = z }
+        /// The document's own padding (`manufacturing.modifierMarginXY/Z`) —
+        /// what the preview envelope and every export should use, so the
+        /// envelope the user tuned on screen is the one that prints.
+        init(_ m: ManufacturingConstants) {
+            self.init(xy: m.modifierMarginXY, z: m.modifierMarginZ)
+        }
         /// `modifierMarginXY = 1.0`, `modifierMarginZ = 0.6`.
         static let defaults = ModifierMargins()
     }

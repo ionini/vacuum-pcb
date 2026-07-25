@@ -75,6 +75,15 @@ struct ManufacturingSettingsView: View {
                 }
             }
 
+            if scope == .full {
+                group("Print envelope") {
+                    row("Envelope padding XY (walls)", $draftMfg.modifierMarginXY)
+                    row("Envelope padding Z (roof/floor)", $draftMfg.modifierMarginZ)
+                    Text("How far the print envelope (the Bambu modifier volume) grows past every channel, valve, via and port — the wall of material it claims around the pneumatics, e.g. to print solid where it matters and hollow elsewhere. Visible as the purple overlay in the 3D preview (Layers → Print envelope), where a slider drives both values together. Independent of the DRC wall warnings.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+
             // DRC scope toggle. A document-level flag (not a manufacturing
             // constant), shown in both inspector scopes since it governs the
             // same DRC the min-wall row feeds.

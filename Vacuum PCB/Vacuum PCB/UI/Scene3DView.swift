@@ -21,6 +21,11 @@ struct PreviewVisibility: OptionSet, Hashable {
     static let bottomChannels = PreviewVisibility(rawValue: 1 << 3)
     static let stencil        = PreviewVisibility(rawValue: 1 << 4)
     static let mold           = PreviewVisibility(rawValue: 1 << 5)
+    /// The print envelope (Bambu modifier volume): every pneumatic feature
+    /// grown by the document's modifier margins. Not part of any preset —
+    /// an overlay the user switches on to see (and tune) what the "solid
+    /// around pneumatics" region will claim.
+    static let envelope       = PreviewVisibility(rawValue: 1 << 6)
 
     /// Printable body: both plates + the silicone sheet, channels hidden.
     static let body: PreviewVisibility     = [.topPlate, .bottomPlate, .stencil]
@@ -95,6 +100,12 @@ struct Scene3DView {
     var bottomFeatures: Mesh
     var stencil: Mesh
     var moldFrame: Mesh
+    /// Print-envelope (modifier) mesh in the same design space as the plates.
+    /// Rendered as a translucent overlay when `visibility` contains
+    /// `.envelope`. Carries its own revision so a padding change refreshes
+    /// this node without the full geometry rebuild.
+    var envelope: Mesh = Mesh([])
+    var envelopeRevision: Int = 0
     var boardOutline: Rect
     /// Which elements of the stack are shown. Drives per-node `isHidden`.
     var visibility: PreviewVisibility
@@ -130,6 +141,7 @@ struct Scene3DView {
         let bottomFeaturesNode = SCNNode()
         let stencilNode = SCNNode()
         let moldNode = SCNNode()
+        let envelopeNode = SCNNode()
         /// Parent of the per-volume cavity nodes (one per `Volume.id`). Each is
         /// hidden but kept hit-testable so a click resolves to a volume; the
         /// highlighted subset is un-hidden and tinted. Rebuilt only when the
@@ -139,6 +151,9 @@ struct Scene3DView {
         /// Geometry revision whose nodes are currently live, so a highlight- or
         /// visibility-only refresh can skip the (costlier) node rebuild.
         var lastGeometryRevision: Int?
+        /// Envelope revision whose mesh is live on `envelopeNode` — padding
+        /// tweaks bump it independently of the plate geometry revision.
+        var lastEnvelopeRevision: Int?
         /// Body opacity currently baked into the plate/stencil/mold materials,
         /// so a refresh only touches them when the slider actually moved.
         var lastBodyOpacity: Double?
@@ -200,6 +215,7 @@ struct Scene3DView {
         c.modelRoot.addChildNode(c.bottomFeaturesNode)
         c.modelRoot.addChildNode(c.stencilNode)
         c.modelRoot.addChildNode(c.moldNode)
+        c.modelRoot.addChildNode(c.envelopeNode)
         c.modelRoot.addChildNode(c.pickRoot)
 
         c.camera.usesOrthographicProjection = true
@@ -225,7 +241,9 @@ struct Scene3DView {
         addLights(to: c.scene)
         applyGeometries(coordinator: c)
         applyVolumeNodes(coordinator: c)
+        applyEnvelope(coordinator: c)
         c.lastGeometryRevision = geometryRevision
+        c.lastEnvelopeRevision = envelopeRevision
         c.lastBodyOpacity = bodyOpacity
         applyHighlight(coordinator: c)
         applyVisibility(coordinator: c)
@@ -284,6 +302,10 @@ struct Scene3DView {
             applyVolumeNodes(coordinator: c)
             c.lastGeometryRevision = geometryRevision
             c.lastBodyOpacity = bodyOpacity
+        }
+        if c.lastEnvelopeRevision != envelopeRevision {
+            applyEnvelope(coordinator: c)
+            c.lastEnvelopeRevision = envelopeRevision
         }
         if c.lastBodyOpacity != bodyOpacity {
             applyBodyOpacity(coordinator: c)
@@ -439,6 +461,32 @@ struct Scene3DView {
         c.bottomFeaturesNode.isHidden = !visibility.contains(.bottomChannels)
         c.stencilNode.isHidden        = !visibility.contains(.stencil)
         c.moldNode.isHidden           = !visibility.contains(.mold)
+        c.envelopeNode.isHidden       = !visibility.contains(.envelope)
+    }
+
+    /// Print-envelope overlay: translucent purple skin over the grown feature
+    /// shells, so the user sees exactly what the modifier volume will claim
+    /// around the pneumatics. The envelope mesh is concatenated overlapping
+    /// shells (deliberately un-unioned, like the export), so it needs the same
+    /// single-layer transparency treatment as the carved plates — plain alpha
+    /// blending would stack every overlapping shell wall into an unreadable
+    /// pile. A touch of emission keeps it legible over the darker plate body.
+    private func applyEnvelope(coordinator c: Coordinator) {
+        guard !envelope.isEmpty else {
+            c.envelopeNode.geometry = nil
+            return
+        }
+        let geometry = SCNGeometry(envelope)
+        let material = SCNMaterial()
+        material.diffuse.contents = PlatformColor.systemPurple
+        material.emission.contents = PlatformColor.systemPurple.withAlphaComponent(0.18)
+        material.transparency = 0.38
+        material.transparencyMode = .singleLayer
+        material.writesToDepthBuffer = true
+        material.isDoubleSided = true
+        material.lightingModel = .blinn
+        geometry.materials = [material]
+        c.envelopeNode.geometry = geometry
     }
 
     // MARK: - Framing

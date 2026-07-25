@@ -195,6 +195,23 @@ struct ManufacturingConstants: Codable, Hashable {
     /// unaffected. Per-board; files saved before this existed default to on.
     var flatBottomChannels: Bool
 
+    /// Radial / cross-sectional growth (mm) of the print envelope — the
+    /// modifier volume the Bambu export wraps around every pneumatic feature
+    /// (channels, serpentines, vias, valve chambers, port bores, taps). This
+    /// is the thickness of side-wall material around each feature that the
+    /// envelope claims for print-critical slicer settings — with solid infill
+    /// assigned to the envelope, it is the leak-barrier wall between a channel
+    /// and the surrounding sparse infill (the "plenum", see lab notes
+    /// 2026-07-25). Independent of the DRC spacing warnings: those judge
+    /// feature-to-feature walls, this pads features outward.
+    var modifierMarginXY: Double
+
+    /// Vertical growth (mm) of the print envelope past each feature's own
+    /// top/bottom — the roof above and floor below the pneumatics that the
+    /// envelope claims. Same role as `modifierMarginXY`, along Z (quantised by
+    /// layers when printed).
+    var modifierMarginZ: Double
+
     static let defaults = ManufacturingConstants(
         plateThickness: 3.0,
         channelDiameter: 1.5,
@@ -225,7 +242,9 @@ struct ManufacturingConstants: Codable, Hashable {
         moldWallThickness: 3.0,
         minWallThickness: 0.5,
         flatBottomChannels: true,
-        testPointLabelSize: 3.0
+        testPointLabelSize: 3.0,
+        modifierMarginXY: 1.0,
+        modifierMarginZ: 0.6
     )
 
     // Codable hand-rolled so older .vpcb files (written before a field like
@@ -249,6 +268,7 @@ struct ManufacturingConstants: Codable, Hashable {
         case minWallThickness
         case flatBottomChannels
         case testPointLabelSize
+        case modifierMarginXY, modifierMarginZ
     }
 
     init(plateThickness: Double, channelDiameter: Double,
@@ -265,7 +285,8 @@ struct ManufacturingConstants: Codable, Hashable {
          stencilThickness: Double, stencilViaPadding: Double,
          castingMargin: Double = 2.0, moldWallThickness: Double = 3.0,
          minWallThickness: Double, flatBottomChannels: Bool,
-         testPointLabelSize: Double = 3.0) {
+         testPointLabelSize: Double = 3.0,
+         modifierMarginXY: Double = 1.0, modifierMarginZ: Double = 0.6) {
         self.plateThickness = plateThickness
         self.channelDiameter = channelDiameter
         self.portBoreDiameter = portBoreDiameter
@@ -296,6 +317,8 @@ struct ManufacturingConstants: Codable, Hashable {
         self.minWallThickness = minWallThickness
         self.flatBottomChannels = flatBottomChannels
         self.testPointLabelSize = testPointLabelSize
+        self.modifierMarginXY = modifierMarginXY
+        self.modifierMarginZ = modifierMarginZ
     }
 
     /// Outer length of the resistor footprint (pin-to-pin distance). Constant
@@ -359,6 +382,12 @@ struct ManufacturingConstants: Codable, Hashable {
                                                    forKey: .flatBottomChannels) ?? true
         testPointLabelSize = try c.decodeIfPresent(Double.self,
                                                    forKey: .testPointLabelSize) ?? 3.0
+        // Pinned to the pre-existing BambuExport defaults, so older files keep
+        // exporting the exact envelope they always did.
+        modifierMarginXY = try c.decodeIfPresent(Double.self,
+                                                 forKey: .modifierMarginXY) ?? 1.0
+        modifierMarginZ = try c.decodeIfPresent(Double.self,
+                                                forKey: .modifierMarginZ) ?? 0.6
     }
 
     /// Effective thickness of a plate with `layerCount` channel layers. The
