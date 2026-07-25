@@ -1600,7 +1600,12 @@ enum PlateBuilder {
                                        (z0 + z1) / 2))
             let solids = modifierShells(doc, margins: margins, plate: p) + keepouts
             guard !solids.isEmpty else { return slab }
-            return slab.subtracting(Mesh.union(solids))
+            // Stitch the hairline cracks BSP CSG leaves where curved shells
+            // meet the slab — unstitched they render as dark sliver triangles
+            // in the preview and can confuse a slicer. The positive envelope
+            // never needs this (concatenated closed primitives, no CSG); the
+            // inverted one is a genuine boolean result like the plates.
+            return slab.subtracting(Mesh.union(solids)).makeWatertight()
         }
 
         switch plate {
