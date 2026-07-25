@@ -60,6 +60,18 @@ struct DocumentView: View {
     /// padding slider commits.
     @State private var envelopeMesh: Mesh = Mesh([])
     @State private var envelopeRevision = 0
+    /// Which region the preview overlay (and a fresh export) shows:
+    /// "pneumatics" = the envelope around the features, "voids" = its
+    /// complement (what the void modifier will downgrade — includes the screw
+    /// and connector keep-outs the positive envelope can't show). Persisted.
+    @AppStorage("previewEnvelopeStyle") private var envelopeStyleRaw =
+        BambuExport.ModifierStyle.pneumatics.rawValue
+    /// The voids mesh is real CSG (seconds on a dense board), so it is built
+    /// lazily: skipped while the overlay is hidden and flagged stale instead.
+    @State private var envelopeStale = false
+    /// A voids rebuild is running; shows a small spinner beside the slider.
+    @State private var isBuildingEnvelope = false
+    @State private var envelopeToken = 0
     /// Live value while the envelope-padding slider is mid-drag; nil when idle
     /// (the document's `modifierMarginXY` is then the truth). Committing the
     /// drag writes the document and clears this — same draft idea as the
@@ -202,6 +214,23 @@ struct DocumentView: View {
                 selectedTab = .schematic
             }
             scheduleOutdatedRecompute()
+        }
+        .onChange(of: previewVisibility) { _, newValue in
+            // The voids overlay is built lazily; switching it on with a stale
+            // (or dropped) mesh triggers the deferred build.
+            if newValue.contains(.envelope), envelopeStale, !isBuildingEnvelope {
+                rebuildEnvelope()
+            }
+        }
+        .onChange(of: envelopeStyleRaw) { _, _ in
+            // Style switch invalidates the current overlay outright.
+            if previewVisibility.contains(.envelope) {
+                rebuildEnvelope()
+            } else {
+                envelopeMesh = Mesh([])
+                envelopeRevision &+= 1
+                envelopeStale = true
+            }
         }
         .onChange(of: includeTestPoints) { _, _ in
             // This flag feeds the build (unlike the scene-visibility toggles),
@@ -456,6 +485,12 @@ struct DocumentView: View {
                 }
                 Section("Print") {
                     Toggle("Print envelope", isOn: visibilityBinding(.envelope))
+                    Picker("Region", selection: $envelopeStyleRaw) {
+                        Text("Pneumatics (keep solid)")
+                            .tag(BambuExport.ModifierStyle.pneumatics.rawValue)
+                        Text("Voids (downgrade)")
+                            .tag(BambuExport.ModifierStyle.voids.rawValue)
+                    }
                 }
             } label: {
                 Label("Layers", systemImage: "square.3.layers.3d")
@@ -476,6 +511,11 @@ struct DocumentView: View {
 
             if previewVisibility.contains(.envelope) {
                 envelopePaddingControl
+                if isBuildingEnvelope {
+                    ProgressView()
+                        .controlSize(.small)
+                        .help("Building the envelope…")
+                }
             }
         }
         .padding(8)
@@ -520,17 +560,37 @@ struct DocumentView: View {
               "margins; fine-tune them separately in Manufacturing settings.")
     }
 
-    /// Regenerate just the print-envelope mesh from the current document —
-    /// no plate CSG, so it's quick enough to run on every padding commit.
+    /// The overlay style as its enum (AppStorage can only hold the raw value).
+    private var envelopeStyle: BambuExport.ModifierStyle {
+        BambuExport.ModifierStyle(rawValue: envelopeStyleRaw) ?? .pneumatics
+    }
+
+    /// Regenerate just the print-envelope mesh from the current document — no
+    /// plate rebuild. Pneumatics is near-instant; voids is real CSG (seconds
+    /// on a dense board), hence the token guard and the busy flag.
     private func rebuildEnvelope() {
         var snapshot = document.circuit
         if !includeTestPoints { snapshot.physical.testPoints = [] }
+        let style = envelopeStyle
+        envelopeToken += 1
+        let token = envelopeToken
+        isBuildingEnvelope = true
         DispatchQueue.global(qos: .userInitiated).async {
-            let envelope = PlateBuilder.buildModifier(
-                snapshot, margins: .init(snapshot.manufacturing))
+            let envelope: Mesh
+            switch style {
+            case .pneumatics:
+                envelope = PlateBuilder.buildModifier(
+                    snapshot, margins: .init(snapshot.manufacturing))
+            case .voids:
+                envelope = PlateBuilder.buildInvertedModifier(
+                    snapshot, margins: .init(snapshot.manufacturing))
+            }
             DispatchQueue.main.async {
+                guard token == envelopeToken else { return }
                 self.envelopeMesh = envelope
                 self.envelopeRevision &+= 1
+                self.envelopeStale = false
+                self.isBuildingEnvelope = false
             }
         }
     }
@@ -1069,13 +1129,26 @@ struct DocumentView: View {
         // editor and Simulate views — which read the document directly —
         // untouched.
         if !includeTestPoints { snapshot.physical.testPoints = [] }
+        let style = envelopeStyle
+        let wantsEnvelope = previewVisibility.contains(.envelope)
         DispatchQueue.global(qos: .userInitiated).async {
             let result = PlateBuilder.build(snapshot)
-            // Print-envelope overlay for the same snapshot. Cheap next to the
-            // plate CSG (polygon concatenation, no booleans), so it rides along
-            // on every rebuild rather than tracking its own dirty flag.
-            let envelope = PlateBuilder.buildModifier(
-                snapshot, margins: .init(snapshot.manufacturing))
+            // Print-envelope overlay for the same snapshot. The pneumatics
+            // style is cheap (polygon concatenation) and rides along on every
+            // rebuild; the voids style is real CSG, so it is only built here
+            // when the overlay is actually visible — otherwise it's flagged
+            // stale and built on demand when the user switches it on.
+            let envelope: Mesh?
+            switch style {
+            case .pneumatics:
+                envelope = PlateBuilder.buildModifier(
+                    snapshot, margins: .init(snapshot.manufacturing))
+            case .voids:
+                envelope = wantsEnvelope
+                    ? PlateBuilder.buildInvertedModifier(
+                        snapshot, margins: .init(snapshot.manufacturing))
+                    : nil
+            }
             // Whole printed board, subparts flattened — matches what prints, so
             // the volume cavities line up with the geometry above.
             let vols = physicalVolumes(snapshot.flattenedForSimulation().document)
@@ -1091,7 +1164,15 @@ struct DocumentView: View {
                 self.volumes = vols
                 self.volumeMeshes = vmeshes
                 self.geometryRevision &+= 1
-                self.envelopeMesh = envelope
+                if let envelope {
+                    self.envelopeMesh = envelope
+                    self.envelopeStale = false
+                } else {
+                    // Skipped voids build: drop the old mesh (it may show the
+                    // wrong style) and rebuild when the overlay comes back.
+                    self.envelopeMesh = Mesh([])
+                    self.envelopeStale = true
+                }
                 self.envelopeRevision &+= 1
                 // Drop any highlighted ids the rebuild no longer has.
                 let live = Set(vols.map(\.id))
