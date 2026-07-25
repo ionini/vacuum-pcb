@@ -431,7 +431,7 @@ struct Scene3DView {
     /// (plates, stencil, mold). Cheap — mutates existing materials — so the
     /// opacity slider refreshes without the per-node geometry rebuild.
     private func applyBodyOpacity(coordinator c: Coordinator) {
-        for node in [c.topNode, c.bottomNode, c.stencilNode, c.moldNode] {
+        for node in [c.topNode, c.bottomNode, c.stencilNode, c.moldNode, c.envelopeNode] {
             node.geometry?.firstMaterial?.transparency = Self.bodyTransparency(bodyOpacity)
         }
     }
@@ -480,7 +480,10 @@ struct Scene3DView {
         let material = SCNMaterial()
         material.diffuse.contents = PlatformColor.systemPurple
         material.emission.contents = PlatformColor.systemPurple.withAlphaComponent(0.18)
-        material.transparency = 0.38
+        // Tracks the body-opacity slider like the plates do (applyBodyOpacity
+        // retunes it live); the envelope is body-like — a region of the print,
+        // not a feature solid.
+        material.transparency = Self.bodyTransparency(bodyOpacity)
         material.transparencyMode = .singleLayer
         material.writesToDepthBuffer = true
         material.isDoubleSided = true
