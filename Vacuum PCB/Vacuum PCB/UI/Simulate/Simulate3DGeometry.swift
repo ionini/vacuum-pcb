@@ -53,6 +53,11 @@ struct Simulate3DGeometry {
         /// Layers whose visibility pills control this unit; hidden when none
         /// is visible. Empty = always visible.
         let layers: [Layer]
+        /// Component this cavity belongs to (resistor serpentine, transistor
+        /// dome/pads, LED dimple, port bore) — lets a supply-budget row click
+        /// glow its body in the scene, the 2D canvases' accent-ring
+        /// equivalent. nil for routed channel geometry.
+        var component: UUID? = nil
         /// Transistor component whose open fraction drives a subtle emissive
         /// bump on the gate dome (the 2D view's inner-dot equivalent).
         var opennessComponent: UUID? = nil
@@ -241,7 +246,8 @@ struct Simulate3DGeometry {
                 g.units.append(Unit(mesh: tubeMesh(waypoints: pts,
                                                    radius: m.resistorChannelDiameter / 2, midZ: z),
                                     source: .mean(net("1"), net("2")),
-                                    layers: [placementLayer]))
+                                    layers: [placementLayer],
+                                    component: component.id))
                 g.flowPaths.append(FlowPath(source: .resistor(component.id),
                                             points: pts.map { Vector($0.x, $0.y, z) },
                                             layers: [placementLayer]))
@@ -253,6 +259,7 @@ struct Simulate3DGeometry {
                                         topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ),
                                     source: .net(net("gate")),
                                     layers: [placementLayer],
+                                    component: component.id,
                                     opennessComponent: component.id))
                 // Source/drain pad lobes on the opposite plate, one per pin
                 // net. Both candidate lobes are built and each pin takes the
@@ -281,8 +288,10 @@ struct Simulate3DGeometry {
                     let aWorld = world(pinA.offset), bWorld = world(pinB.offset)
                     // Pin "a" takes its nearest lobe, pin "b" the other.
                     let aIdx = dist2(centers[0], aWorld) <= dist2(centers[1], aWorld) ? 0 : 1
-                    g.units.append(Unit(mesh: lobes[aIdx], source: .net(net("a")), layers: [oppLayer]))
-                    g.units.append(Unit(mesh: lobes[1 - aIdx], source: .net(net("b")), layers: [oppLayer]))
+                    g.units.append(Unit(mesh: lobes[aIdx], source: .net(net("a")),
+                                        layers: [oppLayer], component: component.id))
+                    g.units.append(Unit(mesh: lobes[1 - aIdx], source: .net(net("b")),
+                                        layers: [oppLayer], component: component.id))
                     g.flowPaths.append(FlowPath(source: .transistor(component.id),
                                                 points: [Vector(aWorld.x, aWorld.y, oppZ),
                                                          Vector(bWorld.x, bWorld.y, oppZ)],
@@ -295,6 +304,7 @@ struct Simulate3DGeometry {
                                         topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ),
                                     source: .net(net("p")),
                                     layers: [placementLayer],
+                                    component: component.id,
                                     ledNet: net("p")))
 
             case .port, .vacuumSource, .atmVent:
@@ -302,7 +312,8 @@ struct Simulate3DGeometry {
                                         placement: placement, outline: outline, m: m,
                                         topMidZ: m.midZ(for: .top), bottomMidZ: m.midZ(for: .bottom)),
                                     source: .net(net("p")),
-                                    layers: [placementLayer]))
+                                    layers: [placementLayer],
+                                    component: component.id))
 
             case .subpart, .screw, .connector:
                 // Screws are air-inert; connector socket geometry is CAD-only

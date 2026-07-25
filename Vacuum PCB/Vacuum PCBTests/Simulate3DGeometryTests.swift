@@ -139,7 +139,9 @@ struct Simulate3DGeometryTests {
             #expect(abs(path.totalLength - abs(path.points[0].z - path.points[1].z)) < 1e-9)
         }
 
-        // Resistor serpentines: one tinted unit and one dot path per body.
+        // Resistor serpentines: one tinted unit and one dot path per body,
+        // each unit tagged with its component so a supply-budget row click
+        // can glow it.
         let resistorPaths = g.flowPaths.filter {
             if case .resistor = $0.source { return true } else { return false }
         }
@@ -148,6 +150,9 @@ struct Simulate3DGeometryTests {
             if case .mean = $0.source { return true } else { return false }
         }
         #expect(meanUnits.count == 2)
+        #expect(meanUnits.allSatisfy { $0.component != nil })
+        // Routed channel geometry carries no component tag.
+        #expect(channelUnits.allSatisfy { $0.component == nil })
     }
 
     @Test("Ghost slabs bracket the plates and the silicone sheet")
@@ -207,7 +212,8 @@ struct Simulate3DGeometryTests {
         ]
         let g = build(doc)
 
-        // Dome: gate-net tint + openness hook, on the placement plate.
+        // Dome: gate-net tint + openness hook + budget-highlight tag, on the
+        // placement plate.
         let dome = try #require(g.units.first { $0.opennessComponent == q.id })
         if case .net(let id) = dome.source {
             #expect(id == gateNet.id)
@@ -215,14 +221,18 @@ struct Simulate3DGeometryTests {
             Issue.record("dome tint source should be the gate net")
         }
         #expect(dome.layers == [Layer(plate: .top, depth: 0)])
+        #expect(dome.component == q.id)
 
-        // Pads: one unit per pin net, on the opposite plate.
+        // Pads: one unit per pin net, on the opposite plate, tagged with the
+        // transistor for the budget highlight.
         let padLayer = Layer(plate: .bottom, depth: 0)
-        let padNets: Set<UUID> = Set(g.units.compactMap { unit -> UUID? in
-            guard unit.layers == [padLayer], case .net(let id) = unit.source else { return nil }
+        let padUnits = g.units.filter { $0.layers == [padLayer] }
+        let padNets: Set<UUID> = Set(padUnits.compactMap { unit -> UUID? in
+            guard case .net(let id) = unit.source else { return nil }
             return id
         })
         #expect(padNets == Set([aNet.id, bNet.id]))
+        #expect(padUnits.allSatisfy { $0.component == q.id })
 
         // Source→drain dot bridge at the pads' membrane surface.
         let bridge = try #require(g.flowPaths.first {

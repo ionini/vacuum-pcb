@@ -140,9 +140,12 @@ struct Simulate3DCanvas: View {
         var tintSteps: [Int] = []
         var emissionSteps: [Int] = []
         var glowSteps: [Int] = []
+        var highlighted: [Bool] = []
+        let highlightedComponent = state.highlightedComponentId
         tintSteps.reserveCapacity(geometry.units.count)
         emissionSteps.reserveCapacity(geometry.units.count)
         glowSteps.reserveCapacity(geometry.units.count)
+        highlighted.reserveCapacity(geometry.units.count)
 
         for unit in geometry.units {
             // Unconnected pins (nil net) sit at atmosphere — the 2D bodies'
@@ -171,6 +174,8 @@ struct Simulate3DCanvas: View {
             let lit = unit.ledNet
                 .map { state.params.gateOpenness(forPressure: state.pressure(net: $0)) } ?? 0
             glowSteps.append(Int((max(0, min(1, lit)) * 24).rounded()))
+
+            highlighted.append(unit.component != nil && unit.component == highlightedComponent)
         }
 
         // Flow strengths, normalised exactly like the 2D overlay: full scale
@@ -208,6 +213,8 @@ struct Simulate3DCanvas: View {
                                glowSteps: glowSteps,
                                flowStrengths: strengths,
                                flowReversed: reversed,
+                               highlightedUnits: highlighted,
+                               simClock: state.elapsedSimSeconds,
                                isPlaying: state.isPlaying,
                                timeScale: state.params.timeScale)
     }
@@ -246,6 +253,12 @@ struct Simulate3DFrame {
     /// `Simulate3DGeometry.flowPaths`.
     var flowStrengths: [Float] = []
     var flowReversed: [Bool] = []
+    /// Per-unit: does this unit belong to the component picked in the
+    /// supply-budget panel? Aligned with `Simulate3DGeometry.units`.
+    var highlightedUnits: [Bool] = []
+    /// `SimulationState.elapsedSimSeconds` at this publish — clocks the
+    /// dot-heat persistence EMA in sim-time.
+    var simClock: Double = 0
     var isPlaying: Bool = false
     var timeScale: Double = 1
 
@@ -319,11 +332,16 @@ struct Simulate3DSceneView {
         var lastTint: [Int] = []
         var lastEmission: [Int] = []
         var lastGlow: [Int] = []
+        var lastHighlighted: [Bool] = []
 
         // Aligned with geometry.flowPaths.
         var flowPaths: [Simulate3DGeometry.FlowPath] = []
         var pathVisible: [Bool] = []
         var phases: [Double] = []
+        /// Slow sim-time EMA of each path's strength — the dot-heat
+        /// persistence tracker (see `applyFrame`).
+        var sustained: [Double] = []
+        var lastSimClock: Double?
 
         var frame: Simulate3DFrame = .idle
         var showFlow = true
@@ -390,7 +408,14 @@ struct Simulate3DSceneView {
                 phases[i] = phases[i].truncatingRemainder(dividingBy: period)
 
                 let phase = phases[i] < 0 ? phases[i] + period : phases[i]
-                let bucket = min(7, max(0, Int(strength * 8)))
+                // Heat = how much of the current strength the slow EMA has
+                // confirmed: a fresh transient runs cool (orange) and a
+                // stream that keeps flowing in sim-time heats to red.
+                let hot = i < sustained.count
+                    ? min(1.0, sustained[i] / max(strength, 1e-6)) : 0
+                let bucket = min(Simulate3DSceneView.strengthBuckets - 1, max(0, Int(strength * 8)))
+                    * Simulate3DSceneView.heatBuckets
+                    + min(Simulate3DSceneView.heatBuckets - 1, max(0, Int(hot * 4)))
                 var s = phase.truncatingRemainder(dividingBy: period)
                 if s > total { continue }
                 while s <= total {
@@ -543,6 +568,9 @@ struct Simulate3DSceneView {
         c.flowPaths = geometry.flowPaths
         c.phases = Array(repeating: 0, count: geometry.flowPaths.count)
         c.pathVisible = Array(repeating: true, count: geometry.flowPaths.count)
+        c.sustained = Array(repeating: 0, count: geometry.flowPaths.count)
+        c.lastSimClock = nil
+        c.lastHighlighted = Array(repeating: false, count: geometry.units.count)
         c.basePeriod = max(3.0, geometry.channelRadius * 4.5)
         c.effectivePeriod = c.basePeriod
         c.dotRadius = max(0.25, geometry.channelRadius * 0.55)
@@ -562,11 +590,12 @@ struct Simulate3DSceneView {
     private func rebuildDotPool(coordinator c: Coordinator) {
         c.dotsRoot.childNodes.forEach { $0.removeFromParentNode() }
         c.dotPool = []
-        c.bucketGeometries = (0..<8).map { bucket in
+        c.bucketGeometries = (0..<(Self.strengthBuckets * Self.heatBuckets)).map { bucket in
             let sphere = SCNSphere(radius: CGFloat(c.dotRadius))
             sphere.segmentCount = 10
             let material = SCNMaterial()
-            let strength = (Double(bucket) + 0.5) / 8.0
+            let strength = (Double(bucket / Self.heatBuckets) + 0.5) / Double(Self.strengthBuckets)
+            let heat = (Double(bucket % Self.heatBuckets) + 0.5) / Double(Self.heatBuckets)
             material.lightingModel = .constant
             // Opaque, with strength encoded as brightness instead of alpha:
             // opaque dots render in the opaque pass, *before* the translucent
@@ -574,7 +603,12 @@ struct Simulate3DSceneView {
             // the bore show through the tube wall. (A translucent dot inside
             // a translucent tube is at the mercy of SceneKit's per-object
             // transparent-pass sort, and loses.)
-            let color = PlatformColor(hue: 0.08, saturation: 0.9,
+            //
+            // Hue carries persistence: fresh transients stream orange and
+            // settle away; a stream the sim-time EMA has confirmed keeps
+            // flowing runs red — static vent→rail draw, findable at a glance.
+            let color = PlatformColor(hue: CGFloat(0.08 * (1 - heat)),
+                                      saturation: CGFloat(0.9 + 0.1 * heat),
                                       brightness: CGFloat(0.55 + 0.45 * strength),
                                       alpha: 1)
             material.diffuse.contents = color
@@ -586,12 +620,17 @@ struct Simulate3DSceneView {
                            max(64, Int(totalPathLength() / c.basePeriod) + c.flowPaths.count))
         c.dotPool.reserveCapacity(poolSize)
         for _ in 0..<poolSize {
-            let node = SCNNode(geometry: c.bucketGeometries[7])
+            let node = SCNNode(geometry: c.bucketGeometries[c.bucketGeometries.count - 1])
             node.isHidden = true
             c.dotsRoot.addChildNode(node)
             c.dotPool.append(node)
         }
     }
+
+    /// Dot bucket grid: brightness rows by |Q| strength, hue columns by
+    /// persistence (orange → red).
+    static let strengthBuckets = 8
+    static let heatBuckets = 4
 
     /// Hard ceiling on animated dot nodes; beyond it the spacing stretches.
     private static let dotBudget = 1400
@@ -614,16 +653,24 @@ struct Simulate3DSceneView {
             let tint = f.tintSteps[i]
             let emission = i < f.emissionSteps.count ? f.emissionSteps[i] : 0
             let glow = i < f.glowSteps.count ? f.glowSteps[i] : 0
+            let highlighted = i < f.highlightedUnits.count && f.highlightedUnits[i]
             guard tint != c.lastTint[i] || emission != c.lastEmission[i] || glow != c.lastGlow[i]
+                || highlighted != c.lastHighlighted[i]
             else { continue }
             c.lastTint[i] = tint
             c.lastEmission[i] = emission
             c.lastGlow[i] = glow
+            c.lastHighlighted[i] = highlighted
 
             let color = c.colorLUT[max(0, min(c.colorLUT.count - 1, tint))]
             let material = c.unitMaterials[i]
             material.diffuse.contents = color
-            if glow > 0 {
+            if highlighted {
+                // Supply-budget row picked this component: the 2D canvases'
+                // accent ring, as an emissive glow on its cavities.
+                material.emission.contents =
+                    PlatformColor.systemPink.withAlphaComponent(0.7)
+            } else if glow > 0 {
                 // LED lit: yellow glow rising with the gate-openness ramp,
                 // the 3D reading of the 2D body's yellow fill.
                 let lit = Double(glow) / 24.0
@@ -642,6 +689,21 @@ struct Simulate3DSceneView {
             }
         }
         SCNTransaction.commit()
+
+        // Dot-heat persistence: a slow sim-time EMA of each path's strength.
+        // A transient charge decays before the EMA catches up (dots stay
+        // orange and disappear); a static vent→rail stream holds its
+        // strength until the EMA confirms it and the dots run red. Sim-time,
+        // so the time-scale slider doesn't change what counts as sustained;
+        // pausing freezes it along with everything else.
+        let dt = max(0, f.simClock - (c.lastSimClock ?? f.simClock))
+        c.lastSimClock = f.simClock
+        if c.sustained.count == f.flowStrengths.count, dt > 0 {
+            let alpha = 1 - exp(-min(dt, 2.0) / 2.0)
+            for i in 0..<c.sustained.count {
+                c.sustained[i] += (Double(f.flowStrengths[i]) - c.sustained[i]) * alpha
+            }
+        }
 
         // Stretch the dot spacing when the active paths would exceed the
         // pool. Recomputed per publish — the active set is what changes.
