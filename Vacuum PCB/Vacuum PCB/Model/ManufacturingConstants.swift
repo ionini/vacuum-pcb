@@ -187,6 +187,13 @@ struct ManufacturingConstants: Codable, Hashable {
     /// router's centre-to-centre `minChannelSpacing`.
     var minWallThickness: Double
 
+    /// Comfort wall: walls at or above `minWallThickness` but below this are
+    /// reported by DRC as *warnings* instead of errors — printable, but with
+    /// less margin than you'd like against break-through and channel-to-channel
+    /// leak. 0 disables the tier (only the hard `minWallThickness` errors
+    /// remain). Like `minWallThickness` it is edge-to-edge.
+    var preferredWallThickness: Double
+
     /// Whether routing channels are printed with a flat floor (squared lower
     /// half) and an arched top instead of a full circular bore. The flat floor
     /// adds void volume in the bottom corners without changing the channel
@@ -224,6 +231,7 @@ struct ManufacturingConstants: Codable, Hashable {
         castingMargin: 2.0,
         moldWallThickness: 3.0,
         minWallThickness: 0.5,
+        preferredWallThickness: 0,
         flatBottomChannels: true,
         testPointLabelSize: 3.0
     )
@@ -246,7 +254,7 @@ struct ManufacturingConstants: Codable, Hashable {
         case screwProtrusion, screwDomeBaseDiameter, screwHeadDepth, screwNutDepth
         case stencilThickness, stencilViaPadding
         case castingMargin, moldWallThickness
-        case minWallThickness
+        case minWallThickness, preferredWallThickness
         case flatBottomChannels
         case testPointLabelSize
     }
@@ -264,7 +272,8 @@ struct ManufacturingConstants: Codable, Hashable {
          screwHeadDepth: Double, screwNutDepth: Double,
          stencilThickness: Double, stencilViaPadding: Double,
          castingMargin: Double = 2.0, moldWallThickness: Double = 3.0,
-         minWallThickness: Double, flatBottomChannels: Bool,
+         minWallThickness: Double, preferredWallThickness: Double = 0,
+         flatBottomChannels: Bool,
          testPointLabelSize: Double = 3.0) {
         self.plateThickness = plateThickness
         self.channelDiameter = channelDiameter
@@ -294,6 +303,7 @@ struct ManufacturingConstants: Codable, Hashable {
         self.castingMargin = castingMargin
         self.moldWallThickness = moldWallThickness
         self.minWallThickness = minWallThickness
+        self.preferredWallThickness = preferredWallThickness
         self.flatBottomChannels = flatBottomChannels
         self.testPointLabelSize = testPointLabelSize
     }
@@ -355,6 +365,8 @@ struct ManufacturingConstants: Codable, Hashable {
                                                   forKey: .moldWallThickness) ?? 3.0
         minWallThickness = try c.decodeIfPresent(Double.self,
                                                  forKey: .minWallThickness) ?? 0.5
+        preferredWallThickness = try c.decodeIfPresent(Double.self,
+                                                       forKey: .preferredWallThickness) ?? 0
         flatBottomChannels = try c.decodeIfPresent(Bool.self,
                                                    forKey: .flatBottomChannels) ?? true
         testPointLabelSize = try c.decodeIfPresent(Double.self,

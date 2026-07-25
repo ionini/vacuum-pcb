@@ -536,7 +536,12 @@ enum Minimizer {
         }
     }
 
-    private static func blockingIssueCount(_ doc: CircuitDocument) -> Int { DRC.check(doc).count }
+    /// Warnings (walls between `minWallThickness` and the preferred comfort
+    /// wall) don't block a trial — the search optimises against hard failures
+    /// only, or a board with a preferred wall set could never minimise.
+    private static func blockingIssueCount(_ doc: CircuitDocument) -> Int {
+        DRC.check(doc).filter { $0.severity == .error }.count
+    }
 
     // MARK: - Bounding box / objective
 

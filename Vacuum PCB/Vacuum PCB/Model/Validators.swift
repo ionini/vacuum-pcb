@@ -355,7 +355,11 @@ enum Validators {
     struct ConnResult {
         let drcIssues: [DRC.Issue]
         let unrouted: Int
-        var pass: Bool { drcIssues.isEmpty && unrouted == 0 }
+        var errors: [DRC.Issue] { drcIssues.filter { $0.severity == .error } }
+        var warnings: [DRC.Issue] { drcIssues.filter { $0.severity == .warning } }
+        /// Warnings (walls under the preferred comfort wall but printable)
+        /// don't fail the gate — they surface as a `.warn` report instead.
+        var pass: Bool { errors.isEmpty && unrouted == 0 }
     }
     static func connectivity(_ doc: CircuitDocument) -> ConnResult {
         ConnResult(drcIssues: DRC.check(doc), unrouted: Ratsnest.missingEdges(doc).count)
