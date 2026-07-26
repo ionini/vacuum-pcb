@@ -220,15 +220,15 @@ final class ValidationModel {
                 return Report(id: titles[0], title: titles[0], status: .pass,
                               detail: ["All nets routed, no DRC issues (sub-parts included)."])
             }
-            // Printable, but thinner than the board's preferred wall — a
-            // yellow gate so the warnings can't hide behind a green tick.
-            var d = ["All nets routed, no DRC errors — \(warnings.count) wall warning(s):"]
+            // Printable, but flagged (thin-but-legal wall, drifted sub-part
+            // pad) — a yellow gate so warnings can't hide behind a green tick.
+            var d = ["All nets routed, no DRC errors — \(warnings.count) warning(s):"]
             d += warnings.prefix(6).map { "• \($0.summary)" }
             return Report(id: titles[0], title: titles[0], status: .warn, detail: d)
         }
         let errors = c.errors
         var d = ["DRC errors: \(errors.count)", "Unrouted nets: \(c.unrouted)"]
-        if !warnings.isEmpty { d.append("Wall warnings: \(warnings.count)") }
+        if !warnings.isEmpty { d.append("Warnings: \(warnings.count)") }
         d += errors.prefix(6).map { "• \($0.summary)" }
         return Report(id: titles[0], title: titles[0], status: .fail, detail: d)
     }

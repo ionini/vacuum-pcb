@@ -1259,7 +1259,7 @@ private struct DRCSummarySection: View {
                 }
             }
             if !warnings.isEmpty {
-                Label("\(warnings.count) wall warning\(warnings.count == 1 ? "" : "s")",
+                Label("\(warnings.count) warning\(warnings.count == 1 ? "" : "s")",
                       systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.yellow)
                 ForEach(warnings.prefix(4)) { issue in

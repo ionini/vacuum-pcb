@@ -259,6 +259,23 @@ enum DRC {
                 wall: Double,
                 position: Point
             )
+            /// A hoisted sub-part transistor / LED pin bore sits measurably
+            /// off-centre from the channel that plumbs it. The flatten
+            /// computes pin positions with the PARENT's constants (what
+            /// PlateBuilder drills), but the sub-part's internal routes were
+            /// drawn against the library file's own — when they disagree
+            /// (padsOffset, usually) the printed drop bore lands offset from
+            /// its channel end. They still fuse while the drift stays under
+            /// a channel radius, so the board "works", but the effective
+            /// aperture shrinks and nothing else surfaces the mismatch.
+            /// `componentLabel` carries the instance chain ("U2.Q1").
+            case subpartPinDrift(
+                componentLabel: String,
+                pinKey: String,
+                drift: Double,
+                layer: Layer,
+                position: Point
+            )
         }
 
         var summary: String {
@@ -328,6 +345,10 @@ enum DRC {
                 case .bore:      what = otherLabel.map { "\($0) bore" } ?? "a bore"
                 }
                 return "\(netLabel) ↔ \(what) on \(layer.uiLabel): \(wallTxt) (sub-part)"
+            case let .subpartPinDrift(componentLabel, pinKey, drift, layer, _):
+                return "\(componentLabel) pin \(pinKey) bore \(String(format: "%.2f", drift)) mm "
+                    + "off its channel on \(layer.uiLabel) (sub-part routed with "
+                    + "different constants — check padsOffset)"
             }
         }
     }
@@ -382,6 +403,10 @@ enum DRC {
                 sides.append((otherNetId, otherLabel ?? ""))
             }
             return flattenedSidesSelection(sides, in: document)
+        case let .subpartPinDrift(componentLabel, _, _, _, _):
+            // The instance-chain prefix ("U2.Q1" → "U2") selects the sub-part
+            // placement the drifted pin lives in.
+            return flattenedSidesSelection([(nil, componentLabel)], in: document)
         case .screwClearance(let screwId, _, _, _):
             return .placement(screwId)
         case .viaPad(let padComponentId, _, _, _):
@@ -493,6 +518,8 @@ enum DRC {
             return (pos, layer)
         case let .subpartWall(_, _, _, layer, _, pos):
             return (pos, layer)
+        case let .subpartPinDrift(_, _, _, layer, pos):
+            return (pos, layer)
         case .unplacedPin, .noRouteDrawn, .matingIncompatible, .matingDoubleBooked:
             return nil
         }
@@ -534,6 +561,9 @@ enum DRC {
         issues.append(contentsOf: stencilHoleIssues(flat: flat))
         issues.append(contentsOf: portBoreClearanceIssues(in: geoDoc, labels: geoLabels))
         issues.append(contentsOf: testPointClearanceIssues(in: geoDoc, labels: geoLabels))
+        issues.append(contentsOf: subpartPinDriftIssues(
+            in: geoDoc, parentComponentIds: parentComponentIds,
+            parentRouteCount: parentRouteCount, labels: geoLabels))
         return issues
     }
 
@@ -1682,6 +1712,76 @@ enum DRC {
             }
         }
         return issues
+    }
+
+    // MARK: - Sub-part pin drift
+
+    /// Flags hoisted sub-part transistor / LED pin bores that sit measurably
+    /// off-centre from the channel that plumbs them — the "constants drift"
+    /// case. The flatten computes pin positions with the PARENT's constants
+    /// (that is what `PlateBuilder` drills), but the sub-part's internal
+    /// routes were drawn against the library file's own constants; when the
+    /// two disagree (`padsOffset`, usually) every affected pad prints with
+    /// its drop bore offset from the channel end. Bore and channel still
+    /// fuse while the drift stays under a channel radius — the board works,
+    /// the aperture just shrinks — so nothing else reports it: the wall
+    /// checks treat the pair as same-net (correctly), and each file looks
+    /// perfect on its own.
+    ///
+    /// Same closest-route attribution as `collectBores`' `plumbedNet`, and
+    /// the same known approximation: a pin whose net is unrouted inside the
+    /// part can misattribute to a foreign channel passing within the merge
+    /// radius — that geometry is already flagged by the wall checks.
+    /// Warning severity: drifted pads print and work, they're just not what
+    /// the part's designer drew. One issue per (component, pin).
+    private static func subpartPinDriftIssues(
+        in doc: CircuitDocument,
+        parentComponentIds: Set<UUID>,
+        parentRouteCount: Int,
+        labels labelOverrides: [UUID: String]? = nil
+    ) -> [Issue] {
+        let m = doc.manufacturing
+        let channelRadius = m.channelDiameter / 2
+        /// Offsets below this are grid-snap / float noise, not drift.
+        let noiseFloor = 0.05
+        // Cheap skip for the no-sub-parts case (flat == parent doc).
+        guard doc.logic.components.contains(where: { !parentComponentIds.contains($0.id) })
+        else { return [] }
+        let edges = collectRouteEdges(in: doc, parentRouteCount: parentRouteCount,
+                                      labelOverrides: labelOverrides)
+        guard !edges.isEmpty else { return [] }
+
+        var issues: [Issue] = []
+        for placement in doc.physical.placements {
+            guard !parentComponentIds.contains(placement.componentId),
+                  let comp = doc.logic.components.first(where: { $0.id == placement.componentId }),
+                  comp.kind == .transistor || comp.kind == .led
+            else { continue }
+            let fp = comp.footprint(m, snapshots: doc.librarySnapshots)
+            for pin in fp.pins {
+                let pinLayer = placement.resolvedLayer(of: pin, on: comp)
+                let world = placement.worldPosition(of: pin)
+                var closest = Double.greatestFiniteMagnitude
+                var plumbed: ChannelEdge?
+                for e in edges where e.layer.plate == pinLayer.plate {
+                    let d = pointSegmentDistance(world, e.a, e.b)
+                    if d < closest { closest = d; plumbed = e }
+                }
+                // Beyond a channel radius nothing plumbs this pin — that's
+                // the wall checks' / connectivity's territory, not drift.
+                guard let channel = plumbed, closest > noiseFloor, closest < channelRadius
+                else { continue }
+                issues.append(Issue(
+                    netId: channel.netId, netLabel: channel.netLabel,
+                    kind: .subpartPinDrift(
+                        componentLabel: comp.label, pinKey: pin.key,
+                        drift: closest, layer: pinLayer, position: world
+                    ),
+                    severity: .warning
+                ))
+            }
+        }
+        return issues.sorted { $0.summary < $1.summary }
     }
 
     // MARK: - Cross-net electrical merge
