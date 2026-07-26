@@ -54,6 +54,29 @@ struct DocumentView: View {
     /// Per-element visibility of the 3D preview (which plates / channels / mold
     /// parts are shown). Starts on the plates-plus-channels preset.
     @State private var previewVisibility: PreviewVisibility = .both
+    /// Print-envelope (modifier volume) overlay mesh + its own revision, so a
+    /// padding tweak refreshes just this node — not the whole scene. Rebuilt
+    /// alongside every full `rebuild()` and by `rebuildEnvelope()` when the
+    /// padding slider commits.
+    @State private var envelopeMesh: Mesh = Mesh([])
+    @State private var envelopeRevision = 0
+    /// Which region the preview overlay (and a fresh export) shows:
+    /// "pneumatics" = the envelope around the features, "voids" = its
+    /// complement (what the void modifier will downgrade — includes the screw
+    /// and connector keep-outs the positive envelope can't show). Persisted.
+    @AppStorage("previewEnvelopeStyle") private var envelopeStyleRaw =
+        BambuExport.ModifierStyle.pneumatics.rawValue
+    /// The voids mesh is real CSG (seconds on a dense board), so it is built
+    /// lazily: skipped while the overlay is hidden and flagged stale instead.
+    @State private var envelopeStale = false
+    /// A voids rebuild is running; shows a small spinner beside the slider.
+    @State private var isBuildingEnvelope = false
+    @State private var envelopeToken = 0
+    /// Live value while the envelope-padding slider is mid-drag; nil when idle
+    /// (the document's `modifierMarginXY` is then the truth). Committing the
+    /// drag writes the document and clears this — same draft idea as the
+    /// Manufacturing inspector, so dragging doesn't spam document mutations.
+    @State private var envelopePaddingDraft: Double?
     /// Opacity of the printed body (plates / silicone sheet / casting frame)
     /// in the 3D preview; feature channels stay opaque. Persisted so the
     /// user's preferred translucency survives relaunches.
@@ -94,6 +117,7 @@ struct DocumentView: View {
         case exportBambu
         case openInBambuStudio
         case openInBambuWithModifier
+        case openInBambuWithVoidModifier
         case openInFlowSimulator
     }
 
@@ -117,6 +141,20 @@ struct DocumentView: View {
     /// `validationModel` — so it survives leaving and returning to Simulate.
     /// Not persisted into the `.vpcb` (matches the v1 simulation-state scope).
     @State private var testModel = SimTestModel()
+
+    /// How many placed subparts are pinned to an older library version.
+    /// Drives the sidebar's Library section (below Design Rules) with its
+    /// bulk "Update All from Library" button. Recomputed debounced — the
+    /// staleness check hashes whole library documents, too heavy to run
+    /// synchronously on every drag tick of the circuit `onChange`.
+    @State private var outdatedSubparts = 0
+    @State private var outdatedRecompute: Task<Void, Never>?
+
+    #if canImport(AppKit)
+    /// Opens library `.vpcb` files for the View-menu "Open All Subparts as
+    /// Tabs" command (published to the menu via `focusedSceneValue`).
+    @Environment(\.openDocument) private var openDocument
+    #endif
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -175,6 +213,24 @@ struct DocumentView: View {
             if document.circuit.isAssembly, !visibleTabs.contains(selectedTab) {
                 selectedTab = .schematic
             }
+            scheduleOutdatedRecompute()
+        }
+        .onChange(of: previewVisibility) { _, newValue in
+            // The voids overlay is built lazily; switching it on with a stale
+            // (or dropped) mesh triggers the deferred build.
+            if newValue.contains(.envelope), envelopeStale, !isBuildingEnvelope {
+                rebuildEnvelope()
+            }
+        }
+        .onChange(of: envelopeStyleRaw) { _, _ in
+            // Style switch invalidates the current overlay outright.
+            if previewVisibility.contains(.envelope) {
+                rebuildEnvelope()
+            } else {
+                envelopeMesh = Mesh([])
+                envelopeRevision &+= 1
+                envelopeStale = true
+            }
         }
         .onChange(of: includeTestPoints) { _, _ in
             // This flag feeds the build (unlike the scene-visibility toggles),
@@ -196,7 +252,23 @@ struct DocumentView: View {
             // handler so snapshot-only changes still invalidate the preview.
             previewDirty = true
             if selectedTab == .preview { rebuild() }
+            scheduleOutdatedRecompute()
         }
+        // Fires immediately on subscription (initial count) and again on
+        // every library re-index — including the folder watcher's reload
+        // right after a part is saved in another window tab. That's what
+        // flips the sidebar's Library section on without any user action.
+        .onReceive(PartsLibrary.shared.$parts) { _ in
+            scheduleOutdatedRecompute()
+        }
+        #if canImport(AppKit)
+        // Publishes the "Open All Subparts as Tabs" action to the View
+        // menu for whichever document window is frontmost.
+        .focusedSceneValue(\.openAllSubpartTabs, OpenAllSubpartTabsAction(
+            enabled: document.circuit.logic.components.contains { $0.kind == .subpart },
+            run: { SubpartTabs.openAll(from: document.circuit, openDocument: openDocument) }
+        ))
+        #endif
         .onChange(of: selectedTab) { _, newTab in
             // Only rebuild the CSG when the user actually wants to look at
             // the 3D preview. Avoids the per-edit Euclid CSG storm that was
@@ -349,6 +421,8 @@ struct DocumentView: View {
                     bottomFeatures: built.bottomFeatures,
                     stencil: built.stencil,
                     moldFrame: built.moldFrame,
+                    envelope: envelopeMesh,
+                    envelopeRevision: envelopeRevision,
                     boardOutline: document.circuit.physical.boardOutline,
                     visibility: previewVisibility,
                     bodyOpacity: previewBodyOpacity,
@@ -409,6 +483,15 @@ struct DocumentView: View {
                     // the bores leave the preview *and* the exported STL.
                     Toggle("Test points", isOn: $includeTestPoints)
                 }
+                Section("Print") {
+                    Toggle("Print envelope", isOn: visibilityBinding(.envelope))
+                    Picker("Region", selection: $envelopeStyleRaw) {
+                        Text("Pneumatics (keep solid)")
+                            .tag(BambuExport.ModifierStyle.pneumatics.rawValue)
+                        Text("Voids (downgrade)")
+                            .tag(BambuExport.ModifierStyle.voids.rawValue)
+                    }
+                }
             } label: {
                 Label("Layers", systemImage: "square.3.layers.3d")
             }
@@ -425,10 +508,91 @@ struct DocumentView: View {
             }
             .help("Body opacity — how solid the printed plates (and silicone " +
                   "sheet / casting frame) render. Channels stay opaque.")
+
+            if previewVisibility.contains(.envelope) {
+                envelopePaddingControl
+                if isBuildingEnvelope {
+                    ProgressView()
+                        .controlSize(.small)
+                        .help("Building the envelope…")
+                }
+            }
         }
         .padding(8)
         .glassEffect(in: .rect(cornerRadius: 10))
         .padding(.top, 8)
+    }
+
+    /// Envelope padding: live-drafted slider + value readout. Dragging shows
+    /// the value; releasing commits it to the document (both margins — one
+    /// isotropic leak-barrier thickness; the Manufacturing inspector still
+    /// edits XY and Z separately) and regenerates just the envelope mesh.
+    private var envelopePaddingControl: some View {
+        let current = envelopePaddingDraft ?? document.circuit.manufacturing.modifierMarginXY
+        return HStack(spacing: 5) {
+            Image(systemName: "square.dashed")
+                .font(.caption)
+                .foregroundStyle(.purple)
+            Slider(
+                value: Binding(
+                    get: { envelopePaddingDraft ?? document.circuit.manufacturing.modifierMarginXY },
+                    set: { envelopePaddingDraft = $0 }
+                ),
+                in: 0.2...4.0,
+                onEditingChanged: { editing in
+                    guard !editing, let value = envelopePaddingDraft else { return }
+                    document.circuit.manufacturing.modifierMarginXY = value
+                    document.circuit.manufacturing.modifierMarginZ = value
+                    envelopePaddingDraft = nil
+                    rebuildEnvelope()
+                }
+            )
+            .controlSize(InputPlatform.isTouch ? .regular : .small)
+            .frame(width: InputPlatform.isTouch ? 120 : 90)
+            Text(String(format: "%.1f mm", current))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 44, alignment: .leading)
+        }
+        .help("Print-envelope padding — the wall of material around every " +
+              "channel / valve / via the modifier volume claims (e.g. for " +
+              "solid infill). Committing a drag sets both the XY and Z " +
+              "margins; fine-tune them separately in Manufacturing settings.")
+    }
+
+    /// The overlay style as its enum (AppStorage can only hold the raw value).
+    private var envelopeStyle: BambuExport.ModifierStyle {
+        BambuExport.ModifierStyle(rawValue: envelopeStyleRaw) ?? .pneumatics
+    }
+
+    /// Regenerate just the print-envelope mesh from the current document — no
+    /// plate rebuild. Pneumatics is near-instant; voids is real CSG (seconds
+    /// on a dense board), hence the token guard and the busy flag.
+    private func rebuildEnvelope() {
+        var snapshot = document.circuit
+        if !includeTestPoints { snapshot.physical.testPoints = [] }
+        let style = envelopeStyle
+        envelopeToken += 1
+        let token = envelopeToken
+        isBuildingEnvelope = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let envelope: Mesh
+            switch style {
+            case .pneumatics:
+                envelope = PlateBuilder.buildModifier(
+                    snapshot, margins: .init(snapshot.manufacturing))
+            case .voids:
+                envelope = PlateBuilder.buildInvertedModifier(
+                    snapshot, margins: .init(snapshot.manufacturing))
+            }
+            DispatchQueue.main.async {
+                guard token == envelopeToken else { return }
+                self.envelopeMesh = envelope
+                self.envelopeRevision &+= 1
+                self.envelopeStale = false
+                self.isBuildingEnvelope = false
+            }
+        }
     }
 
     /// Maps the per-element visibility set to/from the named presets. The getter
@@ -532,8 +696,47 @@ struct DocumentView: View {
             Section("Design Rules") {
                 DRCSummarySection(circuit: document.circuit, onFocus: focusIssue)
             }
+            // Only materialises when something is actually stale — an
+            // always-on "Library: up to date" row would just be noise.
+            if outdatedSubparts > 0 {
+                Section("Library") {
+                    Label(outdatedSubparts == 1
+                            ? "1 subpart out of date"
+                            : "\(outdatedSubparts) subparts out of date",
+                          systemImage: "arrow.triangle.2.circlepath")
+                        .foregroundStyle(.orange)
+                        .font(.caption)
+                    Button("Update All from Library") { updateAllSubparts() }
+                        .controlSize(.small)
+                        .help("Re-pin every out-of-date subpart instance to the current library version — same as clicking each instance's own Update from Library button, without having to select them. Up-to-date instances are untouched.")
+                }
+            }
         }
         .listStyle(.sidebar)
+    }
+
+    /// Debounced re-count of stale subpart pins. A save in a library tab
+    /// lands as a `PartsLibrary` reload burst, and drags mutate the circuit
+    /// every frame — one hash pass ~0.25 s after the last trigger covers
+    /// both without hashing library docs per tick.
+    private func scheduleOutdatedRecompute() {
+        outdatedRecompute?.cancel()
+        outdatedRecompute = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            outdatedSubparts = document.circuit.outdatedSubpartCount()
+        }
+    }
+
+    /// Bulk Update-from-Library: re-pins every out-of-date subpart instance
+    /// (transitive edits included) in one shot. `refreshAllSnapshots` leaves
+    /// already-current instances untouched, so this is exactly "update all
+    /// subcomponents that need updating".
+    private func updateAllSubparts() {
+        var circuit = document.circuit
+        if CircuitDocument.refreshAllSnapshots(&circuit, libraryLookup: CircuitDocument.sharedLibraryLookup) {
+            document.circuit = circuit
+        }
     }
 
     /// Click handler for an issue row in the sidebar. Asks DRC for the
@@ -662,6 +865,7 @@ struct DocumentView: View {
             onExportBambu: { triggerExport(.exportBambu) },
             onOpenBambu: { triggerExport(.openInBambuStudio) },
             onOpenBambuWithModifier: { triggerExport(.openInBambuWithModifier) },
+            onOpenBambuWithVoidModifier: { triggerExport(.openInBambuWithVoidModifier) },
             onOpenFlow: { triggerExport(.openInFlowSimulator) }
         )
     }
@@ -697,7 +901,9 @@ struct DocumentView: View {
         let base = bambuBaseName
         isBuilding = true
         DispatchQueue.global(qos: .userInitiated).async {
-            let payload = BambuExport.payload(doc: snapshot, baseName: base, prebuiltModel: built)
+            let payload = BambuExport.payload(doc: snapshot, baseName: base,
+                                              margins: .init(snapshot.manufacturing),
+                                              prebuiltModel: built)
             DispatchQueue.main.async {
                 self.bambuExportDocument = BambuExportDocument(files: payload.files)
                 self.isBuilding = false
@@ -735,6 +941,12 @@ struct DocumentView: View {
         case .openInBambuWithModifier:
             #if canImport(AppKit)
             openInBambuStudio(withModifier: true)
+            #else
+            break
+            #endif
+        case .openInBambuWithVoidModifier:
+            #if canImport(AppKit)
+            openInBambuStudio(withModifier: true, style: .voids)
             #else
             break
             #endif
@@ -813,13 +1025,14 @@ struct DocumentView: View {
         }
     }
 
-    private func openInBambuStudio(withModifier: Bool = false) {
+    private func openInBambuStudio(withModifier: Bool = false,
+                                   style: BambuExport.ModifierStyle = .pneumatics) {
         guard let built else { return }
         guard let bambuURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.bambuStudioBundleID) else {
             return
         }
         if withModifier {
-            openInBambuStudioWithModifier(bambuURL: bambuURL, built: built)
+            openInBambuStudioWithModifier(bambuURL: bambuURL, built: built, style: style)
             return
         }
         // makeWatertight stitches the hairline cracks Euclid's BSP CSG leaves
@@ -855,7 +1068,8 @@ struct DocumentView: View {
     /// them as a single (multipart) object. The two share PlateBuilder's
     /// coordinate space, so they stay aligned; the user then switches the
     /// `_modifier` part to a Modifier. No manifest is written for this path.
-    private func openInBambuStudioWithModifier(bambuURL: URL, built: PlateBuilder.Output) {
+    private func openInBambuStudioWithModifier(bambuURL: URL, built: PlateBuilder.Output,
+                                               style: BambuExport.ModifierStyle = .pneumatics) {
         // Match the preview's snapshot so the modifier lines up with the plates.
         var snapshot = document.circuit
         if !includeTestPoints { snapshot.physical.testPoints = [] }
@@ -863,6 +1077,8 @@ struct DocumentView: View {
         isBuilding = true
         DispatchQueue.global(qos: .userInitiated).async {
             let payload = BambuExport.payload(doc: snapshot, baseName: base,
+                                              margins: .init(snapshot.manufacturing),
+                                              style: style,
                                               includeManifest: false, prebuiltModel: built)
             let dir = FileManager.default.temporaryDirectory
             var urls: [URL] = []
@@ -913,8 +1129,26 @@ struct DocumentView: View {
         // editor and Simulate views — which read the document directly —
         // untouched.
         if !includeTestPoints { snapshot.physical.testPoints = [] }
+        let style = envelopeStyle
+        let wantsEnvelope = previewVisibility.contains(.envelope)
         DispatchQueue.global(qos: .userInitiated).async {
             let result = PlateBuilder.build(snapshot)
+            // Print-envelope overlay for the same snapshot. The pneumatics
+            // style is cheap (polygon concatenation) and rides along on every
+            // rebuild; the voids style is real CSG, so it is only built here
+            // when the overlay is actually visible — otherwise it's flagged
+            // stale and built on demand when the user switches it on.
+            let envelope: Mesh?
+            switch style {
+            case .pneumatics:
+                envelope = PlateBuilder.buildModifier(
+                    snapshot, margins: .init(snapshot.manufacturing))
+            case .voids:
+                envelope = wantsEnvelope
+                    ? PlateBuilder.buildInvertedModifier(
+                        snapshot, margins: .init(snapshot.manufacturing))
+                    : nil
+            }
             // Whole printed board, subparts flattened — matches what prints, so
             // the volume cavities line up with the geometry above.
             let vols = physicalVolumes(snapshot.flattenedForSimulation().document)
@@ -930,6 +1164,16 @@ struct DocumentView: View {
                 self.volumes = vols
                 self.volumeMeshes = vmeshes
                 self.geometryRevision &+= 1
+                if let envelope {
+                    self.envelopeMesh = envelope
+                    self.envelopeStale = false
+                } else {
+                    // Skipped voids build: drop the old mesh (it may show the
+                    // wrong style) and rebuild when the overlay comes back.
+                    self.envelopeMesh = Mesh([])
+                    self.envelopeStale = true
+                }
+                self.envelopeRevision &+= 1
                 // Drop any highlighted ids the rebuild no longer has.
                 let live = Set(vols.map(\.id))
                 self.highlightedVolumeIDs.removeAll { !live.contains($0) }
@@ -1085,6 +1329,7 @@ struct ExportMenuButton: View {
     let onExportBambu: () -> Void
     let onOpenBambu: () -> Void
     let onOpenBambuWithModifier: () -> Void
+    let onOpenBambuWithVoidModifier: () -> Void
     let onOpenFlow: () -> Void
 
     var body: some View {
@@ -1098,6 +1343,10 @@ struct ExportMenuButton: View {
             // object" — remember to switch the _modifier part to a Modifier,
             // or it prints as solid.
             Button("Open in Bambu Studio (with Modifier)", action: onOpenBambuWithModifier)
+                .disabled(!bambuStudioInstalled)
+            // The inverted pairing: the global preset keeps the pneumatics,
+            // the modifier claims the voids (assign it LOW infill in Bambu).
+            Button("Open in Bambu Studio (Void Modifier)", action: onOpenBambuWithVoidModifier)
                 .disabled(!bambuStudioInstalled)
             Button("Open in Flow Simulator", action: onOpenFlow)
                 .disabled(!flowSimulatorInstalled)

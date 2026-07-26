@@ -38,6 +38,34 @@ whenever you print them.
 This is **not** a slicer, G-code post-processor, or `.3mf` writer. A native
 `.3mf` that pre-marks the second mesh as a modifier is a possible later step.
 
+## Inverted ("void") modifier — the fail-safe pairing
+
+`--modifier-voids` (CLI) / **"Open in Bambu Studio (Void Modifier)"** (app)
+inverts the region: the `_modifier` STL claims each plate's slab **minus** the
+pneumatic envelope, **minus** screw clamp zones (a cylinder of the
+head/volcano diameter through the full stack at every screw — clamping force
+must not flow through sparse infill), **minus** entire connector footprints
+(their fluid tubes and end-cap screws are not part of the pneumatic envelope,
+and a sparse connector leaks).
+
+Use it the opposite way round from the envelope: keep the **global preset as
+the validated airtight profile**, and assign the modifier LOW sparse infill —
+"solid where it matters, hollow everywhere else", with the safe failure mode:
+lose or forget the modifier and the whole board simply prints with the good
+preset. (With the positive envelope + light global preset, the same mistake
+prints a leaky board that looks fine.)
+
+Built like `build()` carves plates — one `Mesh.union` of envelope shells +
+keep-outs, one `subtracting` from a slab that overshoots the plate by 1 mm
+(XY and outward Z; modifiers only act where they overlap material, and the
+inward face stops exactly at the silicone plane so one plate's void cannot
+claim the other's material). The envelope padding (`modifierMarginXY/Z`, the
+3D-preview slider) sets the solid wall kept around every feature — the
+leak-barrier thickness against the infill plenum (lab notes 2026-07-25).
+Expect the export to take roughly as long as a plate build on dense boards
+(~25 s for the 4-bit register): the complement is real CSG, unlike the
+concatenated positive envelope.
+
 ## Geometry approach — the modifier envelope
 
 The modifier must overlap the *printed material* around each feature, not sit

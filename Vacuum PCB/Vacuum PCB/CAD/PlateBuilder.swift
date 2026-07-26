@@ -1274,6 +1274,12 @@ enum PlateBuilder {
         /// envelope into the roofs above and floors below the pneumatics.
         var z: Double
         init(xy: Double = 1.0, z: Double = 0.6) { self.xy = xy; self.z = z }
+        /// The document's own padding (`manufacturing.modifierMarginXY/Z`) —
+        /// what the preview envelope and every export should use, so the
+        /// envelope the user tuned on screen is the one that prints.
+        init(_ m: ManufacturingConstants) {
+            self.init(xy: m.modifierMarginXY, z: m.modifierMarginZ)
+        }
         /// `modifierMarginXY = 1.0`, `modifierMarginZ = 0.6`.
         static let defaults = ModifierMargins()
     }
@@ -1309,6 +1315,16 @@ enum PlateBuilder {
         _ doc: CircuitDocument, margins: ModifierMargins = .defaults,
         plate: Plate? = nil
     ) -> Mesh {
+        Mesh(modifierShells(doc, margins: margins, plate: plate).flatMap(\.polygons))
+    }
+
+    /// The envelope as one closed shell per grown feature — the unit
+    /// `buildModifier` concatenates (for the additive modifier) and
+    /// `buildInvertedModifier` subtracts (for the void modifier).
+    static func modifierShells(
+        _ doc: CircuitDocument, margins: ModifierMargins = .defaults,
+        plate: Plate? = nil
+    ) -> [Mesh] {
         let doc = doc.flattened()
         let m = doc.manufacturing
         let outline = doc.physical.boardOutline
@@ -1324,7 +1340,7 @@ enum PlateBuilder {
         // Plate filter: nil = keep everything.
         func wants(_ p: Plate) -> Bool { plate == nil || plate == p }
 
-        var polys: [Polygon] = []
+        var shells: [Mesh] = []
 
         // A horizontal round tube (channel / resistor) grown to an anisotropic
         // capsule: radius `r+mXY` across, half-height `r+mZ` tall. Built as
@@ -1383,7 +1399,8 @@ enum PlateBuilder {
                     pinsOnLayer: pinsPerLayer[segment.layer]?[route.netId] ?? [],
                     tolerance: pinSnapTol
                 )
-                polys += tubePolys(positions, baseRadius: channelR, midZ: m.midZ(for: segment.layer))
+                shells.append(Mesh(tubePolys(positions, baseRadius: channelR,
+                                             midZ: m.midZ(for: segment.layer))))
             }
         }
 
@@ -1396,8 +1413,8 @@ enum PlateBuilder {
                 // it to its own plate so it can't balloon across the board.
                 if wants(placement.layer) {
                     var mi = m; mi.dimpleDiameter += 2 * mXY
-                    polys += dimpleMesh(at: placement.position, layer: placement.layer, m: mi,
-                                        topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ).polygons
+                    shells.append(dimpleMesh(at: placement.position, layer: placement.layer, m: mi,
+                                             topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ))
                 }
                 // Source/drain sealing pads on the opposite plate, grown and
                 // merged across the seal strip (reduced `sep`) so the whole
@@ -1411,15 +1428,15 @@ enum PlateBuilder {
                     )
                     .rotated(by: Euclid.Rotation.roll(.radians(placement.rotation.radians)))
                     .translated(by: Vector(placement.position.x, placement.position.y, innerZ(padPlate)))
-                    polys += pads.polygons
+                    shells.append(pads)
                 }
                 // Vertical drop bores: channel midline → silicone face at each pin.
                 for pin in component.footprint(m).pins {
                     let pinLayer = placement.resolvedLayer(of: pin, on: component)
                     guard wants(pinLayer.plate) else { continue }
-                    polys += verticalPolys(at: placement.worldPosition(of: pin),
-                                           zA: m.midZ(for: pinLayer), zB: innerZ(pinLayer.plate),
-                                           baseRadius: channelR)
+                    shells.append(Mesh(verticalPolys(at: placement.worldPosition(of: pin),
+                                                     zA: m.midZ(for: pinLayer), zB: innerZ(pinLayer.plate),
+                                                     baseRadius: channelR)))
                 }
             case .resistor:
                 // One box over the whole serpentine footprint. Inflating the
@@ -1437,27 +1454,26 @@ enum PlateBuilder {
                     2 * (halfWid + mXY),
                     m.resistorChannelDiameter + 2 * mZ
                 )
-                polys += Mesh.cube(size: boxSize)
+                shells.append(Mesh.cube(size: boxSize)
                     .rotated(by: Euclid.Rotation.roll(.radians(placement.rotation.radians)))
-                    .translated(by: Vector(placement.position.x, placement.position.y, rMidZ))
-                    .polygons
+                    .translated(by: Vector(placement.position.x, placement.position.y, rMidZ)))
             case .port, .vacuumSource, .atmVent:
                 guard wants(placement.layer) else { break }
                 var mi = m; mi.portBoreDiameter += 2 * mXY
-                polys += portBoreMesh(placement: placement, outline: outline, m: mi,
-                                      topMidZ: topMidZ, bottomMidZ: bottomMidZ).polygons
+                shells.append(portBoreMesh(placement: placement, outline: outline, m: mi,
+                                           topMidZ: topMidZ, bottomMidZ: bottomMidZ))
             case .led:
                 if wants(placement.layer) {
                     var mi = m; mi.ledDimpleDiameter += 2 * mXY
-                    polys += ledDimpleMesh(at: placement.position, layer: placement.layer, m: mi,
-                                           topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ).polygons
+                    shells.append(ledDimpleMesh(at: placement.position, layer: placement.layer, m: mi,
+                                                topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ))
                 }
                 for pin in component.footprint(m).pins {
                     let pinLayer = placement.resolvedLayer(of: pin, on: component)
                     guard wants(pinLayer.plate) else { continue }
-                    polys += verticalPolys(at: placement.worldPosition(of: pin),
-                                           zA: m.midZ(for: pinLayer), zB: innerZ(pinLayer.plate),
-                                           baseRadius: channelR)
+                    shells.append(Mesh(verticalPolys(at: placement.worldPosition(of: pin),
+                                                     zA: m.midZ(for: pinLayer), zB: innerZ(pinLayer.plate),
+                                                     baseRadius: channelR)))
                 }
             case .subpart, .screw, .connector:
                 // Subparts are already flattened away above; screws and
@@ -1484,7 +1500,8 @@ enum PlateBuilder {
         for group in viaGroups where group.layers.count >= 2
             && group.layers.contains(where: { wants($0.plate) }) {
             let zs = group.layers.map { m.midZ(for: $0) }
-            polys += verticalPolys(at: group.position, zA: zs.min()!, zB: zs.max()!, baseRadius: channelR)
+            shells.append(Mesh(verticalPolys(at: group.position, zA: zs.min()!, zB: zs.max()!,
+                                             baseRadius: channelR)))
         }
 
         // 4. Testing points — vertical taps from a tapped channel out to the
@@ -1495,10 +1512,108 @@ enum PlateBuilder {
             let outerZ = tp.plate == .top
                 ? topInnerZ + m.plateThickness(forLayerCount: doc.physical.topLayers)
                 : bottomInnerZ - m.plateThickness(forLayerCount: doc.physical.bottomLayers)
-            polys += verticalPolys(at: world, zA: midZ, zB: outerZ, baseRadius: channelR)
+            shells.append(Mesh(verticalPolys(at: world, zA: midZ, zB: outerZ, baseRadius: channelR)))
         }
 
-        return Mesh(polys)
+        return shells
+    }
+
+    /// The *void* (inverted) modifier: each plate's slab minus the grown
+    /// pneumatic envelope and minus structural keep-outs. Loaded as a Bambu
+    /// modifier it claims everything that does NOT matter, so the user's
+    /// global preset — the validated, airtight one — keeps governing the
+    /// print-critical regions and the modifier only downgrades the filler
+    /// (e.g. sparse infill in the voids). Fail-safe by construction: lose the
+    /// modifier and the whole board prints with the good preset.
+    ///
+    /// The complement of "pneumatic" is not the same as "unimportant", so two
+    /// structural families are also carved out of the void (left to the
+    /// global preset): screw clamp zones (the gasket's clamping force flows
+    /// through them — sparse infill there creeps under load) and entire
+    /// connector footprints (their fluid tubes and end-cap screws are not
+    /// part of the pneumatic envelope, and a sparse connector leaks).
+    ///
+    /// Built the same way `build` carves plates: one `Mesh.union` of all the
+    /// keep-solid solids, one `subtracting` from the slab, per plate. The slab
+    /// overshoots the plate by 1 mm in XY and outward Z — modifiers only act
+    /// where they overlap printed material, so overshoot is free and makes the
+    /// coverage robust; inward it stops exactly at the silicone face so the
+    /// void of one plate can never claim material of the other.
+    static func buildInvertedModifier(
+        _ doc: CircuitDocument, margins: ModifierMargins = .defaults,
+        plate: Plate? = nil
+    ) -> Mesh {
+        let flat = doc.flattened()
+        let m = flat.manufacturing
+        let outline = flat.physical.boardOutline
+        let over = 1.0
+        let mXY = max(0, margins.xy)
+
+        // Structural keep-outs, both plates (they span the full slab height).
+        var keepouts: [Mesh] = []
+        let componentsById = Dictionary(uniqueKeysWithValues: flat.logic.components.map { ($0.id, $0) })
+        let screwR = max(ScrewGeometry.headDiameter, m.screwDomeBaseDiameter) / 2 + mXY
+        let tallSpan = 2 * (m.siliconeThickness / 2
+            + max(m.plateThickness(forLayerCount: flat.physical.topLayers),
+                  m.plateThickness(forLayerCount: flat.physical.bottomLayers))
+            + m.screwProtrusion + over)
+        for placement in flat.physical.placements {
+            guard let component = componentsById[placement.componentId] else { continue }
+            switch component.kind {
+            case .screw:
+                keepouts.append(Mesh.cylinder(radius: screwR, height: tallSpan, slices: 24)
+                    .rotated(by: Euclid.Rotation.pitch(.halfPi))
+                    .translated(by: Vector(placement.position.x, placement.position.y, 0)))
+            case .connector:
+                // Whole footprint, grown enough to also cover the end-cap
+                // screws that sit on the exclusion rect's rim.
+                let rect = component.footprint(m).exclusionRect
+                let grow = screwR + mXY
+                let centreLocal = Point(x: rect.origin.x + rect.size.width / 2,
+                                        y: rect.origin.y + rect.size.height / 2)
+                let centre = transformLocalToWorld(centreLocal, placement: placement)
+                keepouts.append(Mesh.cube(size: Vector(rect.size.width + 2 * grow,
+                                                       rect.size.height + 2 * grow,
+                                                       tallSpan))
+                    .rotated(by: Euclid.Rotation.roll(.radians(placement.rotation.radians)))
+                    .translated(by: Vector(centre.x, centre.y, 0)))
+            default:
+                break
+            }
+        }
+
+        func invertedPlate(_ p: Plate) -> Mesh {
+            let thickness = m.plateThickness(forLayerCount:
+                p == .top ? flat.physical.topLayers : flat.physical.bottomLayers)
+            let innerZ = m.siliconeThickness / 2
+            let z0: Double
+            let z1: Double
+            switch p {
+            case .top:    z0 = innerZ;                    z1 = innerZ + thickness + over
+            case .bottom: z0 = -(innerZ + thickness + over); z1 = -innerZ
+            }
+            let slab = Mesh.cube(size: Vector(outline.size.width + 2 * over,
+                                              outline.size.height + 2 * over,
+                                              z1 - z0))
+                .translated(by: Vector(outline.origin.x + outline.size.width / 2,
+                                       outline.origin.y + outline.size.height / 2,
+                                       (z0 + z1) / 2))
+            let solids = modifierShells(doc, margins: margins, plate: p) + keepouts
+            guard !solids.isEmpty else { return slab }
+            // Stitch the hairline cracks BSP CSG leaves where curved shells
+            // meet the slab — unstitched they render as dark sliver triangles
+            // in the preview and can confuse a slicer. The positive envelope
+            // never needs this (concatenated closed primitives, no CSG); the
+            // inverted one is a genuine boolean result like the plates.
+            return slab.subtracting(Mesh.union(solids)).makeWatertight()
+        }
+
+        switch plate {
+        case .some(let p):
+            return invertedPlate(p)
+        case nil:
+            return Mesh(invertedPlate(.top).polygons + invertedPlate(.bottom).polygons)
+        }
     }
 
     /// Flat-floored box for one channel segment, occupying the lower half of the

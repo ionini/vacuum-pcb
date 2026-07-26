@@ -25,6 +25,23 @@ enum BambuExport {
     /// Bed gap between laid-out bodies, mm.
     static let layoutGap = 10.0
 
+    /// Which region the `_modifier` STL claims.
+    ///
+    /// `.pneumatics` (the original): the envelope AROUND the channels/valves/
+    /// vias — assign it print-critical settings (more walls, solid infill)
+    /// while the global preset stays light.
+    ///
+    /// `.voids` (inverted): the complement — everything that is NOT pneumatic
+    /// envelope, screw clamp zone or connector footprint. The global preset
+    /// (the validated airtight one) keeps governing the important regions and
+    /// the modifier only downgrades the filler (e.g. low sparse infill).
+    /// Fail-safe: losing the modifier merely wastes material, it cannot make
+    /// a board leak.
+    enum ModifierStyle: String {
+        case pneumatics
+        case voids
+    }
+
     // MARK: - File names
 
     static func modelFilename(_ base: String) -> String { "\(base)_model.stl" }
@@ -83,14 +100,21 @@ enum BambuExport {
     /// poking past a plate face can't shift the plate's bed position.
     static func printLayout(
         _ out: PlateBuilder.Output, doc: CircuitDocument,
-        margins: PlateBuilder.ModifierMargins
+        margins: PlateBuilder.ModifierMargins,
+        style: ModifierStyle = .pneumatics
     ) -> [LayoutBody] {
         let flip = Euclid.Rotation.pitch(.pi)
+        func plateModifier(_ plate: Plate) -> Mesh {
+            switch style {
+            case .pneumatics:
+                return PlateBuilder.buildModifier(doc, margins: margins, plate: plate)
+            case .voids:
+                return PlateBuilder.buildInvertedModifier(doc, margins: margins, plate: plate)
+            }
+        }
         let posed: [(name: String, model: Mesh, modifier: Mesh?, rotation: Euclid.Rotation?)] = [
-            ("top", out.topPlate,
-             PlateBuilder.buildModifier(doc, margins: margins, plate: .top), nil),
-            ("bottom", out.bottomPlate,
-             PlateBuilder.buildModifier(doc, margins: margins, plate: .bottom), flip),
+            ("top", out.topPlate, plateModifier(.top), nil),
+            ("bottom", out.bottomPlate, plateModifier(.bottom), flip),
             ("stencil", out.stencil, nil, nil),
             ("mold", out.moldFrame, nil, nil),
         ]
@@ -126,6 +150,7 @@ enum BambuExport {
     /// the shape matches the documented example.
     static func manifestData(
         base: String, margins: PlateBuilder.ModifierMargins,
+        style: ModifierStyle = .pneumatics,
         hasStencil: Bool, hasMold: Bool
     ) -> Data {
         var extra = ""
@@ -137,6 +162,7 @@ enum BambuExport {
           "layout": "print",
           "model": "\(modelFilename(base))",
           "modifier": "\(modifierFilename(base))",\(extra)
+          "modifierStyle": "\(style.rawValue)",
           "modifierMarginXY": \(margins.xy),
           "modifierMarginZ": \(margins.z)
         }
@@ -169,11 +195,12 @@ enum BambuExport {
         doc: CircuitDocument,
         baseName: String,
         margins: PlateBuilder.ModifierMargins = .defaults,
+        style: ModifierStyle = .pneumatics,
         includeManifest: Bool = true,
         prebuiltModel: PlateBuilder.Output? = nil
     ) -> Payload {
         let out = prebuiltModel ?? PlateBuilder.build(doc)
-        let bodies = printLayout(out, doc: doc, margins: margins)
+        let bodies = printLayout(out, doc: doc, margins: margins, style: style)
         let plates = bodies.filter { $0.name == "top" || $0.name == "bottom" }
         // One multi-solid model of both plates (polygon concatenation like the
         // plain export — the bodies are separate printed solids) and one
@@ -203,7 +230,7 @@ enum BambuExport {
         }
         if includeManifest {
             files.append((manifestFilename(baseName),
-                          manifestData(base: baseName, margins: margins,
+                          manifestData(base: baseName, margins: margins, style: style,
                                        hasStencil: hasStencil, hasMold: hasMold)))
         }
         return Payload(files: files, pairFilenames: pair, modelMesh: model, modifierMesh: modifier)
@@ -230,10 +257,12 @@ enum BambuExport {
         baseName: String,
         directory: URL,
         margins: PlateBuilder.ModifierMargins = .defaults,
+        style: ModifierStyle = .pneumatics,
         includeManifest: Bool = true
     ) throws -> WriteResult {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let p = payload(doc: doc, baseName: baseName, margins: margins, includeManifest: includeManifest)
+        let p = payload(doc: doc, baseName: baseName, margins: margins, style: style,
+                        includeManifest: includeManifest)
         var urls: [String: URL] = [:]
         for file in p.files {
             let url = directory.appendingPathComponent(file.name)

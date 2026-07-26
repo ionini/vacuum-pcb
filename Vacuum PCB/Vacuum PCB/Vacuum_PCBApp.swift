@@ -43,6 +43,8 @@ struct Vacuum_PCBApp: App {
             // its ⌃⌘I shortcut, wired to the document's `.inspector(...)`.
             InspectorCommands()
 
+            SubpartTabsCommands()
+
             CommandMenu("Library") {
                 Button("Reload Library") {
                     PartsLibrary.shared.reload()
@@ -61,3 +63,23 @@ struct Vacuum_PCBApp: App {
         #endif
     }
 }
+
+#if canImport(AppKit)
+/// View-menu command that opens the frontmost document's whole subpart
+/// tree — one window tab per referenced library file, recursively down to
+/// the primitives. The actual work lives in the focused DocumentView
+/// (published via `focusedSceneValue`), since only it holds the circuit
+/// and the `openDocument` environment action.
+private struct SubpartTabsCommands: Commands {
+    @FocusedValue(\.openAllSubpartTabs) private var openAllSubpartTabs
+
+    var body: some Commands {
+        CommandGroup(after: .sidebar) {
+            Button("Open All Subparts as Tabs") {
+                openAllSubpartTabs?.run()
+            }
+            .disabled(!(openAllSubpartTabs?.enabled ?? false))
+        }
+    }
+}
+#endif

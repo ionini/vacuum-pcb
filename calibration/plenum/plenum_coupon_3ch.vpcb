@@ -1,0 +1,328 @@
+{
+  "librarySnapshots": {},
+  "logic": {
+    "components": [
+      {
+        "id": "226D7233-A394-429C-87A2-0C2006A8170E",
+        "kind": "port",
+        "label": "L1",
+        "portDirection": "input"
+      },
+      {
+        "id": "2C11D9A1-85E7-4D2B-AA19-B91F54D560CD",
+        "kind": "port",
+        "label": "R1",
+        "portDirection": "output"
+      },
+      {
+        "id": "95217C0A-42B6-4C74-BCF8-5DE08050F01F",
+        "kind": "port",
+        "label": "L2",
+        "portDirection": "input"
+      },
+      {
+        "id": "9F43A0C6-8400-4E94-A1E3-9FD15826ABED",
+        "kind": "port",
+        "label": "R2",
+        "portDirection": "output"
+      },
+      {
+        "id": "DCC798CD-EF19-474A-8397-59A5B1ABE965",
+        "kind": "port",
+        "label": "L3",
+        "portDirection": "input"
+      },
+      {
+        "id": "118C04BA-F14B-4AB0-8D86-534AF4AE161B",
+        "kind": "port",
+        "label": "R3",
+        "portDirection": "output"
+      }
+    ],
+    "nets": [
+      {
+        "id": "595E3FC7-C1A3-420C-AF1C-1E7276E692C0",
+        "label": "ch1",
+        "pins": [
+          {
+            "componentId": "226D7233-A394-429C-87A2-0C2006A8170E",
+            "pinKey": "p"
+          },
+          {
+            "componentId": "2C11D9A1-85E7-4D2B-AA19-B91F54D560CD",
+            "pinKey": "p"
+          }
+        ]
+      },
+      {
+        "id": "6AE8CC7B-A80E-42F7-8082-7A7934ED9E5D",
+        "label": "ch2",
+        "pins": [
+          {
+            "componentId": "95217C0A-42B6-4C74-BCF8-5DE08050F01F",
+            "pinKey": "p"
+          },
+          {
+            "componentId": "9F43A0C6-8400-4E94-A1E3-9FD15826ABED",
+            "pinKey": "p"
+          }
+        ]
+      },
+      {
+        "id": "6E507D0D-E45D-4E6F-B93F-55ABB7E7540D",
+        "label": "ch3",
+        "pins": [
+          {
+            "componentId": "DCC798CD-EF19-474A-8397-59A5B1ABE965",
+            "pinKey": "p"
+          },
+          {
+            "componentId": "118C04BA-F14B-4AB0-8D86-534AF4AE161B",
+            "pinKey": "p"
+          }
+        ]
+      }
+    ]
+  },
+  "manufacturing": {
+    "castingMargin": 2,
+    "channelDiameter": 1.5,
+    "dimpleDepth": 1,
+    "dimpleDiameter": 5,
+    "dimpleSphereOffset": 1,
+    "flatBottomChannels": true,
+    "gridPitch": 1,
+    "interLayerWall": 0.75,
+    "ledDimpleDepth": 1,
+    "ledDimpleDiameter": 6,
+    "minChannelSpacing": 1.5,
+    "minWallThickness": 0.5,
+    "moldWallThickness": 3,
+    "padsDiameter": 4,
+    "padsFilletRadius": 0.5,
+    "padsOffset": 1.36,
+    "padsSeparation": 1,
+    "plateCornerFillet": 2,
+    "plateThickness": 3,
+    "portBoreDiameter": 1.7,
+    "portBoreTaperDegrees": 1,
+    "resistorChannelDiameter": 0.35,
+    "screwDomeBaseDiameter": 8.1,
+    "screwHeadDepth": 1.5,
+    "screwNutDepth": 1.5,
+    "screwProtrusion": 1.5,
+    "siliconeThickness": 0.1,
+    "stencilThickness": 0.2,
+    "stencilViaPadding": 0,
+    "testPointLabelSize": 3
+  },
+  "physical": {
+    "boardOutline": {
+      "origin": {
+        "x": 0,
+        "y": 0
+      },
+      "size": {
+        "height": 22,
+        "width": 52
+      }
+    },
+    "bottomLayers": 1,
+    "placements": [
+      {
+        "componentId": "226D7233-A394-429C-87A2-0C2006A8170E",
+        "depth": 0,
+        "layer": "top",
+        "position": {
+          "x": 3.5,
+          "y": 5.5
+        },
+        "rotation": "r180"
+      },
+      {
+        "componentId": "2C11D9A1-85E7-4D2B-AA19-B91F54D560CD",
+        "depth": 0,
+        "layer": "top",
+        "position": {
+          "x": 48.5,
+          "y": 5.5
+        },
+        "rotation": "r0"
+      },
+      {
+        "componentId": "95217C0A-42B6-4C74-BCF8-5DE08050F01F",
+        "depth": 0,
+        "layer": "top",
+        "position": {
+          "x": 3.5,
+          "y": 11.0
+        },
+        "rotation": "r180"
+      },
+      {
+        "componentId": "9F43A0C6-8400-4E94-A1E3-9FD15826ABED",
+        "depth": 0,
+        "layer": "top",
+        "position": {
+          "x": 48.5,
+          "y": 11.0
+        },
+        "rotation": "r0"
+      },
+      {
+        "componentId": "DCC798CD-EF19-474A-8397-59A5B1ABE965",
+        "depth": 0,
+        "layer": "top",
+        "position": {
+          "x": 3.5,
+          "y": 16.5
+        },
+        "rotation": "r180"
+      },
+      {
+        "componentId": "118C04BA-F14B-4AB0-8D86-534AF4AE161B",
+        "depth": 0,
+        "layer": "top",
+        "position": {
+          "x": 48.5,
+          "y": 16.5
+        },
+        "rotation": "r0"
+      }
+    ],
+    "routes": [
+      {
+        "netId": "595E3FC7-C1A3-420C-AF1C-1E7276E692C0",
+        "segments": [
+          {
+            "layer": {
+              "depth": 0,
+              "plate": "top"
+            },
+            "waypoints": [
+              {
+                "kind": "point",
+                "position": {
+                  "x": 3.5,
+                  "y": 5.5
+                }
+              },
+              {
+                "kind": "point",
+                "position": {
+                  "x": 48.5,
+                  "y": 5.5
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "netId": "6AE8CC7B-A80E-42F7-8082-7A7934ED9E5D",
+        "segments": [
+          {
+            "layer": {
+              "depth": 0,
+              "plate": "top"
+            },
+            "waypoints": [
+              {
+                "kind": "point",
+                "position": {
+                  "x": 3.5,
+                  "y": 11.0
+                }
+              },
+              {
+                "kind": "point",
+                "position": {
+                  "x": 48.5,
+                  "y": 11.0
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "netId": "6E507D0D-E45D-4E6F-B93F-55ABB7E7540D",
+        "segments": [
+          {
+            "layer": {
+              "depth": 0,
+              "plate": "top"
+            },
+            "waypoints": [
+              {
+                "kind": "point",
+                "position": {
+                  "x": 3.5,
+                  "y": 16.5
+                }
+              },
+              {
+                "kind": "point",
+                "position": {
+                  "x": 48.5,
+                  "y": 16.5
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "topLayers": 1
+  },
+  "schemaVersion": 10,
+  "schematic": {
+    "positions": [
+      {
+        "componentId": "226D7233-A394-429C-87A2-0C2006A8170E",
+        "position": {
+          "x": 200,
+          "y": 100
+        }
+      },
+      {
+        "componentId": "2C11D9A1-85E7-4D2B-AA19-B91F54D560CD",
+        "position": {
+          "x": 600,
+          "y": 100
+        },
+        "rotationQuarterTurns": 2
+      },
+      {
+        "componentId": "95217C0A-42B6-4C74-BCF8-5DE08050F01F",
+        "position": {
+          "x": 200,
+          "y": 220
+        }
+      },
+      {
+        "componentId": "9F43A0C6-8400-4E94-A1E3-9FD15826ABED",
+        "position": {
+          "x": 600,
+          "y": 220
+        },
+        "rotationQuarterTurns": 2
+      },
+      {
+        "componentId": "DCC798CD-EF19-474A-8397-59A5B1ABE965",
+        "position": {
+          "x": 200,
+          "y": 340
+        }
+      },
+      {
+        "componentId": "118C04BA-F14B-4AB0-8D86-534AF4AE161B",
+        "position": {
+          "x": 600,
+          "y": 340
+        },
+        "rotationQuarterTurns": 2
+      }
+    ]
+  }
+}

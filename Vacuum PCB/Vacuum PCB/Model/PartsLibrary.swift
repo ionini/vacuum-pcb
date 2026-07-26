@@ -152,6 +152,45 @@ final class PartsLibrary: ObservableObject {
 
     private init() {
         reload()
+        startWatchingFolder()
+    }
+
+    // MARK: - Folder watcher
+    //
+    // Saving a library file from a window tab (or dropping one into the
+    // Parts folder in Finder) should re-index immediately — that's what
+    // flips parent documents' "Library has changes" state without the
+    // manual ⇧⌘R reload. Document saves are atomic (write-to-temp +
+    // rename into place), so a directory-level kqueue source sees every
+    // one as a directory write event.
+    private var folderWatcher: DispatchSourceFileSystemObject?
+    private var pendingReload: DispatchWorkItem?
+
+    private func startWatchingFolder() {
+        // reload() has already created the folder if it was missing; if the
+        // open still fails we just stay on manual reloads.
+        let fd = open(Self.folderURL.path, O_EVTONLY)
+        guard fd >= 0 else { return }
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fd,
+            eventMask: [.write, .rename, .delete, .link],
+            queue: .main
+        )
+        source.setEventHandler { [weak self] in self?.scheduleReload() }
+        source.setCancelHandler { close(fd) }
+        source.resume()
+        folderWatcher = source
+    }
+
+    /// Debounced reload: a save can land as several directory events in a
+    /// burst (temp file appears, rename, attributes), and iCloud sync
+    /// batches too. One reload ~0.3 s after the last event covers all of
+    /// them without decoding the whole folder N times.
+    private func scheduleReload() {
+        pendingReload?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.reload() }
+        pendingReload = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
     }
 
     func reload() {

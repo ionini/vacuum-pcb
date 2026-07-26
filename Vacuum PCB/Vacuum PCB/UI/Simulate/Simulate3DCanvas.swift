@@ -33,12 +33,12 @@ struct Simulate3DCanvas: View {
     let visible: LayerVisibility
     let showFlow: Bool
     /// Which scene elements (body slabs / channel network) are shown —
-    /// driven by the floating preset picker + Layers menu, like the 3D
-    /// preview. Owned by SimulateView (AppStorage) so it survives the tab
-    /// teardown.
+    /// driven by the floating Layers menu. Owned by SimulateView
+    /// (AppStorage) so it survives the tab teardown.
     @Binding var elementVisibility: Simulate3DVisibility
-    /// Opacity of the ghosted printed-body slabs (floating slider).
-    @Binding var bodyOpacity: Double
+    /// Opacity of the pressure-tinted tubes (floating slider): slide down
+    /// to watch the flow dots inside the bore, up for solid tint reading.
+    @Binding var tubeOpacity: Double
     /// Owned by DocumentView so orbit / zoom survive tab switches.
     let cameraStore: Scene3DCameraStore?
 
@@ -55,7 +55,7 @@ struct Simulate3DCanvas: View {
                     visible: visible,
                     showFlow: showFlow,
                     elementVisibility: elementVisibility,
-                    bodyOpacity: bodyOpacity,
+                    tubeOpacity: tubeOpacity,
                     cameraStore: cameraStore
                 )
                 controls
@@ -81,21 +81,12 @@ struct Simulate3DCanvas: View {
         }
     }
 
-    /// Floating overlay at the top of the scene: preset segmented picker,
-    /// per-element Layers menu, and the body-opacity slider — the 3D
-    /// preview's control strip, minus the casting elements the simulate
-    /// scene doesn't have.
+    /// Floating overlay at the top of the scene: the per-element Layers
+    /// menu and the tube-opacity slider. Slimmer than the 3D preview's
+    /// strip — no presets (the menu covers the four elements) and no
+    /// casting geometry in this scene.
     private var controls: some View {
         HStack(spacing: 8) {
-            Picker("Show", selection: presetSelection) {
-                ForEach(Simulate3DDisplayMode.allCases, id: \.self) { mode in
-                    Text(mode.label).tag(Optional(mode))
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
-
             Menu {
                 Section("Body") {
                     Toggle("Top plate", isOn: visibilityBinding(.topPlate))
@@ -115,25 +106,16 @@ struct Simulate3DCanvas: View {
                 Image(systemName: "circle.lefthalf.filled")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Slider(value: $bodyOpacity, in: 0.1...1.0)
+                Slider(value: $tubeOpacity, in: 0.1...1.0)
                     .controlSize(InputPlatform.isTouch ? .regular : .small)
                     .frame(width: InputPlatform.isTouch ? 120 : 90)
             }
-            .help("Body opacity — how solid the ghosted plates and silicone " +
-                  "sheet render. The pressure-tinted channels stay opaque.")
+            .help("Tube opacity — how solid the pressure-tinted channels " +
+                  "render. Slide down to watch the flow dots inside the bore.")
         }
         .padding(8)
         .glassEffect(in: .rect(cornerRadius: 10))
         .padding(.top, 8)
-    }
-
-    /// Maps the element set to/from the named presets: the matching preset,
-    /// or nil (no segment lit) once individual toggles leave any preset.
-    private var presetSelection: Binding<Simulate3DDisplayMode?> {
-        Binding(
-            get: { Simulate3DDisplayMode.allCases.first { $0.visibility == elementVisibility } },
-            set: { if let mode = $0 { elementVisibility = mode.visibility } }
-        )
     }
 
     /// On/off binding for one element, used by the Layers menu.
@@ -158,9 +140,12 @@ struct Simulate3DCanvas: View {
         var tintSteps: [Int] = []
         var emissionSteps: [Int] = []
         var glowSteps: [Int] = []
+        var highlighted: [Bool] = []
+        let highlightedComponent = state.highlightedComponentId
         tintSteps.reserveCapacity(geometry.units.count)
         emissionSteps.reserveCapacity(geometry.units.count)
         glowSteps.reserveCapacity(geometry.units.count)
+        highlighted.reserveCapacity(geometry.units.count)
 
         for unit in geometry.units {
             // Unconnected pins (nil net) sit at atmosphere — the 2D bodies'
@@ -189,6 +174,8 @@ struct Simulate3DCanvas: View {
             let lit = unit.ledNet
                 .map { state.params.gateOpenness(forPressure: state.pressure(net: $0)) } ?? 0
             glowSteps.append(Int((max(0, min(1, lit)) * 24).rounded()))
+
+            highlighted.append(unit.component != nil && unit.component == highlightedComponent)
         }
 
         // Flow strengths, normalised exactly like the 2D overlay: full scale
@@ -226,6 +213,8 @@ struct Simulate3DCanvas: View {
                                glowSteps: glowSteps,
                                flowStrengths: strengths,
                                flowReversed: reversed,
+                               highlightedUnits: highlighted,
+                               simClock: state.elapsedSimSeconds,
                                isPlaying: state.isPlaying,
                                timeScale: state.params.timeScale)
     }
@@ -243,37 +232,8 @@ struct Simulate3DVisibility: OptionSet, Hashable {
     static let sheet       = Simulate3DVisibility(rawValue: 1 << 2)
     static let channels    = Simulate3DVisibility(rawValue: 1 << 3)
 
-    /// Ghost body only — the printed stack without the air.
-    static let body: Simulate3DVisibility     = [.topPlate, .bottomPlate, .sheet]
-    /// Everything — the default working view.
-    static let both: Simulate3DVisibility     = [.topPlate, .bottomPlate, .sheet, .channels]
-    /// The air alone, body peeled away.
-    static let channelsOnly: Simulate3DVisibility = [.channels]
-}
-
-/// Named visibility presets for the floating segmented picker, mirroring the
-/// 3D preview's `PreviewDisplayMode` (no Mold — the simulate scene has no
-/// casting geometry).
-enum Simulate3DDisplayMode: String, CaseIterable, Hashable {
-    case bodyOnly
-    case both
-    case channelsOnly
-
-    var label: String {
-        switch self {
-        case .bodyOnly:     return "Body"
-        case .both:         return "Both"
-        case .channelsOnly: return "Channels"
-        }
-    }
-
-    var visibility: Simulate3DVisibility {
-        switch self {
-        case .bodyOnly:     return .body
-        case .both:         return .both
-        case .channelsOnly: return .channelsOnly
-        }
-    }
+    /// Everything — the default view (and the AppStorage seed).
+    static let both: Simulate3DVisibility = [.topPlate, .bottomPlate, .sheet, .channels]
 }
 
 /// Plain-value snapshot of one publish, handed from SwiftUI to the SceneKit
@@ -293,6 +253,12 @@ struct Simulate3DFrame {
     /// `Simulate3DGeometry.flowPaths`.
     var flowStrengths: [Float] = []
     var flowReversed: [Bool] = []
+    /// Per-unit: does this unit belong to the component picked in the
+    /// supply-budget panel? Aligned with `Simulate3DGeometry.units`.
+    var highlightedUnits: [Bool] = []
+    /// `SimulationState.elapsedSimSeconds` at this publish — clocks the
+    /// dot-heat persistence EMA in sim-time.
+    var simClock: Double = 0
     var isPlaying: Bool = false
     var timeScale: Double = 1
 
@@ -340,7 +306,7 @@ struct Simulate3DSceneView {
     var visible: LayerVisibility
     var showFlow: Bool
     var elementVisibility: Simulate3DVisibility
-    var bodyOpacity: Double
+    var tubeOpacity: Double
     var cameraStore: Scene3DCameraStore?
 
     // MARK: Coordinator
@@ -366,18 +332,23 @@ struct Simulate3DSceneView {
         var lastTint: [Int] = []
         var lastEmission: [Int] = []
         var lastGlow: [Int] = []
+        var lastHighlighted: [Bool] = []
 
         // Aligned with geometry.flowPaths.
         var flowPaths: [Simulate3DGeometry.FlowPath] = []
         var pathVisible: [Bool] = []
         var phases: [Double] = []
+        /// Slow sim-time EMA of each path's strength — the dot-heat
+        /// persistence tracker (see `applyFrame`).
+        var sustained: [Double] = []
+        var lastSimClock: Double?
 
         var frame: Simulate3DFrame = .idle
         var showFlow = true
         var lastVisible: LayerVisibility?
-        /// Body opacity currently baked into the slab materials, so the
+        /// Tube opacity currently baked into the unit materials, so the
         /// slider only touches them when it actually moved.
-        var lastBodyOpacity: Double?
+        var lastTubeOpacity: Double?
         /// Dot spacing (mm) after the pool-budget stretch; recomputed each
         /// publish from the active path set.
         var effectivePeriod: Double = 6
@@ -437,7 +408,23 @@ struct Simulate3DSceneView {
                 phases[i] = phases[i].truncatingRemainder(dividingBy: period)
 
                 let phase = phases[i] < 0 ? phases[i] + period : phases[i]
-                let bucket = min(7, max(0, Int(strength * 8)))
+                // Heat = how well the slow EMA and the current strength
+                // agree: a fresh transient runs cold (EMA still catching
+                // up), a *decaying* one cools again (EMA above the falling
+                // flow — the min/max ratio drops instead of clamping red),
+                // and only a stream that holds its strength in sim-time
+                // saturates to 1.
+                let hot: Double
+                if i < sustained.count {
+                    let ema = sustained[i]
+                    hot = min(ema, strength) / max(max(ema, strength), 1e-6)
+                } else {
+                    hot = 0
+                }
+                let bucket = min(Simulate3DSceneView.strengthBuckets - 1, max(0, Int(strength * 8)))
+                    * Simulate3DSceneView.heatBuckets
+                    + min(Simulate3DSceneView.heatBuckets - 1,
+                          max(0, Int(hot * Double(Simulate3DSceneView.heatBuckets))))
                 var s = phase.truncatingRemainder(dividingBy: period)
                 if s > total { continue }
                 while s <= total {
@@ -542,8 +529,8 @@ struct Simulate3DSceneView {
         applyFrame(coordinator: c)
         c.showFlow = showFlow
         applyElementVisibility(coordinator: c)
-        if c.lastBodyOpacity != bodyOpacity {
-            applyBodyOpacity(coordinator: c)
+        if c.lastTubeOpacity != tubeOpacity {
+            applyTubeOpacity(coordinator: c)
         }
         c.cameraStore = cameraStore
         if c.lastOutline != geometry.boardOutline {
@@ -565,6 +552,15 @@ struct Simulate3DSceneView {
             let material = SCNMaterial()
             material.lightingModel = .blinn
             material.isDoubleSided = false
+            // Glassy so the flow dots marching *inside* the bore read
+            // through the tube wall (fully opaque tubes swallowed every dot
+            // narrower than the channel) — how glassy is the user's slider.
+            // Single-layer blend + depth write — the Scene3DView plate
+            // recipe — keeps the concatenated junction spheres from
+            // stacking into a darker pile.
+            material.transparency = Self.clampedOpacity(tubeOpacity)
+            material.transparencyMode = .singleLayer
+            material.writesToDepthBuffer = true
             if !unit.mesh.isEmpty {
                 let scnGeometry = SCNGeometry(unit.mesh)
                 scnGeometry.materials = [material]
@@ -581,6 +577,9 @@ struct Simulate3DSceneView {
         c.flowPaths = geometry.flowPaths
         c.phases = Array(repeating: 0, count: geometry.flowPaths.count)
         c.pathVisible = Array(repeating: true, count: geometry.flowPaths.count)
+        c.sustained = Array(repeating: 0, count: geometry.flowPaths.count)
+        c.lastSimClock = nil
+        c.lastHighlighted = Array(repeating: false, count: geometry.units.count)
         c.basePeriod = max(3.0, geometry.channelRadius * 4.5)
         c.effectivePeriod = c.basePeriod
         c.dotRadius = max(0.25, geometry.channelRadius * 0.55)
@@ -589,7 +588,7 @@ struct Simulate3DSceneView {
         c.topSlabNode.geometry = slabGeometry(for: geometry.topSlab, color: .systemBlue)
         c.bottomSlabNode.geometry = slabGeometry(for: geometry.bottomSlab, color: .systemTeal)
         c.sheetSlabNode.geometry = slabGeometry(for: geometry.sheetSlab, color: .systemYellow)
-        c.lastBodyOpacity = bodyOpacity
+        c.lastTubeOpacity = tubeOpacity
 
         c.geometryRevision = geometryRevision
     }
@@ -600,15 +599,35 @@ struct Simulate3DSceneView {
     private func rebuildDotPool(coordinator c: Coordinator) {
         c.dotsRoot.childNodes.forEach { $0.removeFromParentNode() }
         c.dotPool = []
-        c.bucketGeometries = (0..<8).map { bucket in
-            let sphere = SCNSphere(radius: CGFloat(c.dotRadius))
+        c.bucketGeometries = (0..<(Self.strengthBuckets * Self.heatBuckets)).map { bucket in
+            let strength = (Double(bucket / Self.heatBuckets) + 0.5) / Double(Self.strengthBuckets)
+            let heat = (Double(bucket % Self.heatBuckets) + 0.5) / Double(Self.heatBuckets)
+            // |Q| is carried by dot SIZE — trickles are small beads, heavy
+            // draw is fat ones. Size reads across hues, which brightness
+            // (the previous encoding) never did. The top of the range stays
+            // just inside the tube wall so fat dots still read as "in the
+            // bore" through the glass.
+            let sphere = SCNSphere(radius: CGFloat(c.dotRadius * (0.5 + 0.7 * strength)))
             sphere.segmentCount = 10
             let material = SCNMaterial()
-            let strength = (Double(bucket) + 0.5) / 8.0
             material.lightingModel = .constant
-            material.diffuse.contents = PlatformColor.systemOrange
-            material.emission.contents = PlatformColor.systemOrange
-            material.transparency = CGFloat(0.55 + 0.45 * strength)
+            // Opaque, fully bright: opaque dots render in the opaque pass,
+            // *before* the translucent tubes blend over them — that ordering
+            // is what lets a dot inside the bore show through the tube wall.
+            // (A translucent dot inside a translucent tube is at the mercy
+            // of SceneKit's per-object transparent-pass sort, and loses.)
+            //
+            // Hue carries persistence across the full blue → green → red
+            // sweep: fresh (or fading) transients run blue, half-confirmed
+            // streams green/yellow, and only flow the sim-time EMA agrees is
+            // sustained reaches red — static vent→rail draw, findable at a
+            // glance.
+            let color = PlatformColor(hue: CGFloat(0.6 * (1 - heat)),
+                                      saturation: 0.9,
+                                      brightness: 0.95,
+                                      alpha: 1)
+            material.diffuse.contents = color
+            material.emission.contents = color
             sphere.materials = [material]
             return sphere
         }
@@ -616,12 +635,17 @@ struct Simulate3DSceneView {
                            max(64, Int(totalPathLength() / c.basePeriod) + c.flowPaths.count))
         c.dotPool.reserveCapacity(poolSize)
         for _ in 0..<poolSize {
-            let node = SCNNode(geometry: c.bucketGeometries[7])
+            let node = SCNNode(geometry: c.bucketGeometries[c.bucketGeometries.count - 1])
             node.isHidden = true
             c.dotsRoot.addChildNode(node)
             c.dotPool.append(node)
         }
     }
+
+    /// Dot bucket grid: brightness rows by |Q| strength, hue columns by
+    /// persistence (blue → green → red).
+    static let strengthBuckets = 8
+    static let heatBuckets = 8
 
     /// Hard ceiling on animated dot nodes; beyond it the spacing stretches.
     private static let dotBudget = 1400
@@ -644,16 +668,24 @@ struct Simulate3DSceneView {
             let tint = f.tintSteps[i]
             let emission = i < f.emissionSteps.count ? f.emissionSteps[i] : 0
             let glow = i < f.glowSteps.count ? f.glowSteps[i] : 0
+            let highlighted = i < f.highlightedUnits.count && f.highlightedUnits[i]
             guard tint != c.lastTint[i] || emission != c.lastEmission[i] || glow != c.lastGlow[i]
+                || highlighted != c.lastHighlighted[i]
             else { continue }
             c.lastTint[i] = tint
             c.lastEmission[i] = emission
             c.lastGlow[i] = glow
+            c.lastHighlighted[i] = highlighted
 
             let color = c.colorLUT[max(0, min(c.colorLUT.count - 1, tint))]
             let material = c.unitMaterials[i]
             material.diffuse.contents = color
-            if glow > 0 {
+            if highlighted {
+                // Supply-budget row picked this component: the 2D canvases'
+                // accent ring, as an emissive glow on its cavities.
+                material.emission.contents =
+                    PlatformColor.systemPink.withAlphaComponent(0.7)
+            } else if glow > 0 {
                 // LED lit: yellow glow rising with the gate-openness ramp,
                 // the 3D reading of the 2D body's yellow fill.
                 let lit = Double(glow) / 24.0
@@ -672,6 +704,21 @@ struct Simulate3DSceneView {
             }
         }
         SCNTransaction.commit()
+
+        // Dot-heat persistence: a slow sim-time EMA of each path's strength.
+        // A transient charge decays before the EMA catches up (dots stay
+        // cold and disappear); a static vent→rail stream holds its strength
+        // until the EMA confirms it and the dots run red. Sim-time, so the
+        // time-scale slider doesn't change what counts as sustained; pausing
+        // freezes it along with everything else.
+        let dt = max(0, f.simClock - (c.lastSimClock ?? f.simClock))
+        c.lastSimClock = f.simClock
+        if c.sustained.count == f.flowStrengths.count, dt > 0 {
+            let alpha = 1 - exp(-min(dt, 2.0) / 2.0)
+            for i in 0..<c.sustained.count {
+                c.sustained[i] += (Double(f.flowStrengths[i]) - c.sustained[i]) * alpha
+            }
+        }
 
         // Stretch the dot spacing when the active paths would exceed the
         // pool. Recomputed per publish — the active set is what changes.
@@ -716,33 +763,38 @@ struct Simulate3DSceneView {
 
     // MARK: Materials
 
-    /// Body opacity mapped to material transparency, held a hair below fully
-    /// opaque — at exactly 1.0 SceneKit reclassifies the slabs as opaque-pass
-    /// geometry and the single-layer blend path no longer applies (see
+    /// Opacity mapped to material transparency, held a hair below fully
+    /// opaque — at exactly 1.0 SceneKit reclassifies the geometry into the
+    /// opaque pass and the single-layer blend path no longer applies (see
     /// Scene3DView.bodyTransparency).
-    private static func bodyTransparency(_ opacity: Double) -> CGFloat {
+    private static func clampedOpacity(_ opacity: Double) -> CGFloat {
         CGFloat(min(opacity, 0.995))
     }
 
-    /// Push the slider's opacity onto the live slab materials — cheap, no
-    /// geometry rebuild.
-    private func applyBodyOpacity(coordinator c: Coordinator) {
-        for node in [c.topSlabNode, c.bottomSlabNode, c.sheetSlabNode] {
-            node.geometry?.firstMaterial?.transparency = Self.bodyTransparency(bodyOpacity)
+    /// Ghost body slabs render at a fixed low opacity; the slider belongs
+    /// to the tubes.
+    private static let slabOpacity = 0.35
+
+    /// Push the slider's opacity onto every live channel-unit material —
+    /// cheap uniform writes, no geometry rebuild.
+    private func applyTubeOpacity(coordinator c: Coordinator) {
+        let value = Self.clampedOpacity(tubeOpacity)
+        for material in c.unitMaterials {
+            material.transparency = value
         }
-        c.lastBodyOpacity = bodyOpacity
+        c.lastTubeOpacity = tubeOpacity
     }
 
     /// Ghost printed-body slab: the Preview tab's translucent plate recipe
-    /// (single-layer blend + depth write) at the user's slider opacity —
-    /// enough to orient the tubes inside the board without competing with
-    /// the tints.
+    /// (single-layer blend + depth write) at a fixed low opacity — enough
+    /// to orient the tubes inside the board without competing with the
+    /// tints.
     private func slabGeometry(for mesh: Mesh, color: PlatformColor) -> SCNGeometry? {
         guard !mesh.isEmpty else { return nil }
         let geometry = SCNGeometry(mesh)
         let material = SCNMaterial()
         material.diffuse.contents = color
-        material.transparency = Self.bodyTransparency(bodyOpacity)
+        material.transparency = Self.clampedOpacity(Self.slabOpacity)
         material.transparencyMode = .singleLayer
         material.writesToDepthBuffer = true
         material.isDoubleSided = true

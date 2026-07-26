@@ -569,6 +569,38 @@ extension CircuitDocument {
         return didChange
     }
 
+    /// Number of top-level subpart instances whose pinned snapshot differs
+    /// from the live library — exactly the instances `refreshAllSnapshots`
+    /// would rewrite. Same deep-hash rule as the InspectorStrip badge:
+    /// transitive edits count, missing library files don't (nothing to
+    /// update from). Hashes are memoised per filename / per pin so a board
+    /// with many instances of one part pays for each hash once.
+    func outdatedSubpartCount(libraryLookup: LibraryLookup = sharedLibraryLookup) -> Int {
+        var liveHashes: [String: String?] = [:]
+        var pinnedHashes: [String: String] = [:]
+        var count = 0
+        for c in logic.components where c.kind == .subpart {
+            guard let filename = c.partRef else { continue }
+            let live: String?
+            if let memo = liveHashes[filename] {
+                live = memo
+            } else {
+                live = libraryLookup(filename)?.effectiveHash()
+                liveHashes[filename] = live
+            }
+            guard let live else { continue }
+            let pinned: String? = c.partRefHash.flatMap { key in
+                if let memo = pinnedHashes[key] { return memo }
+                guard let snap = librarySnapshots[key] else { return nil }
+                let hash = snap.effectiveHash()
+                pinnedHashes[key] = hash
+                return hash
+            }
+            if live != pinned { count += 1 }
+        }
+        return count
+    }
+
     func encoded() throws -> Data {
         var copy = self
         copy.gcLibrarySnapshots()

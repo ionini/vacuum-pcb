@@ -1215,7 +1215,7 @@ USAGE:
       --label-emboss (default 0.3 mm) tune it; oversized text is an error.
 
   vacuum-cli export <file.vpcb> --bambu [--out DIR] [--modifier-xy MM]
-                    [--modifier-z MM] [--no-manifest] [--json]
+                    [--modifier-z MM] [--modifier-voids] [--no-manifest] [--json]
       "Export for Bambu Studio": write two aligned STLs — <base>_model.stl
       (top + bottom plate laid out side by side ON THE BED, bottom plate
       pre-flipped to print orientation) and <base>_modifier.stl (a
@@ -1228,8 +1228,14 @@ USAGE:
       separate <base>_stencil.stl / <base>_mold.stl objects when present.
       Also writes <base>_bambu_export.json (unless --no-manifest). --out is
       the destination directory (default: a <base>_bambu folder beside the
-      input). --modifier-xy / --modifier-z set the wall / roof-floor margins
-      in mm (defaults 1.0 / 0.6).
+      input). --modifier-xy / --modifier-z override the wall / roof-floor
+      margins in mm (default: the document's own modifierMarginXY/Z — the
+      values the GUI's envelope slider / Manufacturing settings edit; files
+      from before that field default to 1.0 / 0.6).
+      --modifier-voids INVERTS the modifier: it claims everything that is NOT
+      pneumatic envelope / screw clamp zone / connector footprint, so the
+      global (airtight) preset governs the important regions and the modifier
+      only downgrades the filler (assign it low sparse infill in Bambu).
 
   vacuum-cli sweep <file.vpcb> [--max-combos N] [--param ...] [--json]
       Drive every 0/1 combination of the inputs, solve each to convergence,
@@ -1348,7 +1354,11 @@ var labelText: String?
 var labelSize = 4.0
 var labelEmboss = 0.3
 var writeManifest = true
-var modifierMargins = PlateBuilder.ModifierMargins.defaults
+// nil = not overridden on the command line; the export then uses the
+// document's own manufacturing.modifierMarginXY/Z (what the GUI slider set).
+var modifierXYOverride: Double?
+var modifierZOverride: Double?
+var modifierStyle = BambuExport.ModifierStyle.pneumatics
 
 var i = 0
 while i < args.count {
@@ -1360,14 +1370,15 @@ while i < args.count {
     case "--volumes": volumesMode = true
     case "--bambu": bambu = true
     case "--no-manifest": writeManifest = false
+    case "--modifier-voids": modifierStyle = .voids
     case "--modifier-xy":
         i += 1
         guard i < args.count, let v = Double(args[i]), v >= 0 else { fail("error: --modifier-xy needs a non-negative number (mm)") }
-        modifierMargins.xy = v
+        modifierXYOverride = v
     case "--modifier-z":
         i += 1
         guard i < args.count, let v = Double(args[i]), v >= 0 else { fail("error: --modifier-z needs a non-negative number (mm)") }
-        modifierMargins.z = v
+        modifierZOverride = v
     case "--steps":
         i += 1
         guard i < args.count, let n = Int(args[i]) else { fail("error: --steps needs an integer") }
@@ -1622,6 +1633,10 @@ do {
             // the channels / valves / vias. Same coordinate space, so they
             // load as one multipart object.
             let base = BambuExport.sanitizedBaseName(path)
+            // Document margins are the default; CLI flags override per-axis.
+            var modifierMargins = PlateBuilder.ModifierMargins(doc.manufacturing)
+            if let v = modifierXYOverride { modifierMargins.xy = v }
+            if let v = modifierZOverride { modifierMargins.z = v }
             // --out is the destination directory; default to a <base>_bambu
             // folder next to the source .vpcb.
             let dir = outPath.map { URL(fileURLWithPath: $0) }
@@ -1629,7 +1644,8 @@ do {
                     .appendingPathComponent("\(base)_bambu")
             let r = try BambuExport.writeDirectory(
                 doc: doc, baseName: base, directory: dir,
-                margins: modifierMargins, includeManifest: writeManifest
+                margins: modifierMargins, style: modifierStyle,
+                includeManifest: writeManifest
             )
             reportBambuExport(r, dir: dir, margins: modifierMargins, json: json)
             // Signal unusable geometry (empty model or modifier) while still
