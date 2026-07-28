@@ -9,6 +9,11 @@ struct DisambigCandidate: Identifiable {
     let label: String
     let systemImage: String
     let color: Color
+    /// Draws a divider above this row. Set on the first entry of a group that
+    /// does something other than select (the sub-part "Open in Tab" block), so
+    /// a menu that mixes "pick what's under the cursor" with "jump to another
+    /// file" doesn't read as one undifferentiated list.
+    var startsSection: Bool = false
     let apply: () -> Void
 }
 
@@ -31,7 +36,12 @@ struct DisambigPopover: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(candidates) { item in
+            ForEach(Array(candidates.enumerated()), id: \.element.id) { index, item in
+                // Leading dividers only between groups — a section marker on
+                // the very first row would hang a rule off the top edge.
+                if item.startsSection && index > 0 {
+                    Divider().padding(.vertical, 3)
+                }
                 DisambigRow(item: item) {
                     item.apply()
                     dismiss()

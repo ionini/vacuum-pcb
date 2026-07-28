@@ -1,5 +1,8 @@
 import SwiftUI
 import UniformTypeIdentifiers
+#if canImport(AppKit)
+import AppKit
+#endif
 
 /// The main physical 2D editor: board outline, grid, placements, routes,
 /// routing preview, pin handles, and keyboard / drop / hit interaction.
@@ -48,10 +51,12 @@ struct PhysicalCanvasView: View {
     /// constrained to the segment it rides, so we carry the projected
     /// arc-length `offset` and world `position`, committed on release.
     @State private var draggingTestPoint: DraggingTestPoint?
-    /// Click-and-hold disambiguator state. When non-nil, a popover anchored
-    /// at `screenPoint` lists every selectable element under that point so
-    /// the user can pick through a stack (a placement covering a route, a
-    /// route under a via, etc.) — Fusion 360's "select under" pattern.
+    /// Context-menu state, raised by right-click on macOS and click-and-hold
+    /// anywhere. When non-nil, a popover anchored at `screenPoint` lists every
+    /// selectable element under that point so the user can pick through a
+    /// stack (a placement covering a route, a route under a via, etc.) —
+    /// Fusion 360's "select under" pattern — plus an entry per sub-part whose
+    /// body covers the point, at every nesting level.
     @State private var disambiguator: DisambigState?
     /// Whether the user has interacted with zoom/pan since the last fit. If
     /// not, view-size changes re-fit to keep the board centred; once the
@@ -87,6 +92,12 @@ struct PhysicalCanvasView: View {
     /// elbow. OR'd with the live modifier at each use so the macOS
     /// per-click ⌘ keeps working when the toggle is off.
     @State private var straightRouting = false
+    #if canImport(AppKit)
+    /// Opens a library `.vpcb` in the DocumentGroup, behind the context
+    /// menu's sub-part entries. Same macOS-only gate as the schematic
+    /// inspector's "Open in Tab" button — window tabs are a Mac concept.
+    @Environment(\.openDocument) private var openDocument
+    #endif
 
     enum BackgroundDragMode { case none, marquee, pan }
 
@@ -271,6 +282,8 @@ struct PhysicalCanvasView: View {
                 // Right-click catcher overlays the whole canvas. SwiftUI on
                 // macOS doesn't surface secondary-button taps natively, so a
                 // thin NSView fields rightMouseDown and forwards the location.
+                // The location feeds the same context menu the touch
+                // long-press opens (see `disambigGesture`).
                 RightClickCatcher { pt in handleRightClick(at: pt) }
                     .allowsHitTesting(true)
 
@@ -1386,45 +1399,20 @@ struct PhysicalCanvasView: View {
         }
     }
 
-    /// Right-click semantics:
-    ///   * On a visible waypoint handle of the **selected** segment (interior
-    ///     waypoints only — endpoints are anchored to pins) → delete that
-    ///     waypoint.
-    ///   * Otherwise, near any visible route edge → insert a new waypoint at
-    ///     the projected click location. The projection keeps the inserted
-    ///     point on the existing polyline so the new vertex is initially
-    ///     colinear; drag a handle to introduce the bend.
+    /// Right-click opens the canvas context menu: every selectable item under
+    /// the cursor, then an "Open in Tab" entry per sub-part whose body covers
+    /// that point — nested ones included, so clicking a feature that actually
+    /// belongs to a sub-part's sub-part offers both files.
+    ///
+    /// It's the same candidate list the click-and-hold disambiguator shows, so
+    /// pointer and touch reach one menu. The waypoint edits right-click used to
+    /// perform immediately are now the "Add point here" / "Remove point" rows
+    /// in that list — one extra click, in exchange for a menu that can carry
+    /// actions beyond route surgery.
     private func handleRightClick(at pt: CGPoint) {
-        if let seg = selection.routeSegment,
-           let waypointIdx = selectedSegmentWaypointHit(at: pt, netId: seg.netId, segIdx: seg.segmentIndex) {
-            deleteWaypoint(netId: seg.netId, segIdx: seg.segmentIndex, waypointIndex: waypointIdx)
-            return
-        }
-        insertWaypointFromRightClick(at: pt)
-    }
-
-    /// Hit-test against the interior waypoint handles of the selected segment.
-    /// Endpoints are skipped: they sit on pins and removing them would silently
-    /// shorten the route — surprising. Use ⌫ to delete the whole segment.
-    private func selectedSegmentWaypointHit(at pt: CGPoint, netId: UUID, segIdx: Int) -> Int? {
-        guard let route = document.circuit.physical.routes.first(where: { $0.netId == netId }),
-              segIdx < route.segments.count
-        else { return nil }
-        let segment = route.segments[segIdx]
-        let n = segment.waypoints.count
-        // Match the handle's hit area (~22pt square → ~11pt radius on
-        // macOS, 28pt → ~14pt radius on iPad — see WaypointHandle).
-        let threshold: Double = InputPlatform.isTouch ? 14 : 11
-        var best: (idx: Int, distance: Double)?
-        for (i, wp) in segment.waypoints.enumerated() {
-            guard i > 0, i < n - 1 else { continue }
-            let screen = transform.toScreen(wp.position)
-            let d = hypot(Double(pt.x - screen.x), Double(pt.y - screen.y))
-            if d <= threshold, d < (best?.distance ?? .greatestFiniteMagnitude) {
-                best = (i, d)
-            }
-        }
-        return best?.idx
+        let candidates = collectDisambigCandidates(at: pt)
+        guard !candidates.isEmpty else { return }
+        disambiguator = DisambigState(screenPoint: pt, candidates: candidates)
     }
 
     private func deleteWaypoint(netId: UUID, segIdx: Int, waypointIndex: Int) {
@@ -2206,8 +2194,10 @@ struct PhysicalCanvasView: View {
 
     /// Enumerates every selectable item under `pt` (screen-space). Order is
     /// roughly visual z: vias (smallest, on top), then route segments by
-    /// layer, then placements. Each entry knows how to commit its own
-    /// selection so the popover doesn't need a dispatch table on the parent.
+    /// layer, then placements — with the sub-part "open" entries last, past a
+    /// divider, since they navigate away rather than select. Each entry knows
+    /// how to commit its own action so the popover doesn't need a dispatch
+    /// table on the parent.
     private func collectDisambigCandidates(at pt: CGPoint) -> [DisambigCandidate] {
         var out: [DisambigCandidate] = []
 
@@ -2362,7 +2352,54 @@ struct PhysicalCanvasView: View {
             ))
         }
 
+        // --- Sub-parts under the point, at every nesting level ---
+        out.append(contentsOf: subpartCandidates(at: pt))
+
         return out
+    }
+
+    /// "Open in Tab" entries for every sub-part whose body covers `pt`,
+    /// outermost first. The canvas draws sub-parts expanded but hit-testing
+    /// stops at the top-level placement, so a click on a feature two levels
+    /// down otherwise gives the user no way to reach the file that owns it —
+    /// `SubpartHitTest` walks the nesting the renderer already draws.
+    ///
+    /// macOS-only: the window-tab re-homing in `SubpartTabs` is AppKit's, and
+    /// offering a row that can't do anything on iPad is worse than omitting it
+    /// (part files are reachable there through the document browser).
+    ///
+    /// Instances resolved purely from a frozen snapshot — the library file was
+    /// renamed or deleted since the parent pinned it — are dropped for the same
+    /// reason: `SubpartTabs.open` has nothing to open, so the row would be a
+    /// dead click. Same `live != nil` guard the schematic inspector's "Open in
+    /// Tab" button uses.
+    private func subpartCandidates(at pt: CGPoint) -> [DisambigCandidate] {
+        #if canImport(AppKit)
+        let hits = SubpartHitTest.hits(at: transform.toWorld(pt), in: document.circuit)
+            .filter { PartsLibrary.shared.part(named: $0.partRef) != nil }
+        return hits.enumerated().map { index, hit in
+            DisambigCandidate(
+                // "Open B1 ▸ C1 (XOR)" — the breadcrumb says which instance in
+                // the hierarchy this is, the display name which file opens.
+                label: "Open \(hit.breadcrumb) (\(hit.displayName))",
+                systemImage: "arrow.up.forward.square",
+                // Matches the teal dotted outline the canvas draws around a
+                // sub-part instance.
+                color: .teal,
+                startsSection: index == 0,
+                apply: {
+                    let host = NSApp.keyWindow
+                    Task { @MainActor in
+                        await SubpartTabs.open(
+                            filename: hit.partRef, host: host, openDocument: openDocument
+                        )
+                    }
+                }
+            )
+        }
+        #else
+        return []
+        #endif
     }
 
     private func netLabel(for netId: UUID) -> String {
@@ -2604,8 +2641,8 @@ struct WaypointHandle: View {
 /// the location in SwiftUI-style (Y-down) coordinates. The view returns
 /// `nil` from `hitTest` so left clicks pass through to sibling SwiftUI
 /// views beneath it. On iOS / iPad there's no secondary-click concept, so
-/// this is a no-op view; right-click-driven actions (removing a pin from
-/// a net, deleting an interior waypoint) are unreachable on touch in v1.
+/// this is a no-op view — touch reaches the same context menu through the
+/// click-and-hold disambiguator instead.
 struct RightClickCatcher: View {
     let onRightClick: (CGPoint) -> Void
 
