@@ -173,4 +173,27 @@ extension ManufacturingConstants {
         }
         return result
     }
+
+    /// Draft rebase for the settings inspector: `self` is an in-progress
+    /// draft, `baseline` is the document state it was last synced from, and
+    /// `document` is where the document stands now. Starts from `document`
+    /// and re-applies only the fields the user actually edited — those
+    /// where the draft differs from the baseline — so an external change
+    /// (parameter paste, envelope slider, Undo) shows up in the panel
+    /// immediately without stomping what the user is mid-way through
+    /// typing.
+    ///
+    /// A constant missing from the field table follows the document, which
+    /// is the safe failure mode: the panel can't edit an unlisted field, so
+    /// there is no user value to preserve — only a stale one to avoid
+    /// writing back.
+    func rebased(onto document: ManufacturingConstants,
+                 baseline: ManufacturingConstants) -> ManufacturingConstants {
+        var result = document
+        for field in ManufacturingParameterField.all
+        where field.read(self) != field.read(baseline) {
+            field.copy(self, &result)
+        }
+        return result
+    }
 }

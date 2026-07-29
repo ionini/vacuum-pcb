@@ -14,6 +14,16 @@ import SwiftUI
 /// `previewDirty` flag in DocumentView — the next visit to the 3D preview
 /// tab (or hitting Export) rebuilds the CSG against the new values. Revert
 /// throws the draft away and re-syncs from the document.
+///
+/// Two timing rules keep the draft honest:
+///  * Enter applies via `.onSubmit` (never a Return key-equivalent on the
+///    button): the field editor commits the value into the draft *first*,
+///    then apply runs, then focus is released — so ⌘Z afterwards reaches the
+///    document's undo manager instead of the field editor's text undo.
+///  * When the document changes underneath a live draft (parameter paste,
+///    the envelope-padding slider, Undo), the draft is *rebased*: fields the
+///    user actually edited keep their draft value, everything else follows
+///    the document immediately. See `syncFromDocument`.
 struct ManufacturingSettingsView: View {
     /// `.full` (3D Preview inspector) shows every constant. `.physical`
     /// (Physical inspector) mirrors only the constants that shape the 2D
@@ -30,7 +40,26 @@ struct ManufacturingSettingsView: View {
     /// Document-level flag (lives on `CircuitDocument`, not `manufacturing`),
     /// drafted here so it commits through the same Apply/Revert flow.
     @State private var draftSkipEdgeWall: Bool = false
+    /// The document state the draft was last synced from. Comparing the
+    /// draft against this — not against the *current* document — is what
+    /// tells a user edit apart from an external change when the document
+    /// moves underneath us (paste, envelope slider, Undo).
+    @State private var baselineMfg: ManufacturingConstants = .defaults
+    @State private var baselineBoard: Size = Size(width: 50, height: 30)
+    @State private var baselineSkipEdgeWall: Bool = false
     @State private var initialized = false
+    /// True while any of the panel's number fields is being edited. Shared
+    /// Bool binding across all rows: reading is "some field has focus",
+    /// writing false resigns whichever field holds it.
+    @FocusState private var fieldFocused: Bool
+    /// Apply/Revert requested while a field was still focused. Dropping
+    /// focus makes the field commit its pending text into the draft; the
+    /// action itself runs from `.onChange(of: fieldFocused)`, which fires
+    /// after that commit has landed — clicking a button doesn't move macOS
+    /// focus, so running the action directly would read (Apply) or
+    /// resurrect (Revert) a stale draft.
+    @State private var pendingAction: DraftAction?
+    private enum DraftAction { case apply, revert }
     /// Cross-document parameter clipboard, mirrored here so iPad (no menu
     /// bar) can reach the same Copy / Paste the Edit menu offers on macOS.
     @ObservedObject private var clipboard = ManufacturingClipboard.shared
@@ -160,11 +189,20 @@ struct ManufacturingSettingsView: View {
             }
 
             HStack {
-                Button("Revert", action: revert).disabled(!hasChanges)
+                Button("Revert") { run(.revert) }
+                    .disabled(!hasChanges && !fieldFocused)
                 Spacer()
-                Button("Apply", action: apply)
-                    .keyboardShortcut(.return, modifiers: [])
-                    .disabled(!hasChanges)
+                // No `.keyboardShortcut(.return)` here on purpose: a Return
+                // key-equivalent races the focused field for the same
+                // keypress, and if the button wins the field never commits —
+                // Apply then writes the pre-keystroke draft. Enter instead
+                // applies through `.onSubmit` below, which is guaranteed to
+                // run *after* the field editor pushed the value into the
+                // draft. While a field is focused the buttons stay enabled
+                // even if the committed draft is clean — the field may hold
+                // pending text that only becomes a change on commit.
+                Button("Apply") { run(.apply) }
+                    .disabled(!hasChanges && !fieldFocused)
                     .buttonStyle(.borderedProminent)
             }
             .padding(.top, 6)
@@ -195,31 +233,76 @@ struct ManufacturingSettingsView: View {
             }
         }
         .manufacturingPasteConfirmation(request: $pasteRequest, document: $document)
+        // Enter in any field: the field editor has already committed the
+        // typed value into the draft by the time onSubmit fires, so apply
+        // sees it. Releasing focus first means the canvas gets keyboard
+        // events back and ⌘Z afterwards hits the document undo manager,
+        // not the field editor's text undo.
+        .onSubmit {
+            fieldFocused = false
+            apply()
+        }
+        .onChange(of: fieldFocused) { _, focused in
+            guard !focused, let action = pendingAction else { return }
+            pendingAction = nil
+            switch action {
+            case .apply: apply()
+            case .revert: revert()
+            }
+        }
         .onAppear { syncFromDocument(force: true) }
-        // External changes (file open, Undo if it ever lands) reset the draft.
-        // Skip during initial onAppear-vs-first-render to avoid stomping the
-        // initial sync.
+        // External changes (paste, envelope slider, Undo, file reload)
+        // rebase the draft onto the new document state — see
+        // syncFromDocument for the merge rules.
         .onChange(of: document.circuit.manufacturing) { _, _ in syncFromDocument() }
         .onChange(of: document.circuit.physical.boardOutline) { _, _ in syncFromDocument() }
         .onChange(of: document.circuit.skipEdgeWallDRC) { _, _ in syncFromDocument() }
     }
 
+    /// Runs Apply/Revert with the commit-before-action ordering described on
+    /// `pendingAction`; immediate when no field is mid-edit.
+    private func run(_ action: DraftAction) {
+        if fieldFocused {
+            pendingAction = action
+            fieldFocused = false
+        } else {
+            switch action {
+            case .apply: apply()
+            case .revert: revert()
+            }
+        }
+    }
+
+    /// The board size participates only in the `.full` (3D Preview) scope —
+    /// the Physical inspector edits it live outside this panel, so tracking
+    /// it here would light up Apply for a change this panel doesn't show
+    /// (and clicking Apply would then write the stale size back).
     private var hasChanges: Bool {
         draftMfg != document.circuit.manufacturing
-            || draftBoard != document.circuit.physical.boardOutline.size
+            || (scope == .full
+                && draftBoard != document.circuit.physical.boardOutline.size)
             || draftSkipEdgeWall != (document.circuit.skipEdgeWallDRC ?? false)
     }
 
     private func apply() {
         // Clamps on commit (so a stray 0 in the field can't slip into the
         // CSG) and migrates route endpoints off any footprint pin the new
-        // values moved. Shared with the Edit-menu paste.
+        // values moved. Shared with the Edit-menu paste. Equal-value writes
+        // are skipped so a no-op Apply doesn't dirty the document or push
+        // an empty step onto the undo stack.
         ManufacturingActions.commit(draftMfg, to: &document)
-        document.circuit.physical.boardOutline.size =
-            ManufacturingActions.sanitizedSize(draftBoard)
+        if scope == .full {
+            let size = ManufacturingActions.sanitizedSize(draftBoard)
+            if document.circuit.physical.boardOutline.size != size {
+                document.circuit.physical.boardOutline.size = size
+            }
+        }
         // Store nil for "off" so a design that never flags itself stays
         // byte-identical to a v7 doc (and its content hash is unchanged).
-        document.circuit.skipEdgeWallDRC = draftSkipEdgeWall ? true : nil
+        let skipEdgeWall: Bool? = draftSkipEdgeWall ? true : nil
+        if document.circuit.skipEdgeWallDRC != skipEdgeWall {
+            document.circuit.skipEdgeWallDRC = skipEdgeWall
+        }
         // Sync the draft back from the clamped values so the UI mirrors what
         // actually landed.
         syncFromDocument(force: true)
@@ -229,21 +312,38 @@ struct ManufacturingSettingsView: View {
         syncFromDocument(force: true)
     }
 
+    /// Forced (Apply/Revert/onAppear): draft := document. Unforced (the
+    /// document changed underneath us): *rebase* — fields the user actually
+    /// edited (draft ≠ baseline, per-field) keep their draft value, every
+    /// other field follows the document immediately. The old behaviour
+    /// (skip the whole sync while the draft differed from the *new*
+    /// document) couldn't tell those apart, so any external write — a
+    /// parameter paste, the envelope slider, ⌘Z — left the panel showing
+    /// stale numbers that Apply would then write back over the change.
     private func syncFromDocument(force: Bool = false) {
         let mfg = document.circuit.manufacturing
         let size = document.circuit.physical.boardOutline.size
         let skipEdgeWall = document.circuit.skipEdgeWallDRC ?? false
-        // Don't clobber an in-progress edit unless explicitly forced.
         if force || !initialized {
             draftMfg = mfg
             draftBoard = size
             draftSkipEdgeWall = skipEdgeWall
             initialized = true
-        } else if !hasChanges {
-            draftMfg = mfg
-            draftBoard = size
-            draftSkipEdgeWall = skipEdgeWall
+        } else {
+            draftMfg = draftMfg.rebased(onto: mfg, baseline: baselineMfg)
+            if draftBoard.width == baselineBoard.width {
+                draftBoard.width = size.width
+            }
+            if draftBoard.height == baselineBoard.height {
+                draftBoard.height = size.height
+            }
+            if draftSkipEdgeWall == baselineSkipEdgeWall {
+                draftSkipEdgeWall = skipEdgeWall
+            }
         }
+        baselineMfg = mfg
+        baselineBoard = size
+        baselineSkipEdgeWall = skipEdgeWall
     }
 
     // MARK: - Row + group helpers
@@ -275,6 +375,7 @@ struct ManufacturingSettingsView: View {
                 .textFieldStyle(.roundedBorder)
                 .multilineTextAlignment(.trailing)
                 .frame(width: fieldWidth)
+                .focused($fieldFocused)
             Text("mm").font(.caption2).foregroundStyle(.tertiary)
         }
     }
