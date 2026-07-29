@@ -66,15 +66,23 @@ struct PlacementBodyView: View {
         .allowsHitTesting(false)
     }
 
+    /// Screw clearance hole as the *stencil* punches it — the 2.2 mm bore plus
+    /// `stencilScrewPadding`. Sheet-mode glyphs only; the plate views keep
+    /// drawing the bare bore, which is what the plates actually get.
+    private var sheetScrewDiameter: Double {
+        ScrewGeometry.throughDiameter + manufacturing.stencilScrewPadding
+    }
+
     /// Silicone-sheet mode: draw only the feature that punches through the
     /// silicone. Transistors → gate dimple circumference. LEDs → LED
     /// dimple circumference (same idea, different diameter). Screws → the
-    /// 2.2 mm clearance bore (the actual hole through the sheet).
+    /// padded clearance bore (the actual hole through the sheet).
     /// Connectors → the protrusion outline (solid for `.bottomExtend`,
     /// dashed for `.topExtend`), plus the pin / end-cap holes for
     /// `.bottomExtend` since that role carries the silicone into the
-    /// protrusion area. All other kinds are filtered out upstream and
-    /// never get this far.
+    /// protrusion area. Hole sizes match the exported stencil's cutters,
+    /// paddings included, so the Sheet view stays 1:1 with it. All other
+    /// kinds are filtered out upstream and never get this far.
     private func drawSiliconeSheetGlyph(in ctx: inout GraphicsContext) {
         let strokeColor = Color.primary.opacity(0.85)
         switch component.kind {
@@ -87,7 +95,7 @@ struct PlacementBodyView: View {
             let rect = CGRect(x: -r, y: -r, width: 2 * r, height: 2 * r)
             ctx.stroke(Path(ellipseIn: rect), with: .color(strokeColor), lineWidth: 1.4)
         case .screw:
-            let r = ScrewGeometry.throughDiameter / 2 * transform.ptsPerMm
+            let r = sheetScrewDiameter / 2 * transform.ptsPerMm
             let rect = CGRect(x: -r, y: -r, width: 2 * r, height: 2 * r)
             ctx.stroke(Path(ellipseIn: rect), with: .color(strokeColor), lineWidth: 1.4)
         case .connector:
@@ -110,7 +118,10 @@ struct PlacementBodyView: View {
                 // punches.
                 ctx.stroke(Path(roundedRect: rect, cornerSize: CGSize(width: 1, height: 1)),
                            with: .color(strokeColor), lineWidth: 1.4)
-                let tubeR = manufacturing.channelDiameter / 2 * transform.ptsPerMm
+                // Pins carry fluid through the sheet, so the stencil pads them
+                // like vias — draw the padded hole, not the bare tube.
+                let tubeR = (manufacturing.channelDiameter + manufacturing.stencilViaPadding)
+                    / 2 * transform.ptsPerMm
                 for pin in fp.pins {
                     let px = pin.offset.x * transform.ptsPerMm
                     let py = pin.offset.y * transform.ptsPerMm
@@ -124,7 +135,7 @@ struct PlacementBodyView: View {
                 )
                 let endX = (fp.exclusionRect.origin.x + fp.exclusionRect.size.width / 2)
                     * transform.ptsPerMm
-                let throughR = ScrewGeometry.throughDiameter / 2 * transform.ptsPerMm
+                let throughR = sheetScrewDiameter / 2 * transform.ptsPerMm
                 for sy in screwYs {
                     let cy = sy * transform.ptsPerMm
                     let r = CGRect(x: endX - throughR, y: cy - throughR,

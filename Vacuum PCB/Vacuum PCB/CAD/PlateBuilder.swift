@@ -557,6 +557,10 @@ enum PlateBuilder {
         // once the plates squeeze it, so the seated plug needs a wider hole to
         // still clear the channel. Padding adds to the diameter.
         let stencilViaDiameter = m.channelDiameter + m.stencilViaPadding
+        // Screw holes get their own, usually much larger, relief: no fluid
+        // crosses them, so a wide hole only spares the silicone from being
+        // pinched against the shaft (and forgives an off-centre hand cut).
+        let stencilScrewDiameter = ScrewGeometry.throughDiameter + m.stencilScrewPadding
         for position in doc.physical.crossSiliconeViaPositions() {
             stencilCutters.append((position, stencilViaDiameter))
         }
@@ -564,14 +568,15 @@ enum PlateBuilder {
             guard let component = componentsById[placement.componentId],
                   component.kind == .screw
             else { continue }
-            stencilCutters.append((placement.position, ScrewGeometry.throughDiameter))
+            stencilCutters.append((placement.position, stencilScrewDiameter))
         }
         // `.bottomExtend` connector tubes and end-caps pass through the
         // extended silicone region — punch the same holes in the stencil so
         // the cutting template lines up with the printed protrusion. A pin
         // carries fluid through the sheet exactly like a via, so its hole gets
         // the same shrink padding (`stencilViaDiameter`); the end-cap screw
-        // bores below are rigid clearance holes and stay unpadded, like screws.
+        // bores below are rigid clearance holes and take the screw padding,
+        // like any other screw.
         for placement in doc.physical.placements {
             guard let component = componentsById[placement.componentId],
                   component.kind == .connector,
@@ -597,7 +602,7 @@ enum PlateBuilder {
                 let endWorld = placement.worldPosition(of: FootprintPin(
                     key: "_endcap", offset: endLocal, relativeLayer: .same
                 ))
-                stencilCutters.append((endWorld, ScrewGeometry.throughDiameter))
+                stencilCutters.append((endWorld, stencilScrewDiameter))
             }
         }
         let stencil = buildStencil(

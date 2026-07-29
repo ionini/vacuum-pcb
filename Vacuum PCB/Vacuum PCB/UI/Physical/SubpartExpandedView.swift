@@ -226,10 +226,18 @@ struct SubpartExpandedView: View {
                         // exemption from layer-filtering as primitive screws
                         // on the parent canvas. Silicone-sheet mode also
                         // surfaces transistor gates through the same gate.
+                        //
+                        // Sheet mode draws the holes the exported stencil
+                        // punches, and that flattens to the *root* board's
+                        // constants — so its glyphs (screw bores and their
+                        // padding, dimples, pins) size off `rootManufacturing`,
+                        // same as `siliconeSheetVias` below. Every other mode
+                        // keeps showing the sub-part's own geometry.
                         PlacementBodyView(
                             component: internalComponent,
                             placement: effective,
-                            manufacturing: part.document.manufacturing,
+                            manufacturing: visible.isSiliconeSheet
+                                ? rootManufacturing : part.document.manufacturing,
                             transform: transform,
                             visible: visible,
                             isSelected: false,
