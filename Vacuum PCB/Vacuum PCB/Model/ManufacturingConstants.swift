@@ -159,6 +159,17 @@ struct ManufacturingConstants: Codable, Hashable {
     /// (hole equals `channelDiameter`); clamp 0…2 mm.
     var stencilViaPadding: Double
 
+    /// Extra diameter added to each screw clearance hole in the *stencil* only
+    /// (the plate bores stay at `ScrewGeometry.throughDiameter`). Screw holes
+    /// want far more relief than via holes: a via hole only has to stay clear
+    /// of a fluid path, while silicone squeezed against a rigid shaft gets
+    /// pinched and extrudes into the bore, and a hand-cut hole that small is
+    /// never concentric anyway. Widening it costs nothing — no fluid crosses
+    /// there, only clamping force. Default 1.0 mm (2.2 → 3.2 mm hole); clamp
+    /// 0…6 mm. Applies to standalone `.screw` placements and to the end-cap
+    /// screw bores of `.bottomExtend` connectors alike.
+    var stencilScrewPadding: Double
+
     /// Spacing between the board outline and the inner wall of the silicone
     /// casting frame (the "cookie cutter" you pour the sheet into). Silicone
     /// poured against a wall climbs a meniscus whose width is set by the
@@ -238,6 +249,7 @@ struct ManufacturingConstants: Codable, Hashable {
         screwNutDepth: 1.5,
         stencilThickness: 0.2,
         stencilViaPadding: 0,
+        stencilScrewPadding: 1.0,
         castingMargin: 2.0,
         moldWallThickness: 3.0,
         minWallThickness: 0.5,
@@ -263,7 +275,7 @@ struct ManufacturingConstants: Codable, Hashable {
         case plateCornerFillet
         case ledDimpleDiameter, ledDimpleDepth
         case screwProtrusion, screwDomeBaseDiameter, screwHeadDepth, screwNutDepth
-        case stencilThickness, stencilViaPadding
+        case stencilThickness, stencilViaPadding, stencilScrewPadding
         case castingMargin, moldWallThickness
         case minWallThickness
         case flatBottomChannels
@@ -283,6 +295,7 @@ struct ManufacturingConstants: Codable, Hashable {
          screwProtrusion: Double, screwDomeBaseDiameter: Double,
          screwHeadDepth: Double, screwNutDepth: Double,
          stencilThickness: Double, stencilViaPadding: Double,
+         stencilScrewPadding: Double = 0,
          castingMargin: Double = 2.0, moldWallThickness: Double = 3.0,
          minWallThickness: Double, flatBottomChannels: Bool,
          testPointLabelSize: Double = 3.0,
@@ -312,6 +325,7 @@ struct ManufacturingConstants: Codable, Hashable {
         self.screwNutDepth = screwNutDepth
         self.stencilThickness = stencilThickness
         self.stencilViaPadding = stencilViaPadding
+        self.stencilScrewPadding = stencilScrewPadding
         self.castingMargin = castingMargin
         self.moldWallThickness = moldWallThickness
         self.minWallThickness = minWallThickness
@@ -372,6 +386,11 @@ struct ManufacturingConstants: Codable, Hashable {
                                                  forKey: .stencilThickness) ?? 0.2
         stencilViaPadding = try c.decodeIfPresent(Double.self,
                                                   forKey: .stencilViaPadding) ?? 0
+        // Pinned to 0 (= the old bare `throughDiameter` hole) so reopening an
+        // existing board never silently widens screw holes in a stencil the
+        // user may already have printed.
+        stencilScrewPadding = try c.decodeIfPresent(Double.self,
+                                                    forKey: .stencilScrewPadding) ?? 0
         castingMargin = try c.decodeIfPresent(Double.self,
                                               forKey: .castingMargin) ?? 2.0
         moldWallThickness = try c.decodeIfPresent(Double.self,

@@ -94,6 +94,7 @@ struct ManufacturingClipboardTests {
         incoming.screwNutDepth += 0.5
         incoming.stencilThickness += 0.1
         incoming.stencilViaPadding += 0.5
+        incoming.stencilScrewPadding += 0.5
         incoming.castingMargin += 1
         incoming.moldWallThickness += 1
         incoming.minWallThickness += 0.1

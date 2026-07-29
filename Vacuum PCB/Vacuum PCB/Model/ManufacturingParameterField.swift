@@ -134,6 +134,8 @@ struct ManufacturingParameterField: Identifiable {
 
         .number("stencilThickness", "Stencil", "Thickness", \.stencilThickness),
         .number("stencilViaPadding", "Stencil", "Via hole padding", \.stencilViaPadding),
+        .number("stencilScrewPadding", "Stencil", "Screw hole padding",
+                \.stencilScrewPadding),
 
         .number("castingMargin", "Mold", "Casting margin", \.castingMargin),
         .number("moldWallThickness", "Mold", "Wall thickness", \.moldWallThickness),

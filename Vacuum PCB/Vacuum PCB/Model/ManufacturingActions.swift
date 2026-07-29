@@ -56,6 +56,7 @@ enum ManufacturingActions {
         s.screwNutDepth = max(0.1, m.screwNutDepth)
         s.stencilThickness = max(0.05, m.stencilThickness)
         s.stencilViaPadding = max(0.0, min(2.0, m.stencilViaPadding))
+        s.stencilScrewPadding = max(0.0, min(6.0, m.stencilScrewPadding))
         s.castingMargin = max(0.0, m.castingMargin)
         s.moldWallThickness = max(0.0, m.moldWallThickness)
         s.minWallThickness = max(0.05, m.minWallThickness)
