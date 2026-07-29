@@ -26,6 +26,13 @@ struct DocumentView: View {
     /// channelClearance, disconnectedPin). The canvas overlay animates it
     /// and we self-clear after ~2 seconds so the marker doesn't linger.
     @State private var issueFocus: DRC.Focus?
+    /// Cross-document manufacturing-parameter clipboard. Observed here (not
+    /// just read) so the Edit menu's Paste item enables the moment another
+    /// window copies its constants.
+    @ObservedObject private var manufacturingClipboard = ManufacturingClipboard.shared
+    /// Set by Edit > Paste Manufacturing Parameters; presents the
+    /// current-vs-new confirmation table.
+    @State private var manufacturingPaste: ManufacturingPasteRequest?
 
     @State private var built: PlateBuilder.Output?
     /// Per-plate physical volumes of the printed board (subparts flattened),
@@ -268,7 +275,21 @@ struct DocumentView: View {
             enabled: document.circuit.logic.components.contains { $0.kind == .subpart },
             run: { SubpartTabs.openAll(from: document.circuit, openDocument: openDocument) }
         ))
+        // Publishes Edit > Copy / Paste Manufacturing Parameters for
+        // whichever document window is frontmost.
+        .focusedSceneValue(\.manufacturingClipboard, ManufacturingClipboardActions(
+            canPaste: manufacturingClipboard.hasContent,
+            copy: {
+                ManufacturingClipboard.shared.store(
+                    document.circuit.manufacturing,
+                    from: ManufacturingClipboard.frontmostDocumentName())
+            },
+            requestPaste: { manufacturingPaste = .fromClipboard() }
+        ))
         #endif
+        // Hosted here so the menu command has somewhere to present; the
+        // inspector's own Paste button hosts a second copy of the same sheet.
+        .manufacturingPasteConfirmation(request: $manufacturingPaste, document: $document)
         .onChange(of: selectedTab) { _, newTab in
             // Only rebuild the CSG when the user actually wants to look at
             // the 3D preview. Avoids the per-edit Euclid CSG storm that was

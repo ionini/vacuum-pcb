@@ -31,6 +31,10 @@ struct ManufacturingSettingsView: View {
     /// drafted here so it commits through the same Apply/Revert flow.
     @State private var draftSkipEdgeWall: Bool = false
     @State private var initialized = false
+    /// Cross-document parameter clipboard, mirrored here so iPad (no menu
+    /// bar) can reach the same Copy / Paste the Edit menu offers on macOS.
+    @ObservedObject private var clipboard = ManufacturingClipboard.shared
+    @State private var pasteRequest: ManufacturingPasteRequest?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -165,7 +169,33 @@ struct ManufacturingSettingsView: View {
                     .buttonStyle(.borderedProminent)
             }
             .padding(.top, 6)
+
+            Divider()
+
+            group("Reuse in another design") {
+                HStack(spacing: 8) {
+                    Button {
+                        ManufacturingClipboard.shared.store(
+                            document.circuit.manufacturing,
+                            from: ManufacturingClipboard.frontmostDocumentName())
+                    } label: {
+                        Label("Copy", systemImage: "doc.on.doc")
+                    }
+                    if clipboard.hasContent {
+                        Button {
+                            pasteRequest = .fromClipboard()
+                        } label: {
+                            Label("Paste…", systemImage: "doc.on.clipboard")
+                        }
+                    }
+                }
+                .buttonStyle(.bordered)
+                .font(.caption)
+                Text("Copies this design's *applied* parameters (hit Apply first if you just edited a field). Paste into another open design and confirm which values to take — same as Edit ▸ Copy/Paste Manufacturing Parameters (⌥⌘C / ⌥⌘V). Board size isn't included.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
         }
+        .manufacturingPasteConfirmation(request: $pasteRequest, document: $document)
         .onAppear { syncFromDocument(force: true) }
         // External changes (file open, Undo if it ever lands) reset the draft.
         // Skip during initial onAppear-vs-first-render to avoid stomping the
@@ -182,89 +212,18 @@ struct ManufacturingSettingsView: View {
     }
 
     private func apply() {
-        // Clamp on commit so a stray 0 in the field can't slip into the CSG.
-        let newMfg = sanitized(draftMfg)
-        let oldMfg = document.circuit.manufacturing
-        // Migrate any route endpoint sitting at an old pin position over to
-        // the new one, so changing padsOffset (or anything else that shifts
-        // a footprint pin) doesn't strand routes on stale coordinates.
-        if newMfg != oldMfg {
-            migrateRouteEndpoints(oldMfg: oldMfg, newMfg: newMfg)
-        }
-        document.circuit.manufacturing = newMfg
-        document.circuit.physical.boardOutline.size = sanitizedSize(draftBoard)
+        // Clamps on commit (so a stray 0 in the field can't slip into the
+        // CSG) and migrates route endpoints off any footprint pin the new
+        // values moved. Shared with the Edit-menu paste.
+        ManufacturingActions.commit(draftMfg, to: &document)
+        document.circuit.physical.boardOutline.size =
+            ManufacturingActions.sanitizedSize(draftBoard)
         // Store nil for "off" so a design that never flags itself stays
         // byte-identical to a v7 doc (and its content hash is unchanged).
         document.circuit.skipEdgeWallDRC = draftSkipEdgeWall ? true : nil
         // Sync the draft back from the clamped values so the UI mirrors what
         // actually landed.
         syncFromDocument(force: true)
-    }
-
-    /// Walks every transistor placement, compares old vs. new pin world
-    /// positions, and rewrites any route segment's first/last `.point`
-    /// waypoint that's sitting on an old pin position to the new one. Via
-    /// waypoints are left alone — they have twins on the other side of the
-    /// silicone and don't terminate at component pins.
-    private func migrateRouteEndpoints(
-        oldMfg: ManufacturingConstants, newMfg: ManufacturingConstants
-    ) {
-        struct PinShift { let from: Point; let to: Point }
-        var shifts: [PinShift] = []
-        for placement in document.circuit.physical.placements {
-            guard let component = document.circuit.logic.components
-                    .first(where: { $0.id == placement.componentId })
-            else { continue }
-            let snapshots = document.circuit.librarySnapshots
-            let oldFp = component.footprint(oldMfg, snapshots: snapshots)
-            let newFp = component.footprint(newMfg, snapshots: snapshots)
-            for newPin in newFp.pins {
-                guard let oldPin = oldFp.pin(newPin.key) else { continue }
-                let oldWorld = placement.worldPosition(of: oldPin)
-                let newWorld = placement.worldPosition(of: newPin)
-                if hypot(oldWorld.x - newWorld.x, oldWorld.y - newWorld.y) > 0.001 {
-                    shifts.append(PinShift(from: oldWorld, to: newWorld))
-                }
-            }
-        }
-        guard !shifts.isEmpty else { return }
-
-        let snapEps = 0.05
-        func migrated(_ p: Point) -> Point {
-            for s in shifts
-            where abs(p.x - s.from.x) < snapEps && abs(p.y - s.from.y) < snapEps {
-                return s.to
-            }
-            return p
-        }
-
-        for rIdx in document.circuit.physical.routes.indices {
-            for sIdx in document.circuit.physical.routes[rIdx].segments.indices {
-                let count = document.circuit.physical.routes[rIdx]
-                    .segments[sIdx].waypoints.count
-                guard count > 0 else { continue }
-                let firstWP = document.circuit.physical.routes[rIdx]
-                    .segments[sIdx].waypoints[0]
-                if firstWP.kind != .via {
-                    let newPos = migrated(firstWP.position)
-                    if newPos != firstWP.position {
-                        document.circuit.physical.routes[rIdx]
-                            .segments[sIdx].waypoints[0].position = newPos
-                    }
-                }
-                if count > 1 {
-                    let lastWP = document.circuit.physical.routes[rIdx]
-                        .segments[sIdx].waypoints[count - 1]
-                    if lastWP.kind != .via {
-                        let newPos = migrated(lastWP.position)
-                        if newPos != lastWP.position {
-                            document.circuit.physical.routes[rIdx]
-                                .segments[sIdx].waypoints[count - 1].position = newPos
-                        }
-                    }
-                }
-            }
-        }
     }
 
     private func revert() {
@@ -286,55 +245,6 @@ struct ManufacturingSettingsView: View {
             draftBoard = size
             draftSkipEdgeWall = skipEdgeWall
         }
-    }
-
-    // MARK: - Sanitisation
-
-    /// Copy-and-mutate, NOT a memberwise rebuild: a rebuild silently resets any
-    /// field someone forgets to list back to its init default on every Apply —
-    /// which is exactly what happened to the envelope margins when they were
-    /// added. With a mutated copy, an unlisted field simply passes through
-    /// unclamped, which is the safe failure mode.
-    private func sanitized(_ m: ManufacturingConstants) -> ManufacturingConstants {
-        var s = m
-        s.plateThickness = max(0.1, m.plateThickness)
-        s.channelDiameter = max(0.05, m.channelDiameter)
-        s.portBoreDiameter = max(0.05, m.portBoreDiameter)
-        s.portBoreTaperDegrees = max(0.0, min(45.0, m.portBoreTaperDegrees))
-        s.siliconeThickness = max(0.05, m.siliconeThickness)
-        s.dimpleDiameter = max(0.1, m.dimpleDiameter)
-        s.dimpleDepth = max(0.05, m.dimpleDepth)
-        s.dimpleSphereOffset = max(0.0, m.dimpleSphereOffset)
-        s.padsDiameter = max(0.1, m.padsDiameter)
-        s.padsSeparation = max(0.0, m.padsSeparation)
-        s.padsOffset = max(0.0, m.padsOffset)
-        s.padsFilletRadius = max(0.0, m.padsFilletRadius)
-        s.gridPitch = max(0.05, m.gridPitch)
-        s.minChannelSpacing = max(0.05, m.minChannelSpacing)
-        s.resistorChannelDiameter = max(0.05, m.resistorChannelDiameter)
-        s.interLayerWall = max(0.1, m.interLayerWall)
-        s.plateCornerFillet = max(0.0, m.plateCornerFillet)
-        s.ledDimpleDiameter = max(0.1, m.ledDimpleDiameter)
-        s.ledDimpleDepth = max(0.0, m.ledDimpleDepth)
-        s.screwProtrusion = max(0.0, m.screwProtrusion)
-        s.screwDomeBaseDiameter = max(ScrewGeometry.headDiameter + 0.2,
-                                      m.screwDomeBaseDiameter)
-        s.screwHeadDepth = max(0.1, m.screwHeadDepth)
-        s.screwNutDepth = max(0.1, m.screwNutDepth)
-        s.stencilThickness = max(0.05, m.stencilThickness)
-        s.stencilViaPadding = max(0.0, min(2.0, m.stencilViaPadding))
-        s.stencilScrewPadding = max(0.0, min(6.0, m.stencilScrewPadding))
-        s.castingMargin = max(0.0, m.castingMargin)
-        s.moldWallThickness = max(0.0, m.moldWallThickness)
-        s.minWallThickness = max(0.05, m.minWallThickness)
-        s.testPointLabelSize = max(0.0, m.testPointLabelSize)
-        s.modifierMarginXY = max(0.0, m.modifierMarginXY)
-        s.modifierMarginZ = max(0.0, m.modifierMarginZ)
-        return s
-    }
-
-    private func sanitizedSize(_ s: Size) -> Size {
-        Size(width: max(1, s.width), height: max(1, s.height))
     }
 
     // MARK: - Row + group helpers

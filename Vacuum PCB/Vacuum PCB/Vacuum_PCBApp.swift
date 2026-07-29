@@ -45,6 +45,9 @@ struct Vacuum_PCBApp: App {
 
             SubpartTabsCommands()
 
+            // Edit > Copy / Paste Manufacturing Parameters (⌥⌘C / ⌥⌘V).
+            ManufacturingClipboardCommands()
+
             CommandMenu("Library") {
                 Button("Reload Library") {
                     PartsLibrary.shared.reload()
