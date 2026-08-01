@@ -3,9 +3,10 @@ import Foundation
 import Euclid
 @testable import Vacuum_PCB
 
-/// Covers the first-pass "Export for Bambu Studio" workflow: the printable
-/// model STL plus an aligned print-critical *modifier* envelope
-/// (`PlateBuilder.buildModifier` + `BambuExport`).
+/// Covers the "Export for Bambu Studio" workflow: a printable model STL per
+/// plate, each with an aligned print-critical *modifier* envelope
+/// (`PlateBuilder.buildModifier` + `BambuExport`) — one multipart object per
+/// plate, so the plates print separately.
 ///
 /// The model layer is implicitly `@MainActor` (project default), so these run
 /// on the main actor like the rest of the geometry tests.
@@ -276,7 +277,7 @@ struct BambuModifierExportTests {
         #expect(width(large.bounds).z > width(small.bounds).z)
     }
 
-    @Test("writeDirectory writes both STLs plus the manifest, and reports overlapping bounds")
+    @Test("writeDirectory writes a model + modifier pair per plate plus the manifest, each pair aligned")
     func writeDirectoryProducesAlignedFiles() throws {
         let doc = representativeDoc()
         let dir = FileManager.default.temporaryDirectory
@@ -285,34 +286,78 @@ struct BambuModifierExportTests {
 
         let r = try BambuExport.writeDirectory(doc: doc, baseName: "widget", directory: dir)
 
-        #expect(FileManager.default.fileExists(atPath: r.modelURL.path))
-        #expect(FileManager.default.fileExists(atPath: r.modifierURL.path))
-        #expect(r.modelURL.lastPathComponent == "widget_model.stl")
-        #expect(r.modifierURL.lastPathComponent == "widget_modifier.stl")
+        // One object per plate, fixed order, each with its own modifier (the
+        // representative doc has features on both plates). Each pair is what
+        // Bambu loads as ONE multipart object — two objects total, so the
+        // plates can be arranged / printed separately.
+        #expect(r.objects.map(\.plate) == [.top, .bottom])
+        for o in r.objects {
+            #expect(o.modelURL.lastPathComponent == "widget_\(o.plate.rawValue)_model.stl")
+            #expect(FileManager.default.fileExists(atPath: o.modelURL.path))
+            let modifierURL = try #require(o.modifierURL, "\(o.plate.rawValue) should carry a modifier")
+            #expect(modifierURL.lastPathComponent == "widget_\(o.plate.rawValue)_modifier.stl")
+            #expect(FileManager.default.fileExists(atPath: modifierURL.path))
+            // Each pair shares one coordinate frame: the plate's modifier
+            // overlaps its own plate's bounds.
+            let modifierMesh = try #require(o.modifierMesh)
+            #expect(overlaps(o.modelMesh.bounds, modifierMesh.bounds))
+            // Files are non-trivial and the STLs on disk match the returned meshes.
+            #expect(try Data(contentsOf: o.modelURL) == o.modelMesh.stlData())
+            #expect(try Data(contentsOf: modifierURL) == modifierMesh.stlData())
+        }
         #expect(r.manifestURL?.lastPathComponent == "widget_bambu_export.json")
-        #expect(overlaps(r.modelMesh.bounds, r.modifierMesh.bounds))
         // Default manufacturing has a stencil and a mold — they ship as
-        // separate standalone objects beside the pair.
+        // separate standalone objects beside the pairs.
         #expect(r.auxiliaryURLs.map(\.lastPathComponent).sorted()
                 == ["widget_mold.stl", "widget_stencil.stl"])
         for aux in r.auxiliaryURLs {
             #expect(FileManager.default.fileExists(atPath: aux.path))
         }
 
-        // Files are non-trivial and the STLs on disk match the returned meshes.
-        let modelData = try Data(contentsOf: r.modelURL)
-        let modifierData = try Data(contentsOf: r.modifierURL)
-        #expect(modelData == r.modelMesh.stlData())
-        #expect(modifierData == r.modifierMesh.stlData())
-
-        // Manifest shape.
+        // Manifest shape: one entry per plate object, plus the margins.
         let manifest = try Data(contentsOf: #require(r.manifestURL))
         let obj = try JSONSerialization.jsonObject(with: manifest) as? [String: Any]
         #expect(obj?["units"] as? String == "millimeters")
-        #expect(obj?["model"] as? String == "widget_model.stl")
-        #expect(obj?["modifier"] as? String == "widget_modifier.stl")
+        let objects = obj?["objects"] as? [[String: Any]]
+        #expect(objects?.count == 2)
+        #expect(objects?.first?["name"] as? String == "top")
+        #expect(objects?.first?["model"] as? String == "widget_top_model.stl")
+        #expect(objects?.first?["modifier"] as? String == "widget_top_modifier.stl")
+        #expect(objects?.last?["name"] as? String == "bottom")
+        #expect(objects?.last?["model"] as? String == "widget_bottom_model.stl")
+        #expect(objects?.last?["modifier"] as? String == "widget_bottom_modifier.stl")
         #expect(obj?["modifierMarginXY"] as? Double == 1.0)
         #expect(obj?["modifierMarginZ"] as? Double == 0.6)
+    }
+
+    @Test("Payload ships each plate as its own pair; modifierPlates limits which modifiers are built")
+    func payloadPairsPerPlate() {
+        let doc = representativeDoc()
+        let p = BambuExport.payload(doc: doc, baseName: "b")
+        // Deterministic file order: top pair, bottom pair, stencil, mold, manifest.
+        #expect(p.files.map(\.name) == [
+            "b_top_model.stl", "b_top_modifier.stl",
+            "b_bottom_model.stl", "b_bottom_modifier.stl",
+            "b_stencil.stl", "b_mold.stl",
+            "b_bambu_export.json",
+        ])
+        // The one-click "open one plate in Bambu" path: only the requested
+        // plate's modifier is built, the other plate ships model-only…
+        let single = BambuExport.payload(doc: doc, baseName: "b", includeManifest: false,
+                                         modifierPlates: [.bottom])
+        #expect(single.files.map(\.name) == [
+            "b_top_model.stl",
+            "b_bottom_model.stl", "b_bottom_modifier.stl",
+            "b_stencil.stl", "b_mold.stl",
+        ])
+        #expect(single.objects.first { $0.plate == .top }?.modifierFilename == nil)
+        // …and the requested pair's bytes don't depend on the filtering
+        // (layout is posed from the model bodies alone).
+        func data(_ files: [(name: String, data: Data)], _ name: String) -> Data? {
+            files.first { $0.name == name }?.data
+        }
+        #expect(data(p.files, "b_bottom_model.stl") == data(single.files, "b_bottom_model.stl"))
+        #expect(data(p.files, "b_bottom_modifier.stl") == data(single.files, "b_bottom_modifier.stl"))
     }
 
     @Test("Manifest can be suppressed")

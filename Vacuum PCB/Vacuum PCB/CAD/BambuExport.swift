@@ -1,13 +1,15 @@
 import Foundation
 import Euclid
 
-/// "Export for Bambu Studio": produces the printable model STL plus an aligned
-/// print-critical *modifier* STL (and an optional JSON manifest), ready to be
-/// loaded into Bambu Studio as one multipart object.
+/// "Export for Bambu Studio": produces one printable model STL **per plate**,
+/// each with its own aligned print-critical *modifier* STL (and an optional
+/// JSON manifest). Every plate loads into Bambu Studio as its own multipart
+/// object, so the two plates stay separable — arrange them independently or
+/// print them in separate jobs.
 ///
-/// The model STL carries the two plates **already laid out for printing** —
+/// The model STLs carry the plates **already laid out for printing** —
 /// side by side on the bed (z = 0), the bottom plate flipped to its
-/// print orientation (silicone face down, channel arches up) — so the object
+/// print orientation (silicone face down, channel arches up) — so each object
 /// slices as-is, with **no "Split objects" step** (splitting a multipart
 /// object is what detaches modifiers from their model). Each plate's modifier
 /// shells receive exactly the same rigid transform as their plate, so model
@@ -17,9 +19,12 @@ import Euclid
 /// features, so they ship as separate plain STLs — import them as their own
 /// objects whenever you print them, and arrange freely.
 ///
-/// Workflow: select `<base>_model.stl` and `<base>_modifier.stl` together,
-/// answer "Yes" to load them as a single object, switch the `_modifier` part
-/// to a Modifier, and slice.
+/// Workflow, once per plate: select `<base>_top_model.stl` and
+/// `<base>_top_modifier.stl` together, answer "Yes" to load them as a single
+/// object, switch the `_modifier` part to a Modifier — then repeat for the
+/// `_bottom` pair. Never select both plates' files in one go: Bambu's
+/// load-together prompt folds the whole selection into ONE object, which is
+/// exactly the inseparable-plates problem the per-plate pairs exist to fix.
 enum BambuExport {
 
     /// Bed gap between laid-out bodies, mm.
@@ -44,8 +49,12 @@ enum BambuExport {
 
     // MARK: - File names
 
-    static func modelFilename(_ base: String) -> String { "\(base)_model.stl" }
-    static func modifierFilename(_ base: String) -> String { "\(base)_modifier.stl" }
+    static func modelFilename(_ base: String, plate: Plate) -> String {
+        "\(base)_\(plate.rawValue)_model.stl"
+    }
+    static func modifierFilename(_ base: String, plate: Plate) -> String {
+        "\(base)_\(plate.rawValue)_modifier.stl"
+    }
     static func stencilFilename(_ base: String) -> String { "\(base)_stencil.stl" }
     static func moldFilename(_ base: String) -> String { "\(base)_mold.stl" }
     static func manifestFilename(_ base: String) -> String { "\(base)_bambu_export.json" }
@@ -79,9 +88,12 @@ enum BambuExport {
     }
 
     /// One printed body posed for the bed, with its (optional) modifier
-    /// envelope carrying the identical rigid transform.
+    /// envelope carrying the identical rigid transform. `plate` is set for
+    /// the two plate bodies (each becomes its own Bambu object with its own
+    /// modifier) and nil for the stencil / mold.
     struct LayoutBody {
         var name: String
+        var plate: Plate?
         var model: Mesh
         var modifier: Mesh?
     }
@@ -98,13 +110,20 @@ enum BambuExport {
     /// keeps model and modifier aligned after layout. Translation is computed
     /// from the *model* body's post-rotation bounds, so a modifier margin
     /// poking past a plate face can't shift the plate's bed position.
+    ///
+    /// `modifierPlates` limits which plates get a modifier *built* (the voids
+    /// style is real CSG, so a single-plate open skips the other plate's
+    /// work); every body is still posed, so positions are identical whichever
+    /// subset is requested.
     static func printLayout(
         _ out: PlateBuilder.Output, doc: CircuitDocument,
         margins: PlateBuilder.ModifierMargins,
-        style: ModifierStyle = .pneumatics
+        style: ModifierStyle = .pneumatics,
+        modifierPlates: Set<Plate> = [.top, .bottom]
     ) -> [LayoutBody] {
         let flip = Euclid.Rotation.pitch(.pi)
-        func plateModifier(_ plate: Plate) -> Mesh {
+        func plateModifier(_ plate: Plate) -> Mesh? {
+            guard modifierPlates.contains(plate) else { return nil }
             switch style {
             case .pneumatics:
                 return PlateBuilder.buildModifier(doc, margins: margins, plate: plate)
@@ -112,11 +131,11 @@ enum BambuExport {
                 return PlateBuilder.buildInvertedModifier(doc, margins: margins, plate: plate)
             }
         }
-        let posed: [(name: String, model: Mesh, modifier: Mesh?, rotation: Euclid.Rotation?)] = [
-            ("top", out.topPlate, plateModifier(.top), nil),
-            ("bottom", out.bottomPlate, plateModifier(.bottom), flip),
-            ("stencil", out.stencil, nil, nil),
-            ("mold", out.moldFrame, nil, nil),
+        let posed: [(name: String, plate: Plate?, model: Mesh, modifier: Mesh?, rotation: Euclid.Rotation?)] = [
+            ("top", .top, out.topPlate, plateModifier(.top), nil),
+            ("bottom", .bottom, out.bottomPlate, plateModifier(.bottom), flip),
+            ("stencil", nil, out.stencil, nil, nil),
+            ("mold", nil, out.moldFrame, nil, nil),
         ]
         var xCursor = 0.0
         var bodies: [LayoutBody] = []
@@ -135,6 +154,7 @@ enum BambuExport {
             modifier = modifier?.translated(by: t)
             bodies.append(LayoutBody(
                 name: entry.name,
+                plate: entry.plate,
                 model: model,
                 modifier: (modifier?.polygons.isEmpty ?? true) ? nil : modifier
             ))
@@ -147,12 +167,20 @@ enum BambuExport {
 
     /// The optional manifest naming the files and recording the margins used.
     /// Hand-rolled with a fixed key order so the bytes are deterministic and
-    /// the shape matches the documented example.
+    /// the shape matches the documented example. `objects` lists one entry
+    /// per plate — its model file plus its modifier file (`null` when the
+    /// plate has no pneumatic features to envelope).
     static func manifestData(
-        base: String, margins: PlateBuilder.ModifierMargins,
+        base: String, objects: [PlateObject],
+        margins: PlateBuilder.ModifierMargins,
         style: ModifierStyle = .pneumatics,
         hasStencil: Bool, hasMold: Bool
     ) -> Data {
+        let objectLines = objects.map { o -> String in
+            let modifier = o.modifierFilename.map { "\"\($0)\"" } ?? "null"
+            return "    { \"name\": \"\(o.plate.rawValue)\", " +
+                   "\"model\": \"\(o.modelFilename)\", \"modifier\": \(modifier) }"
+        }.joined(separator: ",\n")
         var extra = ""
         if hasStencil { extra += "\n  \"stencil\": \"\(stencilFilename(base))\"," }
         if hasMold { extra += "\n  \"mold\": \"\(moldFilename(base))\"," }
@@ -160,8 +188,9 @@ enum BambuExport {
         {
           "units": "millimeters",
           "layout": "print",
-          "model": "\(modelFilename(base))",
-          "modifier": "\(modifierFilename(base))",\(extra)
+          "objects": [
+        \(objectLines)
+          ],\(extra)
           "modifierStyle": "\(style.rawValue)",
           "modifierMarginXY": \(margins.xy),
           "modifierMarginZ": \(margins.z)
@@ -172,54 +201,73 @@ enum BambuExport {
 
     // MARK: - Payload
 
+    /// One plate as its own Bambu Studio multipart object: the plate's model
+    /// file plus (when the plate has pneumatic features and its modifier was
+    /// requested via `modifierPlates`) the aligned modifier file.
+    struct PlateObject {
+        var plate: Plate
+        var modelFilename: String
+        var modifierFilename: String?
+        var modelMesh: Mesh
+        var modifierMesh: Mesh?
+    }
+
     /// The prebuilt contents of a Bambu export, ready to write to disk or hand
     /// to a `BambuExportDocument`.
     ///
-    /// `modelMesh` holds the two plates in print layout (the `_model.stl`
-    /// contents); `modifierMesh` their combined modifier shells
-    /// (`_modifier.stl`). The stencil/mold files, when present, are in `files`
-    /// only. `pairFilenames` names the two files that belong together as one
-    /// multipart object — what the one-click "Open with Modifier" hands to
-    /// Bambu Studio.
+    /// `objects` holds one entry per plate — each names the model + modifier
+    /// pair Bambu Studio loads as ONE multipart object; keeping the plates as
+    /// two objects is what lets them be arranged and printed independently.
+    /// The stencil/mold files, when present, are in `files` only.
     struct Payload {
         var files: [(name: String, data: Data)]
-        var pairFilenames: [String]
-        var modelMesh: Mesh
-        var modifierMesh: Mesh
+        var objects: [PlateObject]
     }
 
     /// Builds every file's contents for `doc`. Runs the CAD pipeline (CSG), so
     /// call it off the main thread. Pass `prebuiltModel` (the preview's already
-    /// computed `Output`) to skip rebuilding the model plates.
+    /// computed `Output`) to skip rebuilding the model plates; restrict
+    /// `modifierPlates` when only one plate's pair will be used (skips the
+    /// other plate's modifier CSG, everything else stays byte-identical).
     static func payload(
         doc: CircuitDocument,
         baseName: String,
         margins: PlateBuilder.ModifierMargins = .defaults,
         style: ModifierStyle = .pneumatics,
         includeManifest: Bool = true,
-        prebuiltModel: PlateBuilder.Output? = nil
+        prebuiltModel: PlateBuilder.Output? = nil,
+        modifierPlates: Set<Plate> = [.top, .bottom]
     ) -> Payload {
         let out = prebuiltModel ?? PlateBuilder.build(doc)
-        let bodies = printLayout(out, doc: doc, margins: margins, style: style)
-        let plates = bodies.filter { $0.name == "top" || $0.name == "bottom" }
-        // One multi-solid model of both plates (polygon concatenation like the
-        // plain export — the bodies are separate printed solids) and one
-        // modifier of both plates' shells. No `makeWatertight` on the
-        // modifier: its shells are meant to overlap and slicers union them
+        let bodies = printLayout(out, doc: doc, margins: margins, style: style,
+                                 modifierPlates: modifierPlates)
+        // A model + modifier pair per plate (each file a multi-solid polygon
+        // concatenation like the plain export). No `makeWatertight` on the
+        // modifiers: their shells are meant to overlap and slicers union them
         // per layer, so stitching is both unnecessary and would risk
         // non-determinism.
-        let model = Mesh(plates.flatMap { $0.model.polygons })
-        let modifier = Mesh(plates.compactMap(\.modifier).flatMap(\.polygons))
-        var files: [(name: String, data: Data)] = [
-            (modelFilename(baseName), model.stlData()),
-            (modifierFilename(baseName), modifier.stlData()),
-        ]
-        let pair = [modelFilename(baseName), modifierFilename(baseName)]
+        var files: [(name: String, data: Data)] = []
+        var objects: [PlateObject] = []
+        for body in bodies {
+            guard let plate = body.plate else { continue }
+            let modelName = modelFilename(baseName, plate: plate)
+            files.append((modelName, body.model.stlData()))
+            var modifierName: String?
+            if let modifier = body.modifier {
+                let name = modifierFilename(baseName, plate: plate)
+                modifierName = name
+                files.append((name, modifier.stlData()))
+            }
+            objects.append(PlateObject(
+                plate: plate,
+                modelFilename: modelName, modifierFilename: modifierName,
+                modelMesh: body.model, modifierMesh: body.modifier))
+        }
         // Stencil + mold: separate plain objects (no pneumatics → no
-        // modifier), so they never join the multipart object and can be
+        // modifier), so they never join a multipart object and can be
         // arranged / printed independently.
         var hasStencil = false, hasMold = false
-        for body in bodies where body.name == "stencil" || body.name == "mold" {
+        for body in bodies where body.plate == nil {
             if body.name == "stencil" {
                 hasStencil = true
                 files.append((stencilFilename(baseName), body.model.stlData()))
@@ -230,27 +278,34 @@ enum BambuExport {
         }
         if includeManifest {
             files.append((manifestFilename(baseName),
-                          manifestData(base: baseName, margins: margins, style: style,
+                          manifestData(base: baseName, objects: objects,
+                                       margins: margins, style: style,
                                        hasStencil: hasStencil, hasMold: hasMold)))
         }
-        return Payload(files: files, pairFilenames: pair, modelMesh: model, modifierMesh: modifier)
+        return Payload(files: files, objects: objects)
     }
 
     // MARK: - Write to disk (CLI)
 
     struct WriteResult {
-        var modelURL: URL
-        var modifierURL: URL
-        /// Standalone bodies written beside the pair (stencil / mold), if any.
+        /// One plate's pair on disk (`modifierURL`/`modifierMesh` nil when
+        /// the plate has no pneumatic features to envelope).
+        struct ExportedObject {
+            var plate: Plate
+            var modelURL: URL
+            var modifierURL: URL?
+            var modelMesh: Mesh
+            var modifierMesh: Mesh?
+        }
+        var objects: [ExportedObject]
+        /// Standalone bodies written beside the pairs (stencil / mold), if any.
         var auxiliaryURLs: [URL]
         var manifestURL: URL?
-        var modelMesh: Mesh
-        var modifierMesh: Mesh
     }
 
-    /// Writes the model + modifier pair, any standalone stencil/mold bodies,
-    /// and the optional manifest into `directory` (created if needed).
-    /// Returns URLs + meshes for reporting and tests.
+    /// Writes each plate's model + modifier pair, any standalone stencil/mold
+    /// bodies, and the optional manifest into `directory` (created if
+    /// needed). Returns URLs + meshes for reporting and tests.
     @discardableResult
     static func writeDirectory(
         doc: CircuitDocument,
@@ -271,12 +326,16 @@ enum BambuExport {
         }
         let aux = [stencilFilename(baseName), moldFilename(baseName)].compactMap { urls[$0] }
         return WriteResult(
-            modelURL: urls[modelFilename(baseName)]!,
-            modifierURL: urls[modifierFilename(baseName)]!,
+            objects: p.objects.map { o in
+                WriteResult.ExportedObject(
+                    plate: o.plate,
+                    modelURL: urls[o.modelFilename]!,
+                    modifierURL: o.modifierFilename.flatMap { urls[$0] },
+                    modelMesh: o.modelMesh,
+                    modifierMesh: o.modifierMesh)
+            },
             auxiliaryURLs: aux,
-            manifestURL: includeManifest ? urls[manifestFilename(baseName)] : nil,
-            modelMesh: p.modelMesh,
-            modifierMesh: p.modifierMesh
+            manifestURL: includeManifest ? urls[manifestFilename(baseName)] : nil
         )
     }
 }

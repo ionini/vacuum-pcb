@@ -757,33 +757,54 @@ func reportExport(dest: String, bodies: [(name: String, mesh: Mesh)], bytes: Int
 
 func reportBambuExport(_ r: BambuExport.WriteResult, dir: URL,
                        margins: PlateBuilder.ModifierMargins, json: Bool) {
-    let mb = r.modelMesh.bounds, xb = r.modifierMesh.bounds
     func size(_ b: Bounds) -> [String: Double] { ["x": b.max.x - b.min.x, "y": b.max.y - b.min.y, "z": b.max.z - b.min.z] }
     if json {
         printJSON([
             "dir": dir.path,
             "units": "millimeters",
             "modifierMarginXY": margins.xy, "modifierMarginZ": margins.z,
-            "model": ["file": r.modelURL.lastPathComponent, "polygons": r.modelMesh.polygons.count, "size": size(mb)],
-            "modifier": ["file": r.modifierURL.lastPathComponent, "polygons": r.modifierMesh.polygons.count, "size": size(xb)],
+            "objects": r.objects.map { o -> [String: Any] in
+                var entry: [String: Any] = [
+                    "name": o.plate.rawValue,
+                    "model": ["file": o.modelURL.lastPathComponent,
+                              "polygons": o.modelMesh.polygons.count,
+                              "size": size(o.modelMesh.bounds)],
+                ]
+                if let url = o.modifierURL, let mesh = o.modifierMesh {
+                    entry["modifier"] = ["file": url.lastPathComponent,
+                                         "polygons": mesh.polygons.count,
+                                         "size": size(mesh.bounds)]
+                }
+                return entry
+            },
             "manifest": r.manifestURL?.lastPathComponent as Any,
         ])
         return
     }
     print("wrote Bambu Studio export → \(dir.path)")
-    print(String(format: "  model    %@  polys=%d  bbox=%.1f×%.1f×%.1f mm  (plates laid out for print)",
-                 r.modelURL.lastPathComponent, r.modelMesh.polygons.count,
-                 mb.max.x - mb.min.x, mb.max.y - mb.min.y, mb.max.z - mb.min.z))
-    print(String(format: "  modifier %@  polys=%d  bbox=%.1f×%.1f×%.1f mm  (margins xy=%g z=%g mm)",
-                 r.modifierURL.lastPathComponent, r.modifierMesh.polygons.count,
-                 xb.max.x - xb.min.x, xb.max.y - xb.min.y, xb.max.z - xb.min.z,
-                 margins.xy, margins.z))
-    for aux in r.auxiliaryURLs { print("  body     \(aux.lastPathComponent)  (separate object, no modifier)") }
-    if let manifest = r.manifestURL { print("  manifest \(manifest.lastPathComponent)") }
-    if r.modifierMesh.polygons.isEmpty {
-        print("⚠ the modifier is empty — this board has no print-critical pneumatic features to envelope")
+    for o in r.objects {
+        let name = o.plate.rawValue.padding(toLength: 6, withPad: " ", startingAt: 0)
+        let mb = o.modelMesh.bounds
+        print(String(format: "  %@ model    %@  polys=%d  bbox=%.1f×%.1f×%.1f mm  (laid out for print)",
+                     name, o.modelURL.lastPathComponent, o.modelMesh.polygons.count,
+                     mb.max.x - mb.min.x, mb.max.y - mb.min.y, mb.max.z - mb.min.z))
+        if let url = o.modifierURL, let mesh = o.modifierMesh {
+            let xb = mesh.bounds
+            print(String(format: "  %@ modifier %@  polys=%d  bbox=%.1f×%.1f×%.1f mm  (margins xy=%g z=%g mm)",
+                         name, url.lastPathComponent, mesh.polygons.count,
+                         xb.max.x - xb.min.x, xb.max.y - xb.min.y, xb.max.z - xb.min.z,
+                         margins.xy, margins.z))
+        } else {
+            print("  \(name) ⚠ no print-critical pneumatic features on this plate — no modifier written")
+        }
     }
-    print("Next: select \(r.modelURL.lastPathComponent) + \(r.modifierURL.lastPathComponent) in Bambu Studio, load as ONE object, set the _modifier part to Modifier — no Split needed.")
+    for aux in r.auxiliaryURLs { print("  body   \(aux.lastPathComponent)  (separate object, no modifier)") }
+    if let manifest = r.manifestURL { print("  manifest \(manifest.lastPathComponent)") }
+    if let first = r.objects.first(where: { $0.modifierURL != nil }), let firstModifier = first.modifierURL {
+        print("Next, once per plate: select \(first.modelURL.lastPathComponent) + \(firstModifier.lastPathComponent) in Bambu Studio, load as ONE object, set the _modifier part to Modifier — then repeat for the other plate's pair. Each plate stays its own object, so the plates can be arranged and printed separately. Never select all four files at once (they'd merge into one inseparable object) and never Split.")
+    } else {
+        print("⚠ every modifier is empty — this board has no print-critical pneumatic features to envelope")
+    }
 }
 
 func reportSweep(_ sw: Validators.SweepResult, json: Bool) {
@@ -1215,16 +1236,21 @@ USAGE:
 
   vacuum-cli export <file.vpcb> --bambu [--out DIR] [--modifier-xy MM]
                     [--modifier-z MM] [--modifier-voids] [--no-manifest] [--json]
-      "Export for Bambu Studio": write two aligned STLs — <base>_model.stl
-      (top + bottom plate laid out side by side ON THE BED, bottom plate
-      pre-flipped to print orientation) and <base>_modifier.stl (a
-      print-critical modifier envelope grown around the channels, valve
-      chambers, vias and their surrounding walls/roofs/floors, each plate's
-      shells carrying that plate's layout transform). Select the two together
-      in Bambu Studio, load as one multipart object, switch <base>_modifier to
-      a Modifier, slice — no "Split objects" step (splitting would detach the
-      modifier). The stencil / mold frame (no pneumatics) are written as
-      separate <base>_stencil.stl / <base>_mold.stl objects when present.
+      "Export for Bambu Studio": write one aligned STL pair PER PLATE —
+      <base>_top_model.stl + <base>_top_modifier.stl and <base>_bottom_model.stl
+      + <base>_bottom_modifier.stl. The models are laid out side by side ON
+      THE BED (bottom plate pre-flipped to print orientation); each modifier
+      is a print-critical envelope grown around that plate's channels, valve
+      chambers, vias and their surrounding walls/roofs/floors, carrying its
+      plate's exact layout transform. In Bambu Studio import each pair on its
+      own: select the two files, load as one multipart object, switch the
+      _modifier part to a Modifier — then repeat for the other pair. The two
+      plates stay separate objects, so they can be arranged and printed
+      independently (e.g. one plate per job). Never select all four files at
+      once (they'd fold into ONE inseparable object) and never "Split
+      objects" (splitting detaches the modifier). The stencil / mold frame
+      (no pneumatics) are written as separate <base>_stencil.stl /
+      <base>_mold.stl objects when present.
       Also writes <base>_bambu_export.json (unless --no-manifest). --out is
       the destination directory (default: a <base>_bambu folder beside the
       input). --modifier-xy / --modifier-z override the wall / roof-floor
@@ -1624,10 +1650,11 @@ do {
 
     case "export":
         if bambu {
-            // Two aligned STLs (+ optional manifest) for Bambu Studio: the
-            // printable model and a print-critical modifier envelope around
-            // the channels / valves / vias. Same coordinate space, so they
-            // load as one multipart object.
+            // Per-plate aligned STL pairs (+ optional manifest) for Bambu
+            // Studio: each plate's printable model and a print-critical
+            // modifier envelope around its channels / valves / vias. Each
+            // pair shares one coordinate space, so it loads as one multipart
+            // object — and the plates stay two separate objects.
             let base = BambuExport.sanitizedBaseName(path)
             // Document margins are the default; CLI flags override per-axis.
             var modifierMargins = PlateBuilder.ModifierMargins(doc.manufacturing)
@@ -1644,9 +1671,10 @@ do {
                 includeManifest: writeManifest
             )
             reportBambuExport(r, dir: dir, margins: modifierMargins, json: json)
-            // Signal unusable geometry (empty model or modifier) while still
-            // leaving the files on disk for inspection.
-            if r.modelMesh.polygons.isEmpty || r.modifierMesh.polygons.isEmpty { exit(1) }
+            // Signal unusable geometry (no printable plates, or no pneumatic
+            // features to envelope on any plate) while still leaving the
+            // files on disk for inspection.
+            if r.objects.isEmpty || r.objects.allSatisfy({ $0.modifierMesh == nil }) { exit(1) }
             break
         }
         var bodies = exportBodies(PlateBuilder.build(doc))

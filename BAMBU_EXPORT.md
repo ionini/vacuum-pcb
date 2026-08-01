@@ -10,24 +10,36 @@ First-pass workflow for slicing print-critical pneumatic features (channels,
 valve chambers/seals, vias, and the thin walls/roofs/floors around them) with
 different settings in Bambu Studio, using its **modifier volume** feature.
 
-It writes **two aligned STLs** plus standalone bodies:
+It writes **one aligned STL pair per plate** plus standalone bodies:
 
 ```
-<base>_model.stl       top + bottom plate, laid out for printing (see below)
-<base>_modifier.stl    the print-critical modifier envelope, laid out identically
-<base>_stencil.stl     silicone cutting template — separate object (when enabled)
-<base>_mold.stl        casting frame — separate object (when enabled)
-<base>_bambu_export.json   optional manifest
+<base>_top_model.stl        top plate, laid out for printing (see below)
+<base>_top_modifier.stl     its print-critical modifier envelope, laid out identically
+<base>_bottom_model.stl     bottom plate, pre-flipped to print orientation
+<base>_bottom_modifier.stl  its modifier envelope, carrying the same flip
+<base>_stencil.stl          silicone cutting template — separate object (when enabled)
+<base>_mold.stl             casting frame — separate object (when enabled)
+<base>_bambu_export.json    optional manifest
 ```
 
-**Print layout, not design layout.** The model ships the two plates side by
+**One object per plate.** Each pair loads into Bambu Studio as its own
+multipart object, so the two plates stay separable — arrange them
+independently, or slice and print one plate per job. (The first per-pair
+version shipped both plates in a single `_model.stl`: that folded everything
+into ONE object in Bambu, and the plates could not be separated without
+"Split objects" — which detaches the modifier.) Import each pair **on its
+own**; selecting all four files at once folds them back into one inseparable
+object.
+
+**Print layout, not design layout.** The models ship the two plates side by
 side on the bed (10 mm apart, resting at z = 0), with the bottom plate already
 flipped to its print orientation (silicone face down, channel arches up). This
 is what makes the multipart-with-modifier workflow actually sliceable: the
 first version shipped the bodies in design position (plates sandwiched around
 the silicone gap), which forced a "Split objects" step in Bambu — and
 splitting a multipart object detaches the modifier. With the layout baked in
-there is nothing to split; the object prints as loaded.
+there is nothing to split; each object prints as loaded (and importing both
+pairs lands the plates side by side, not overlapping).
 
 Each plate's modifier shells receive **exactly the same rigid transform**
 (rotation + translation, never a mirror) as their plate, so model and modifier
@@ -123,7 +135,8 @@ for the GUI.
 # from the repo root
 swift build
 ./.build/debug/vacuum-cli export "Vacuum PCB/Vacuum PCB/Examples/inverter.vpcb" --bambu
-# → Examples/inverter_bambu/{inverter_model.stl, inverter_modifier.stl,
+# → Examples/inverter_bambu/{inverter_top_model.stl, inverter_top_modifier.stl,
+#    inverter_bottom_model.stl, inverter_bottom_modifier.stl,
 #    inverter_stencil.stl, inverter_mold.stl, inverter_bambu_export.json}
 ```
 
@@ -147,25 +160,31 @@ representative model in `BambuModifierExportTests.representativeDoc()`.
 
 Preview/Physical/Simulate toolbar → **Export…**:
 
-- **Export for Bambu Studio…** — pick a location; a `<base>_bambu` folder with both
-  STLs (+ manifest) is written.
-- **Open in Bambu Studio (with Modifier)** (macOS) — builds the model + modifier to a
-  temp dir and opens *both* in Bambu at once, so Bambu offers to load them as one
-  object. One click; no file picking. Remember to switch the `_modifier` part to a
-  Modifier (see step 5 below) or it prints as solid.
+- **Export for Bambu Studio…** — pick a location; a `<base>_bambu` folder with
+  each plate's STL pair (+ manifest) is written.
+- **Open in Bambu Studio (with Modifier) → Top / Bottom Plate** (macOS) — builds
+  that plate's model + modifier to a temp dir and opens the pair in Bambu at
+  once, so Bambu offers to load them as one object. One click; no file picking.
+  Remember to switch the `_modifier` part to a Modifier (see step 5 below) or
+  it prints as solid. One plate per open on purpose — that's what keeps each
+  plate its own object; open the other plate afterwards if you want both on
+  the bed.
 - **Open in Bambu Studio** — model only (no modifier), for a quick clean print.
 - **Save STL file…** — the plain single-model export, unchanged.
 
 ## Manual acceptance test (do this once against a real slice)
 
 1. Export with **Export for Bambu Studio** (GUI) or `vacuum-cli export … --bambu`.
-2. In Bambu Studio, select `<base>_model.stl` **and** `<base>_modifier.stl` at
-   once and open them (leave `_stencil` / `_mold` out — import those separately
-   when you print them).
+2. In Bambu Studio, select `<base>_top_model.stl` **and** `<base>_top_modifier.stl`
+   at once — just that pair — and open them (leave the `_bottom` pair and
+   `_stencil` / `_mold` out; importing everything at once folds it all into one
+   inseparable object).
 3. When asked whether to load them as a single (multipart) object, choose **Yes**.
-4. Verify the two plates sit side by side ON the bed (no sandwich, nothing to
-   split) and the modifier shells sit over each plate's channels/valves/vias.
-5. In the Objects panel, change the `_modifier` part's type to **Modifier**.
+4. Repeat 2–3 for the `_bottom` pair and verify the two plates arrive as **two
+   objects**, side by side ON the bed (no sandwich, nothing to split), each
+   modifier's shells over its own plate's channels/valves/vias — and that one
+   plate can be moved/deleted without touching the other.
+5. In the Objects panel, change each `_modifier` part's type to **Modifier**.
 6. Give the modifier a visibly different setting (e.g. much lower speed, or a
    different infill/wall count).
 7. Slice the plate. Do **not** use "Split objects" — it detaches the modifier.

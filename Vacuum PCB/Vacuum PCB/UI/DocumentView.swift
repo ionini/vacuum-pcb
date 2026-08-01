@@ -49,8 +49,8 @@ struct DocumentView: View {
     @State private var volumeMeshes: [String: Mesh] = [:]
     @State private var isBuilding = false
     @State private var showExporter = false
-    /// Bambu Studio export: a folder document (model + modifier STLs + manifest)
-    /// prebuilt off-thread and handed to `.fileExporter`.
+    /// Bambu Studio export: a folder document (per-plate model + modifier STL
+    /// pairs + manifest) prebuilt off-thread and handed to `.fileExporter`.
     @State private var showBambuExporter = false
     @State private var bambuExportDocument: BambuExportDocument?
     @State private var buildToken = 0
@@ -123,8 +123,11 @@ struct DocumentView: View {
         case saveSTL
         case exportBambu
         case openInBambuStudio
-        case openInBambuWithModifier
-        case openInBambuWithVoidModifier
+        // One plate per open: each plate + its modifier arrives in Bambu as
+        // its own multipart object, so the plates stay separable (and can be
+        // sliced/printed in separate jobs).
+        case openInBambuWithModifier(Plate)
+        case openInBambuWithVoidModifier(Plate)
         case openInFlowSimulator
     }
 
@@ -312,9 +315,10 @@ struct DocumentView: View {
             contentType: .stl,
             defaultFilename: stlFilename
         ) { _ in }
-        // "Export for Bambu Studio": a folder holding the model + modifier STLs
-        // (+ manifest). Written as a directory so the two aligned STLs land
-        // side by side, ready to multi-select in Bambu Studio.
+        // "Export for Bambu Studio": a folder holding each plate's model +
+        // modifier STL pair (+ manifest). Written as a directory so the
+        // aligned STLs land side by side, ready to multi-select pair by pair
+        // in Bambu Studio.
         //
         // Hosted on a separate (background) view: SwiftUI gives each view a
         // single file-exporter presentation slot, so stacking this directly on
@@ -885,8 +889,8 @@ struct DocumentView: View {
             onSaveSTL: { triggerExport(.saveSTL) },
             onExportBambu: { triggerExport(.exportBambu) },
             onOpenBambu: { triggerExport(.openInBambuStudio) },
-            onOpenBambuWithModifier: { triggerExport(.openInBambuWithModifier) },
-            onOpenBambuWithVoidModifier: { triggerExport(.openInBambuWithVoidModifier) },
+            onOpenBambuWithModifier: { triggerExport(.openInBambuWithModifier($0)) },
+            onOpenBambuWithVoidModifier: { triggerExport(.openInBambuWithVoidModifier($0)) },
             onOpenFlow: { triggerExport(.openInFlowSimulator) }
         )
     }
@@ -905,8 +909,8 @@ struct DocumentView: View {
         return c == 0 ? "vacuum-pcb" : "vacuum-pcb-\(c)components"
     }
 
-    /// Filesystem-safe base for the Bambu export's files (`<base>_model.stl`,
-    /// `<base>_modifier.stl`, …).
+    /// Filesystem-safe base for the Bambu export's files
+    /// (`<base>_top_model.stl`, `<base>_top_modifier.stl`, …).
     private var bambuBaseName: String { BambuExport.sanitizedBaseName(stlFilename) }
 
     /// Builds the Bambu export payload (model + modifier STLs + manifest) off
@@ -959,15 +963,15 @@ struct DocumentView: View {
             #else
             break
             #endif
-        case .openInBambuWithModifier:
+        case .openInBambuWithModifier(let plate):
             #if canImport(AppKit)
-            openInBambuStudio(withModifier: true)
+            openInBambuStudio(withModifier: true, plate: plate)
             #else
             break
             #endif
-        case .openInBambuWithVoidModifier:
+        case .openInBambuWithVoidModifier(let plate):
             #if canImport(AppKit)
-            openInBambuStudio(withModifier: true, style: .voids)
+            openInBambuStudio(withModifier: true, style: .voids, plate: plate)
             #else
             break
             #endif
@@ -1047,13 +1051,15 @@ struct DocumentView: View {
     }
 
     private func openInBambuStudio(withModifier: Bool = false,
-                                   style: BambuExport.ModifierStyle = .pneumatics) {
+                                   style: BambuExport.ModifierStyle = .pneumatics,
+                                   plate: Plate = .top) {
         guard let built else { return }
         guard let bambuURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.bambuStudioBundleID) else {
             return
         }
         if withModifier {
-            openInBambuStudioWithModifier(bambuURL: bambuURL, built: built, style: style)
+            openInBambuStudioWithModifier(bambuURL: bambuURL, built: built, style: style,
+                                          plate: plate)
             return
         }
         // makeWatertight stitches the hairline cracks Euclid's BSP CSG leaves
@@ -1083,33 +1089,47 @@ struct DocumentView: View {
         }
     }
 
-    /// Builds the model + print-critical modifier (off-thread, reusing the
-    /// already-built plates for the model) into the temp dir and opens *both*
-    /// STLs in Bambu Studio at once — that's what makes Bambu offer to load
-    /// them as a single (multipart) object. The two share PlateBuilder's
-    /// coordinate space, so they stay aligned; the user then switches the
-    /// `_modifier` part to a Modifier. No manifest is written for this path.
+    /// Builds one plate's model + print-critical modifier (off-thread,
+    /// reusing the already-built plates for the model) into the temp dir and
+    /// opens the pair in Bambu Studio at once — that's what makes Bambu offer
+    /// to load them as a single (multipart) object. The two share
+    /// PlateBuilder's coordinate space, so they stay aligned; the user then
+    /// switches the `_modifier` part to a Modifier. One plate per open on
+    /// purpose: each plate arrives as its OWN object, so the plates stay
+    /// separable — open the other plate afterwards, or print them in separate
+    /// jobs. No manifest is written for this path.
     private func openInBambuStudioWithModifier(bambuURL: URL, built: PlateBuilder.Output,
-                                               style: BambuExport.ModifierStyle = .pneumatics) {
+                                               style: BambuExport.ModifierStyle = .pneumatics,
+                                               plate: Plate) {
         // Match the preview's snapshot so the modifier lines up with the plates.
         var snapshot = document.circuit
         if !includeTestPoints { snapshot.physical.testPoints = [] }
         let base = bambuBaseName
         isBuilding = true
         DispatchQueue.global(qos: .userInitiated).async {
+            // modifierPlates: only this plate's modifier is built — the voids
+            // style is real CSG, so the other plate's would be wasted work.
             let payload = BambuExport.payload(doc: snapshot, baseName: base,
                                               margins: .init(snapshot.manufacturing),
                                               style: style,
-                                              includeManifest: false, prebuiltModel: built)
+                                              includeManifest: false, prebuiltModel: built,
+                                              modifierPlates: [plate])
             let dir = FileManager.default.temporaryDirectory
             var urls: [URL] = []
             do {
-                // Only the model + modifier pair goes to Bambu — handing the
-                // stencil/mold along would fold them into the same multipart
-                // object when the user answers "yes" to the load-together
-                // prompt. They're separate objects; use the folder export
-                // when they're needed.
-                for file in payload.files where payload.pairFilenames.contains(file.name) {
+                // Only this plate's model + modifier pair goes to Bambu —
+                // handing the other plate or the stencil/mold along would
+                // fold everything into one multipart object when the user
+                // answers "yes" to the load-together prompt. They're separate
+                // objects; open the other plate from the same menu (or use
+                // the folder export) when it's needed.
+                guard let object = payload.objects.first(where: { $0.plate == plate }) else {
+                    NSLog("vpcb: Bambu export produced no \(plate.rawValue) plate")
+                    DispatchQueue.main.async { self.isBuilding = false }
+                    return
+                }
+                let wanted = [object.modelFilename, object.modifierFilename].compactMap { $0 }
+                for file in payload.files where wanted.contains(file.name) {
                     let url = dir.appendingPathComponent(file.name)
                     try file.data.write(to: url, options: .atomic)
                     urls.append(url)
@@ -1321,8 +1341,8 @@ struct ExportMenuButton: View {
     let onSaveSTL: () -> Void
     let onExportBambu: () -> Void
     let onOpenBambu: () -> Void
-    let onOpenBambuWithModifier: () -> Void
-    let onOpenBambuWithVoidModifier: () -> Void
+    let onOpenBambuWithModifier: (Plate) -> Void
+    let onOpenBambuWithVoidModifier: (Plate) -> Void
     let onOpenFlow: () -> Void
 
     var body: some View {
@@ -1332,15 +1352,24 @@ struct ExportMenuButton: View {
             Divider()
             Button("Open in Bambu Studio", action: onOpenBambu)
                 .disabled(!bambuStudioInstalled)
-            // Opens model + modifier together so Bambu offers "load as one
-            // object" — remember to switch the _modifier part to a Modifier,
-            // or it prints as solid.
-            Button("Open in Bambu Studio (with Modifier)", action: onOpenBambuWithModifier)
-                .disabled(!bambuStudioInstalled)
+            // Opens one plate's model + modifier together so Bambu offers
+            // "load as one object" — remember to switch the _modifier part to
+            // a Modifier, or it prints as solid. One plate per open on
+            // purpose: each plate becomes its own object so the two can be
+            // arranged and printed independently (opening all four files at
+            // once would fold them into ONE inseparable object).
+            Menu("Open in Bambu Studio (with Modifier)") {
+                Button("Top Plate") { onOpenBambuWithModifier(.top) }
+                Button("Bottom Plate") { onOpenBambuWithModifier(.bottom) }
+            }
+            .disabled(!bambuStudioInstalled)
             // The inverted pairing: the global preset keeps the pneumatics,
             // the modifier claims the voids (assign it LOW infill in Bambu).
-            Button("Open in Bambu Studio (Void Modifier)", action: onOpenBambuWithVoidModifier)
-                .disabled(!bambuStudioInstalled)
+            Menu("Open in Bambu Studio (Void Modifier)") {
+                Button("Top Plate") { onOpenBambuWithVoidModifier(.top) }
+                Button("Bottom Plate") { onOpenBambuWithVoidModifier(.bottom) }
+            }
+            .disabled(!bambuStudioInstalled)
             Button("Open in Flow Simulator", action: onOpenFlow)
                 .disabled(!flowSimulatorInstalled)
         } label: {
