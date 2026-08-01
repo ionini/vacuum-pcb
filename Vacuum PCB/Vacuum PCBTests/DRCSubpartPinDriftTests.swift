@@ -2,12 +2,14 @@ import Testing
 import Foundation
 @testable import Vacuum_PCB
 
-/// `subpartPinDrift`: the flatten computes hoisted pin positions with the
-/// PARENT's constants while the sub-part's routes were drawn against its own
-/// file's — a padsOffset mismatch prints every routed pad bore off-centre
-/// from its channel end. Drift in (0.05 mm, channelRadius) reports a
-/// warning; matching constants stay silent, and the warning never fails the
-/// connectivity gate.
+/// `subpartPinDrift`: a transistor / LED pin bore sitting measurably
+/// off-centre from the channel that plumbs it. Two ways in — a hoisted
+/// sub-part pin (the flatten places it with the PARENT's constants while the
+/// sub-part's routes were drawn against its own file's), or one of the
+/// document's own top-level pins (a pads constant edited after routing
+/// strands the file's own route ends). Drift in (0.05 mm, channelRadius)
+/// reports a warning; matching constants stay silent, and the warning never
+/// fails the connectivity gate.
 @MainActor
 struct DRCSubpartPinDriftTests {
 
@@ -89,5 +91,69 @@ struct DRCSubpartPinDriftTests {
     func matchingConstantsSilent() {
         let doc = parent(childPadsOffset: 1.25, parentPadsOffset: 1.25)
         #expect(driftIssues(doc).isEmpty)
+    }
+
+    // MARK: - The document's own top-level pins
+
+    /// Standalone cell, no sub-parts: one transistor at (15,10) on top with
+    /// pin "a" routed 8 mm north on B0. `strandedBy` pushes the route's start
+    /// waypoint that far outward along the gate→pad axis, which is what an
+    /// edited `padsOffset` leaves behind (routes drawn at 1.5, pads now
+    /// drilled at 1.36 → 0.14 mm).
+    private func standaloneCell(strandedBy: Double) -> CircuitDocument {
+        var doc = CircuitDocument.blank()
+        doc.physical.boardOutline = Rect(origin: .zero, size: Size(width: 30, height: 20))
+        doc.skipEdgeWallDRC = true
+        let q = Component(kind: .transistor, label: "Q1")
+        doc.logic.components.append(q)
+        let pl = Placement(componentId: q.id, position: Point(x: 15, y: 10),
+                           rotation: .r0, layer: .top, depth: 0)
+        doc.physical.placements.append(pl)
+        let pinA = q.footprint(doc.manufacturing).pin("a")!
+        let pin = pl.worldPosition(of: pinA)
+        // Pin "a" sits at -padsOffset in x, so "outward" is -x.
+        let start = Point(x: pin.x - strandedBy, y: pin.y)
+        let net = Net(label: "n1", pins: [PinRef(componentId: q.id, pinKey: "a")])
+        doc.logic.nets.append(net)
+        doc.physical.routes.append(Route(netId: net.id, segments: [
+            Segment(waypoints: [
+                Waypoint(position: start),
+                Waypoint(position: Point(x: start.x, y: start.y + 8)),
+            ], layer: bottom0)
+        ]))
+        return doc
+    }
+
+    @Test("a stranded top-level route end warns on the document's own pin")
+    func ownTopLevelPinDriftWarns() {
+        let doc = standaloneCell(strandedBy: 0.14)
+        let issues = driftIssues(doc)
+        #expect(issues.count == 1)
+        var matched = false
+        if case let .subpartPinDrift(label, pinKey, drift, layer, _)? = issues.first?.kind {
+            matched = true
+            // Bare label, no instance chain: this is the file's own pin.
+            #expect(label == "Q1")
+            #expect(pinKey == "a")
+            #expect(abs(drift - 0.14) < 0.005)
+            #expect(layer.plate == .bottom)
+        }
+        #expect(matched)
+        #expect(issues.allSatisfy { $0.severity == .warning })
+        // The summary must not blame a sub-part when there isn't one.
+        #expect(issues.first?.summary.contains("sub-part") == false)
+        // Why this went unnoticed until 2026-08-01: the pin-snap tolerance in
+        // the connectivity gate swallows the gap, so the cell self-validates.
+        #expect(Validators.connectivity(doc).pass)
+    }
+
+    @Test("a top-level route ending on its pin stays silent")
+    func ownTopLevelPinOnChannelSilent() {
+        #expect(driftIssues(standaloneCell(strandedBy: 0)).isEmpty)
+    }
+
+    @Test("grid-snap noise under the floor stays silent")
+    func ownTopLevelNoiseFloorSilent() {
+        #expect(driftIssues(standaloneCell(strandedBy: 0.02)).isEmpty)
     }
 }

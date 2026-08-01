@@ -259,16 +259,25 @@ enum DRC {
                 wall: Double,
                 position: Point
             )
-            /// A hoisted sub-part transistor / LED pin bore sits measurably
-            /// off-centre from the channel that plumbs it. The flatten
-            /// computes pin positions with the PARENT's constants (what
-            /// PlateBuilder drills), but the sub-part's internal routes were
-            /// drawn against the library file's own — when they disagree
-            /// (padsOffset, usually) the printed drop bore lands offset from
-            /// its channel end. They still fuse while the drift stays under
-            /// a channel radius, so the board "works", but the effective
+            /// A transistor / LED pin bore sits measurably off-centre from
+            /// the channel that plumbs it. Two ways to get there, same
+            /// printed defect:
+            ///
+            /// - A *hoisted sub-part* pin: the flatten computes pin
+            ///   positions with the PARENT's constants (what PlateBuilder
+            ///   drills), but the sub-part's internal routes were drawn
+            ///   against the library file's own — when they disagree
+            ///   (padsOffset, usually) the drop bore lands offset from its
+            ///   channel end. `componentLabel` carries the instance chain
+            ///   ("U2.Q1").
+            /// - A *top-level* pin of this document: the pads constants
+            ///   changed after the routes were drawn, so the file's own
+            ///   route endpoints are stranded off the bores this same file
+            ///   drills. `componentLabel` is the bare label ("Q1").
+            ///
+            /// Bore and channel still fuse while the drift stays under a
+            /// channel radius, so the board "works", but the effective
             /// aperture shrinks and nothing else surfaces the mismatch.
-            /// `componentLabel` carries the instance chain ("U2.Q1").
             case subpartPinDrift(
                 componentLabel: String,
                 pinKey: String,
@@ -346,9 +355,16 @@ enum DRC {
                 }
                 return "\(netLabel) ↔ \(what) on \(layer.uiLabel): \(wallTxt) (sub-part)"
             case let .subpartPinDrift(componentLabel, pinKey, drift, layer, _):
+                // The instance-chain prefix is what distinguishes a hoisted
+                // sub-part pin from one of this document's own (same
+                // convention `physicalSelection` uses); only the cause hint
+                // differs, since a top-level pin drifted against this very
+                // file's routes, not a library's.
+                let cause = componentLabel.contains(".")
+                    ? "sub-part routed with different constants — check padsOffset"
+                    : "routed with different constants — check padsOffset"
                 return "\(componentLabel) pin \(pinKey) bore \(String(format: "%.2f", drift)) mm "
-                    + "off its channel on \(layer.uiLabel) (sub-part routed with "
-                    + "different constants — check padsOffset)"
+                    + "off its channel on \(layer.uiLabel) (\(cause))"
             }
         }
     }
@@ -405,7 +421,12 @@ enum DRC {
             return flattenedSidesSelection(sides, in: document)
         case let .subpartPinDrift(componentLabel, _, _, _, _):
             // The instance-chain prefix ("U2.Q1" → "U2") selects the sub-part
-            // placement the drifted pin lives in.
+            // placement the drifted pin lives in; a bare label is one of this
+            // document's own components, so select it directly.
+            if !componentLabel.contains("."),
+               let own = document.logic.components.first(where: { $0.label == componentLabel }) {
+                return .placement(own.id)
+            }
             return flattenedSidesSelection([(nil, componentLabel)], in: document)
         case .screwClearance(let screwId, _, _, _):
             return .placement(screwId)
@@ -561,9 +582,8 @@ enum DRC {
         issues.append(contentsOf: stencilHoleIssues(flat: flat))
         issues.append(contentsOf: portBoreClearanceIssues(in: geoDoc, labels: geoLabels))
         issues.append(contentsOf: testPointClearanceIssues(in: geoDoc, labels: geoLabels))
-        issues.append(contentsOf: subpartPinDriftIssues(
-            in: geoDoc, parentComponentIds: parentComponentIds,
-            parentRouteCount: parentRouteCount, labels: geoLabels))
+        issues.append(contentsOf: pinDriftIssues(
+            in: geoDoc, parentRouteCount: parentRouteCount, labels: geoLabels))
         return issues
     }
 
@@ -1740,29 +1760,38 @@ enum DRC {
         return issues
     }
 
-    // MARK: - Sub-part pin drift
+    // MARK: - Pin drift
 
-    /// Flags hoisted sub-part transistor / LED pin bores that sit measurably
-    /// off-centre from the channel that plumbs them — the "constants drift"
-    /// case. The flatten computes pin positions with the PARENT's constants
-    /// (that is what `PlateBuilder` drills), but the sub-part's internal
-    /// routes were drawn against the library file's own constants; when the
-    /// two disagree (`padsOffset`, usually) every affected pad prints with
-    /// its drop bore offset from the channel end. Bore and channel still
-    /// fuse while the drift stays under a channel radius — the board works,
-    /// the aperture just shrinks — so nothing else reports it: the wall
-    /// checks treat the pair as same-net (correctly), and each file looks
-    /// perfect on its own.
+    /// Flags transistor / LED pin bores that sit measurably off-centre from
+    /// the channel that plumbs them — the "constants drift" case. Bore and
+    /// channel still fuse while the drift stays under a channel radius — the
+    /// board works, the aperture just shrinks — so nothing else reports it:
+    /// the wall checks treat the pair as same-net (correctly), and
+    /// connectivity is a logical check that never measures the gap.
+    ///
+    /// Covers both scopes, because both print the same defect:
+    ///
+    /// - Hoisted sub-part pins. The flatten computes pin positions with the
+    ///   PARENT's constants (that is what `PlateBuilder` drills), but the
+    ///   sub-part's internal routes were drawn against the library file's
+    ///   own; when the two disagree (`padsOffset`, usually) every affected
+    ///   pad prints with its drop bore offset from the channel end.
+    /// - This document's own top-level pins. A pads-constant edited after
+    ///   routing strands the file's own route endpoints off the bores this
+    ///   same file drills — so the standalone print carries the defect too,
+    ///   and used to validate clean because the check only ever looked at
+    ///   hoisted components (found 2026-08-01: XOR.vpcb and AND 2.vpcb both
+    ///   reported 0 issues standalone while their pads sat 0.14 mm off
+    ///   their channels, visible only one level up in Half Adder 2.vpcb).
     ///
     /// Same closest-route attribution as `collectBores`' `plumbedNet`, and
-    /// the same known approximation: a pin whose net is unrouted inside the
-    /// part can misattribute to a foreign channel passing within the merge
-    /// radius — that geometry is already flagged by the wall checks.
+    /// the same known approximation: a pin whose net is unrouted can
+    /// misattribute to a foreign channel passing within the merge radius —
+    /// that geometry is already flagged by the wall checks.
     /// Warning severity: drifted pads print and work, they're just not what
-    /// the part's designer drew. One issue per (component, pin).
-    private static func subpartPinDriftIssues(
+    /// the designer drew. One issue per (component, pin).
+    private static func pinDriftIssues(
         in doc: CircuitDocument,
-        parentComponentIds: Set<UUID>,
         parentRouteCount: Int,
         labels labelOverrides: [UUID: String]? = nil
     ) -> [Issue] {
@@ -1770,17 +1799,13 @@ enum DRC {
         let channelRadius = m.channelDiameter / 2
         /// Offsets below this are grid-snap / float noise, not drift.
         let noiseFloor = 0.05
-        // Cheap skip for the no-sub-parts case (flat == parent doc).
-        guard doc.logic.components.contains(where: { !parentComponentIds.contains($0.id) })
-        else { return [] }
         let edges = collectRouteEdges(in: doc, parentRouteCount: parentRouteCount,
                                       labelOverrides: labelOverrides)
         guard !edges.isEmpty else { return [] }
 
         var issues: [Issue] = []
         for placement in doc.physical.placements {
-            guard !parentComponentIds.contains(placement.componentId),
-                  let comp = doc.logic.components.first(where: { $0.id == placement.componentId }),
+            guard let comp = doc.logic.components.first(where: { $0.id == placement.componentId }),
                   comp.kind == .transistor || comp.kind == .led
             else { continue }
             let fp = comp.footprint(m, snapshots: doc.librarySnapshots)
