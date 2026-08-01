@@ -60,6 +60,7 @@ enum ManufacturingActions {
         s.castingMargin = max(0.0, m.castingMargin)
         s.moldWallThickness = max(0.0, m.moldWallThickness)
         s.minWallThickness = max(0.05, m.minWallThickness)
+        s.preferredWallThickness = max(0.0, m.preferredWallThickness)
         s.testPointLabelSize = max(0.0, m.testPointLabelSize)
         s.modifierMarginXY = max(0.0, m.modifierMarginXY)
         s.modifierMarginZ = max(0.0, m.modifierMarginZ)

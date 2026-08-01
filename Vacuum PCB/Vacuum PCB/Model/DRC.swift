@@ -78,11 +78,22 @@ enum DRC {
         let layer: Layer
     }
 
+    /// How bad an issue is. Wall checks classify each finding: below
+    /// `minWallThickness` the print is expected to fail (`.error`); between
+    /// `minWallThickness` and `preferredWallThickness` it prints but with
+    /// less margin than the board asked for (`.warning`). Topology and
+    /// electrical checks are always `.error`.
+    enum Severity: Hashable, Comparable {
+        case warning
+        case error
+    }
+
     struct Issue: Identifiable, Hashable {
         let id = UUID()
         let netId: UUID
         let netLabel: String
         let kind: Kind
+        var severity: Severity = .error
 
         enum Kind: Hashable {
             /// The component that owns this pin has no placement, so we can't
@@ -229,6 +240,42 @@ enum DRC {
                 wall: Double,
                 position: Point
             )
+            /// A wall check finding where at least one side lives *inside a
+            /// placed sub-part* — detected on the flattened doc (like
+            /// `crossNetMerge`), because sub-part internals print with THIS
+            /// document's constants, and the per-file check of the library
+            /// part can't see the parent's routes, board edge, or a second
+            /// sub-part placed next to it. `neighbor` reuses the thin-wall
+            /// vocabulary (.channel / .outerFace / .bore); labels carry the
+            /// sub-part instance chain ("U1.n3"). `otherNetId` is the flat
+            /// net of the other side when it has one (nil for the outer
+            /// face), used with the label to select whatever the user can
+            /// act on in the parent canvas.
+            case subpartWall(
+                neighbor: ThinWallNeighbor,
+                otherNetId: UUID?,
+                otherLabel: String?,
+                layer: Layer,
+                wall: Double,
+                position: Point
+            )
+            /// A hoisted sub-part transistor / LED pin bore sits measurably
+            /// off-centre from the channel that plumbs it. The flatten
+            /// computes pin positions with the PARENT's constants (what
+            /// PlateBuilder drills), but the sub-part's internal routes were
+            /// drawn against the library file's own — when they disagree
+            /// (padsOffset, usually) the printed drop bore lands offset from
+            /// its channel end. They still fuse while the drift stays under
+            /// a channel radius, so the board "works", but the effective
+            /// aperture shrinks and nothing else surfaces the mismatch.
+            /// `componentLabel` carries the instance chain ("U2.Q1").
+            case subpartPinDrift(
+                componentLabel: String,
+                pinKey: String,
+                drift: Double,
+                layer: Layer,
+                position: Point
+            )
         }
 
         var summary: String {
@@ -289,6 +336,19 @@ enum DRC {
                 let what = neighbor == .channel ? "channel \(otherLabel)" : "test point \(otherLabel)"
                 let wallTxt = wall < 0.01 ? "touching" : "\(String(format: "%.2f", wall)) mm wall"
                 return "\(tpName) → \(what) on \(layer.uiLabel): \(wallTxt)"
+            case let .subpartWall(neighbor, _, otherLabel, layer, wall, _):
+                let wallTxt = wall < 0.01 ? "touching" : "\(String(format: "%.2f", wall)) mm wall"
+                let what: String
+                switch neighbor {
+                case .outerFace: what = "board edge"
+                case .channel:   what = otherLabel ?? "another channel"
+                case .bore:      what = otherLabel.map { "\($0) bore" } ?? "a bore"
+                }
+                return "\(netLabel) ↔ \(what) on \(layer.uiLabel): \(wallTxt) (sub-part)"
+            case let .subpartPinDrift(componentLabel, pinKey, drift, layer, _):
+                return "\(componentLabel) pin \(pinKey) bore \(String(format: "%.2f", drift)) mm "
+                    + "off its channel on \(layer.uiLabel) (sub-part routed with "
+                    + "different constants — check padsOffset)"
             }
         }
     }
@@ -333,31 +393,20 @@ enum DRC {
             // off in assembly mode anyway).
             return nil
         case .crossNetMerge(let otherNetId, let otherLabel, _, _):
-            // For each side of the merge, highlight whatever the user can
-            // act on in the unflattened canvas:
-            //   * net at the parent level → all its pins (placements set)
-            //   * net hoisted out of a sub-part → that instance's placement,
-            //     identified by the label prefix ("U1.n3" → component
-            //     labelled "U1"). Lets the user jump into the sub-part view
-            //     where the actual offending segment lives.
-            let parentNets = Set(document.logic.nets.map(\.id))
-            var sel = PhysicalSelection()
-            func selectSide(netId: UUID, label: String) {
-                if parentNets.contains(netId),
-                   let net = document.logic.nets.first(where: { $0.id == netId }) {
-                    sel.placements.formUnion(net.pins.map(\.componentId))
-                    return
-                }
-                if let dot = label.firstIndex(of: "."),
-                   let instance = document.logic.components.first(where: {
-                       $0.kind == .subpart && $0.label == String(label[..<dot])
-                   }) {
-                    sel.placements.insert(instance.id)
-                }
+            return flattenedSidesSelection(
+                [(issue.netId, issue.netLabel), (otherNetId, otherLabel)],
+                in: document
+            )
+        case let .subpartWall(_, otherNetId, otherLabel, _, _, _):
+            var sides: [(netId: UUID?, label: String)] = [(issue.netId, issue.netLabel)]
+            if otherLabel != nil || otherNetId != nil {
+                sides.append((otherNetId, otherLabel ?? ""))
             }
-            selectSide(netId: issue.netId, label: issue.netLabel)
-            selectSide(netId: otherNetId, label: otherLabel)
-            return sel.isEmpty ? nil : sel
+            return flattenedSidesSelection(sides, in: document)
+        case let .subpartPinDrift(componentLabel, _, _, _, _):
+            // The instance-chain prefix ("U2.Q1" → "U2") selects the sub-part
+            // placement the drifted pin lives in.
+            return flattenedSidesSelection([(nil, componentLabel)], in: document)
         case .screwClearance(let screwId, _, _, _):
             return .placement(screwId)
         case .viaPad(let padComponentId, _, _, _):
@@ -390,6 +439,36 @@ enum DRC {
             // its rail (or press F) to clear the wall.
             return .testPoint(testPointId)
         }
+    }
+
+    /// For each side of a flattened-doc finding (cross-net merge, sub-part
+    /// wall), highlight whatever the user can act on in the unflattened
+    /// canvas:
+    ///   * net at the parent level → all its pins (placements set)
+    ///   * net hoisted out of a sub-part → that instance's placement,
+    ///     identified by the label prefix ("U1.n3" → component labelled
+    ///     "U1"). Lets the user jump into the sub-part view where the
+    ///     actual offending segment lives.
+    private static func flattenedSidesSelection(
+        _ sides: [(netId: UUID?, label: String)],
+        in document: CircuitDocument
+    ) -> PhysicalSelection? {
+        let parentNets = Set(document.logic.nets.map(\.id))
+        var sel = PhysicalSelection()
+        for side in sides {
+            if let netId = side.netId, parentNets.contains(netId),
+               let net = document.logic.nets.first(where: { $0.id == netId }) {
+                sel.placements.formUnion(net.pins.map(\.componentId))
+                continue
+            }
+            if let dot = side.label.firstIndex(of: "."),
+               let instance = document.logic.components.first(where: {
+                   $0.kind == .subpart && $0.label == String(side.label[..<dot])
+               }) {
+                sel.placements.insert(instance.id)
+            }
+        }
+        return sel.isEmpty ? nil : sel
     }
 
     /// Position to drop a transient focus marker on when the user clicks an
@@ -437,6 +516,10 @@ enum DRC {
             return (pos, layer)
         case let .testPointClearance(_, _, _, _, layer, _, pos):
             return (pos, layer)
+        case let .subpartWall(_, _, _, layer, _, pos):
+            return (pos, layer)
+        case let .subpartPinDrift(_, _, _, layer, pos):
+            return (pos, layer)
         case .unplacedPin, .noRouteDrawn, .matingIncompatible, .matingDoubleBooked:
             return nil
         }
@@ -447,16 +530,56 @@ enum DRC {
         for net in document.logic.nets {
             issues.append(contentsOf: checkNet(net, in: document))
         }
-        issues.append(contentsOf: clearanceIssues(in: document))
-        issues.append(contentsOf: crossNetMergeIssues(in: document))
-        issues.append(contentsOf: thinWallIssues(in: document))
+
+        // One shared flatten for every geometry check — sub-part internals
+        // print with *this* document's constants, so proximity must be
+        // checked here, not (only) in each library file. Socket-mated
+        // assemblies are the exception: their sub-parts stack at one origin
+        // and print separately, so flattened proximity is meaningless —
+        // the wall checks fall back to the top-level doc there.
+        // (`crossNetMerge` and the stencil check keep their historical
+        // always-flattened behaviour.)
+        let (flat, flatLabels) = document.flattenedWithLabels()
+        let useFlat = document.logic.matings.isEmpty
+        let geoDoc = useFlat ? flat : document
+        let geoLabels = useFlat ? flatLabels : nil
+        // Routes at index < parentRouteCount (and components in the parent's
+        // id set) are the document's own; everything past that was hoisted
+        // out of a sub-part by the flatten.
+        let parentRouteCount = document.physical.routes.count
+        let parentComponentIds = Set(document.logic.components.map(\.id))
+
+        issues.append(contentsOf: clearanceIssues(
+            in: geoDoc, parentRouteCount: parentRouteCount, labels: geoLabels))
+        issues.append(contentsOf: crossNetMergeIssues(flat: flat, labels: flatLabels))
+        issues.append(contentsOf: thinWallIssues(
+            in: geoDoc, parent: document, parentRouteCount: parentRouteCount,
+            parentComponentIds: parentComponentIds, labels: geoLabels))
         issues.append(contentsOf: matingIssues(in: document))
-        issues.append(contentsOf: screwClearanceIssues(in: document))
-        issues.append(contentsOf: viaClearanceIssues(in: document))
-        issues.append(contentsOf: stencilHoleIssues(in: document))
-        issues.append(contentsOf: portBoreClearanceIssues(in: document))
-        issues.append(contentsOf: testPointClearanceIssues(in: document))
+        issues.append(contentsOf: screwClearanceIssues(in: geoDoc))
+        issues.append(contentsOf: viaClearanceIssues(in: geoDoc, labels: geoLabels))
+        issues.append(contentsOf: stencilHoleIssues(flat: flat))
+        issues.append(contentsOf: portBoreClearanceIssues(in: geoDoc, labels: geoLabels))
+        issues.append(contentsOf: testPointClearanceIssues(in: geoDoc, labels: geoLabels))
+        issues.append(contentsOf: subpartPinDriftIssues(
+            in: geoDoc, parentComponentIds: parentComponentIds,
+            parentRouteCount: parentRouteCount, labels: geoLabels))
         return issues
+    }
+
+    // MARK: - Two-tier wall thresholds
+
+    /// Distance the wall checks scan out to: the hard limit, or the comfort
+    /// wall when the board asks for one.
+    private static func wallScanThreshold(_ m: ManufacturingConstants) -> Double {
+        max(m.minWallThickness, m.preferredWallThickness)
+    }
+
+    /// Classifies a wall finding: below the hard limit the print is expected
+    /// to fail (error); between the limits it's printable but thinner than
+    /// the board's comfort wall (warning).
+    private static func wallSeverity(_ wall: Double, _ m: ManufacturingConstants) -> Severity {
+        wall < m.minWallThickness ? .error : .warning
     }
 
     // MARK: - Stencil cutting-sheet crowding
@@ -469,7 +592,8 @@ enum DRC {
     /// the printed plate bores are unaffected by either padding, so this never
     /// duplicates the plate checks. Runs on the *flattened* design because the
     /// stencil itself is built flattened (it punches sub-part vias too), so a
-    /// top-level-only pass would miss almost every hole.
+    /// top-level-only pass would miss almost every hole. The flatten is
+    /// computed once in `check` and passed in.
     ///
     /// Every pair measured has a fluid hole on at least one side, deliberately:
     /// what's at stake is the silicone land a via or pin needs to seal against,
@@ -477,8 +601,7 @@ enum DRC {
     /// a relief hole widened into a via's land leaks. Two *screw* holes merging
     /// is not a defect (nothing seals or flows between them), so opening the
     /// screw padding up never flags on its own.
-    private static func stencilHoleIssues(in doc: CircuitDocument) -> [Issue] {
-        let flat = doc.flattened()
+    private static func stencilHoleIssues(flat: CircuitDocument) -> [Issue] {
         let m = flat.manufacturing
         guard m.stencilThickness > 0, m.minWallThickness > 0 else { return [] }
         let threshold = m.minWallThickness
@@ -590,6 +713,13 @@ enum DRC {
         /// features that don't share plate height.
         let zLo: Double
         let zHi: Double
+        /// User-facing name of what this bore belongs to — the (possibly
+        /// sub-part-prefixed) net label for a via, the owning component's
+        /// label for a pad. Quoted by `.subpartWall` issue text.
+        var label: String? = nil
+        /// True when the bore came out of a placed sub-part (hoisted route
+        /// via or hoisted transistor / LED placement).
+        var fromSubpart: Bool = false
     }
 
     /// Collects every via bore and every transistor / LED pad bore in the
@@ -599,7 +729,20 @@ enum DRC {
     /// layer set each via spans, then emitted as one bore per plate with the
     /// Z band it occupies there — so an intra-plate via doesn't pretend to
     /// reach the silicone face.
-    private static func collectBores(in doc: CircuitDocument) -> [Bore] {
+    ///
+    /// When `check` passes a flattened doc, `parentComponentIds` /
+    /// `parentRouteCount` mark which bores were hoisted out of a sub-part.
+    /// Hoisted transistor / LED pins belong to nets that don't exist in
+    /// `logic.nets` (flatten re-mints route net ids without hoisting the
+    /// `Net` objects), so their net attribution falls back to the route
+    /// whose segment endpoint sits on the pin — without it, a sub-part
+    /// transistor's own supply channel would read as a foreign bore.
+    private static func collectBores(
+        in doc: CircuitDocument,
+        parentComponentIds: Set<UUID>? = nil,
+        parentRouteCount: Int = .max,
+        labelOverrides: [UUID: String]? = nil
+    ) -> [Bore] {
         let m = doc.manufacturing
         let channelRadius = m.channelDiameter / 2
         func faceZ(_ plate: Plate) -> Double {
@@ -609,11 +752,55 @@ enum DRC {
         for net in doc.logic.nets {
             for pinRef in net.pins { pinToNet[pinRef] = net.id }
         }
+        let netLabels = Dictionary(uniqueKeysWithValues: doc.logic.nets.map { ($0.id, $0.label) })
+        func label(of netId: UUID) -> String? {
+            labelOverrides?[netId] ?? netLabels[netId]
+        }
+        // Geometry-based net fallback for hoisted pins (flattened mode only):
+        // a pin belongs to the net whose route is plumbed to it, and that
+        // route doesn't necessarily *end* there — it can pass straight
+        // through (pin mid-polyline), carry the parent's net id after
+        // boundary unification, or sit off-centre when the parent's
+        // padsOffset differs from the one the sub-part was routed with (the
+        // flat doc computes pin positions with the parent's constants). The
+        // physical criterion is overlap — bore and channel fuse into one
+        // node — so match the *closest* route polyline within a channel
+        // radius on the pin's own plate. Closest-wins keeps a genuinely
+        // foreign channel grazing the pin from stealing the attribution
+        // (its distance is larger than the plumbed net's).
+        var routeGeometry: [(a: Point, b: Point, netId: UUID, plate: Plate)] = []
+        if parentRouteCount != .max {
+            for route in doc.physical.routes {
+                for seg in route.segments {
+                    let pts = seg.waypoints
+                    guard pts.count >= 2 else { continue }
+                    for i in 0..<(pts.count - 1) {
+                        routeGeometry.append((pts[i].position, pts[i + 1].position,
+                                              route.netId, seg.layer.plate))
+                    }
+                }
+            }
+        }
+        func plumbedNet(at p: Point, plate: Plate) -> UUID? {
+            var bestNet: UUID?
+            var bestDistance = channelRadius
+            for e in routeGeometry where e.plate == plate {
+                let d = pointSegmentDistance(p, e.a, e.b)
+                if d < bestDistance { bestDistance = d; bestNet = e.netId }
+            }
+            return bestNet
+        }
         var bores: [Bore] = []
 
-        struct ViaGroup { var position: Point; var layers: Set<Layer>; var netId: UUID }
+        struct ViaGroup {
+            var position: Point
+            var layers: Set<Layer>
+            var netId: UUID
+            var fromSubpart: Bool
+        }
         var viaGroups: [ViaGroup] = []
-        for route in doc.physical.routes {
+        for (routeIndex, route) in doc.physical.routes.enumerated() {
+            let fromSubpart = routeIndex >= parentRouteCount
             for segment in route.segments {
                 for wp in segment.waypoints where wp.kind == .via {
                     if let i = viaGroups.firstIndex(where: {
@@ -622,9 +809,11 @@ enum DRC {
                             && abs($0.position.y - wp.position.y) < 0.05
                     }) {
                         viaGroups[i].layers.insert(segment.layer)
+                        viaGroups[i].fromSubpart = viaGroups[i].fromSubpart || fromSubpart
                     } else {
                         viaGroups.append(ViaGroup(
-                            position: wp.position, layers: [segment.layer], netId: route.netId
+                            position: wp.position, layers: [segment.layer],
+                            netId: route.netId, fromSubpart: fromSubpart
                         ))
                     }
                 }
@@ -642,12 +831,15 @@ enum DRC {
                 let layer = plateLayers.min { $0.depth < $1.depth }!
                 bores.append(Bore(position: group.position, radius: channelRadius,
                                   layer: layer, netId: group.netId, componentId: nil,
-                                  zLo: zs.min()!, zHi: zs.max()!))
+                                  zLo: zs.min()!, zHi: zs.max()!,
+                                  label: label(of: group.netId),
+                                  fromSubpart: group.fromSubpart))
             }
         }
         for placement in doc.physical.placements {
             guard let comp = doc.logic.components.first(where: { $0.id == placement.componentId })
             else { continue }
+            let fromSubpart = parentComponentIds.map { !$0.contains(comp.id) } ?? false
             switch comp.kind {
             case .transistor, .led:
                 let fp = comp.footprint(m, snapshots: doc.librarySnapshots)
@@ -666,13 +858,18 @@ enum DRC {
                         reach = max(reach, m.ledDimpleDiameter / 2 + m.ledDimpleDepth)
                     }
                     let zEnd = face + (pinLayer.plate == .top ? reach : -reach)
+                    let world = placement.worldPosition(of: pin)
+                    let netId = pinToNet[ref]
+                        ?? (fromSubpart ? plumbedNet(at: world, plate: pinLayer.plate) : nil)
                     bores.append(Bore(
-                        position: placement.worldPosition(of: pin),
+                        position: world,
                         radius: channelRadius,
                         layer: pinLayer,
-                        netId: pinToNet[ref],
+                        netId: netId,
                         componentId: placement.componentId,
-                        zLo: min(face, zEnd), zHi: max(face, zEnd)
+                        zLo: min(face, zEnd), zHi: max(face, zEnd),
+                        label: comp.label.isEmpty ? nil : comp.label,
+                        fromSubpart: fromSubpart
                     ))
                 }
             default:
@@ -695,7 +892,7 @@ enum DRC {
     /// crowded area reports at most three times.
     private static func screwClearanceIssues(in doc: CircuitDocument) -> [Issue] {
         let m = doc.manufacturing
-        let threshold = m.minWallThickness
+        let threshold = wallScanThreshold(m)
         guard threshold > 0 else { return [] }
         let channelRadius = m.channelDiameter / 2
 
@@ -719,18 +916,15 @@ enum DRC {
         let bores = collectBores(in: doc)
 
         struct ReportKey: Hashable { let screwId: UUID; let neighbor: ScrewNeighbor }
-        var reported: Set<ReportKey> = []
-        var issues: [Issue] = []
-        func emit(_ screw: (id: UUID, label: String, p: Point, headSide: Plate),
-                  _ neighbor: ScrewNeighbor, _ gap: Double) {
+        // Worst gap per (screw, neighbor kind), so the reported severity is
+        // the pair's true one when a screw grazes both a warning-grade and
+        // an error-grade wall.
+        var best: [ReportKey: (label: String, p: Point, gap: Double)] = [:]
+        func record(_ screw: (id: UUID, label: String, p: Point, headSide: Plate),
+                    _ neighbor: ScrewNeighbor, _ gap: Double) {
             let key = ReportKey(screwId: screw.id, neighbor: neighbor)
-            if reported.contains(key) { return }
-            reported.insert(key)
-            issues.append(Issue(
-                netId: UUID(), netLabel: screw.label,
-                kind: .screwClearance(screwId: screw.id, neighbor: neighbor,
-                                      gap: max(0, gap), position: screw.p)
-            ))
+            if let current = best[key], current.gap <= gap { return }
+            best[key] = (screw.label, screw.p, gap)
         }
 
         // Thinnest printed wall between a screw's profile and a feature on
@@ -761,17 +955,23 @@ enum DRC {
                 let cz = m.midZ(for: edge.layer)
                 let wall = minWall(columns, plate: edge.layer.plate,
                                    dxy: dxy, fLo: cz, fHi: cz, featureRadius: channelRadius)
-                if wall < threshold { emit(screw, .route, wall) }
+                if wall < threshold { record(screw, .route, wall) }
             }
             for bore in bores {
                 let dx = screw.p.x - bore.position.x, dy = screw.p.y - bore.position.y
                 let dxy = (dx * dx + dy * dy).squareRoot()
                 let wall = minWall(columns, plate: bore.layer.plate,
                                    dxy: dxy, fLo: bore.zLo, fHi: bore.zHi, featureRadius: bore.radius)
-                if wall < threshold { emit(screw, bore.componentId == nil ? .via : .pad, wall) }
+                if wall < threshold { record(screw, bore.componentId == nil ? .via : .pad, wall) }
             }
         }
-        return issues
+        let issues = best.map { key, found in
+            Issue(netId: UUID(), netLabel: found.label,
+                  kind: .screwClearance(screwId: key.screwId, neighbor: key.neighbor,
+                                        gap: max(0, found.gap), position: found.p),
+                  severity: wallSeverity(found.gap, m))
+        }
+        return issues.sorted { $0.summary < $1.summary }
     }
 
     // MARK: - Via clearance (via↔via, via↔pad)
@@ -789,11 +989,17 @@ enum DRC {
     /// midline don't count either: each bore opens into that depth's channel
     /// there, and the walls around the channels are `thinWall` /
     /// `channelClearance`'s job.
-    private static func viaClearanceIssues(in doc: CircuitDocument) -> [Issue] {
+    private static func viaClearanceIssues(
+        in doc: CircuitDocument,
+        labels labelOverrides: [UUID: String]? = nil
+    ) -> [Issue] {
         let m = doc.manufacturing
-        let threshold = m.minWallThickness
+        let threshold = wallScanThreshold(m)
         guard threshold > 0 else { return [] }
-        let labels = Dictionary(uniqueKeysWithValues: doc.logic.nets.map { ($0.id, $0.label) })
+        var labels = Dictionary(uniqueKeysWithValues: doc.logic.nets.map { ($0.id, $0.label) })
+        if let overrides = labelOverrides {
+            labels.merge(overrides) { _, hoisted in hoisted }
+        }
 
         let bores = collectBores(in: doc)
         let vias = bores.filter { $0.componentId == nil }   // route vias only
@@ -813,10 +1019,11 @@ enum DRC {
                 self.a = ord.0; self.b = ord.1; self.plate = plate
             }
         }
-        var reported: Set<PairKey> = []
         var issues: [Issue] = []
 
-        // via ↔ via (different nets, same plate, sharing plate height)
+        // via ↔ via (different nets, same plate, sharing plate height).
+        // Worst wall per pair so the reported severity is the pair's true one.
+        var bestVV: [PairKey: (a: Bore, b: Bore, wall: Double)] = [:]
         for i in 0..<vias.count {
             for j in (i + 1)..<vias.count {
                 let a = vias[i], b = vias[j]
@@ -826,21 +1033,25 @@ enum DRC {
                 let wall = dist(a.position, b.position) - a.radius - b.radius
                 guard wall < threshold else { continue }
                 let key = PairKey(an, bn, a.layer.plate)
-                if reported.contains(key) { continue }
-                reported.insert(key)
-                issues.append(Issue(
-                    netId: an, netLabel: labels[an] ?? "?",
-                    kind: .viaSpacing(otherNetId: bn, otherNetLabel: labels[bn] ?? "?",
-                                      layer: a.layer, gap: max(0, wall),
-                                      position: midpoint(a.position, b.position))
-                ))
+                if let current = bestVV[key], current.wall <= wall { continue }
+                bestVV[key] = (a, b, wall)
             }
+        }
+        for found in bestVV.values {
+            let an = found.a.netId!, bn = found.b.netId!
+            issues.append(Issue(
+                netId: an, netLabel: labels[an] ?? "?",
+                kind: .viaSpacing(otherNetId: bn, otherNetLabel: labels[bn] ?? "?",
+                                  layer: found.a.layer, gap: max(0, found.wall),
+                                  position: midpoint(found.a.position, found.b.position)),
+                severity: wallSeverity(found.wall, m)
+            ))
         }
 
         // via ↔ foreign transistor/LED pad (same plate, sharing plate height)
         let pads = bores.filter { $0.componentId != nil }
         struct VPKey: Hashable { let net: UUID; let comp: UUID; let plate: Plate }
-        var reportedVP: Set<VPKey> = []
+        var bestVP: [VPKey: (via: Bore, pad: Bore, wall: Double)] = [:]
         for via in vias {
             guard let vn = via.netId else { continue }
             for pad in pads where pad.layer.plate == via.layer.plate {
@@ -849,16 +1060,20 @@ enum DRC {
                 let wall = dist(via.position, pad.position) - via.radius - pad.radius
                 guard wall < threshold else { continue }
                 let key = VPKey(net: vn, comp: pad.componentId!, plate: via.layer.plate)
-                if reportedVP.contains(key) { continue }
-                reportedVP.insert(key)
-                issues.append(Issue(
-                    netId: vn, netLabel: labels[vn] ?? "?",
-                    kind: .viaPad(padComponentId: pad.componentId!, layer: via.layer,
-                                  gap: max(0, wall), position: via.position)
-                ))
+                if let current = bestVP[key], current.wall <= wall { continue }
+                bestVP[key] = (via, pad, wall)
             }
         }
-        return issues
+        for found in bestVP.values {
+            let vn = found.via.netId!
+            issues.append(Issue(
+                netId: vn, netLabel: labels[vn] ?? "?",
+                kind: .viaPad(padComponentId: found.pad.componentId!, layer: found.via.layer,
+                              gap: max(0, found.wall), position: found.via.position),
+                severity: wallSeverity(found.wall, m)
+            ))
+        }
+        return issues.sorted { $0.summary < $1.summary }
     }
 
     private static func midpoint(_ a: Point, _ b: Point) -> Point {
@@ -1126,14 +1341,20 @@ enum DRC {
         let layer: Layer
         let a: Point
         let b: Point
+        /// True when this edge was hoisted out of a placed sub-part by the
+        /// flatten — its segment isn't addressable in the parent canvas, so
+        /// findings involving it report as `.subpartWall` with an explicit
+        /// position instead of segment indices.
+        var fromSubpart: Bool = false
     }
 
     /// Walks every pair of route polyline edges; if two edges on the same
     /// plate-layer belong to different nets and the printed wall between them
     /// — centre distance minus both channel radii — is thinner than
-    /// `minWallThickness`, emit one issue per (net-pair, layer). We don't spam
-    /// the sidebar with every offending segment; the user just needs to know
-    /// "those two nets clash on top, look at the canvas".
+    /// `minWallThickness` (error) or `preferredWallThickness` (warning), emit
+    /// one issue per (net-pair, layer) at the pair's *worst* wall. We don't
+    /// spam the sidebar with every offending segment; the user just needs to
+    /// know "those two nets clash on top, look at the canvas".
     ///
     /// Diameter-aware on purpose: the reported number is the actual wall, not
     /// the centre-to-centre distance, so it lines up with `thinWall` (which
@@ -1141,11 +1362,21 @@ enum DRC {
     /// `channelDiameter`-thick blind spot. `minChannelSpacing` stays the
     /// auto-router's centre-to-centre keep-out — the *physical* limit is the
     /// wall, and that's what DRC enforces.
-    private static func clearanceIssues(in doc: CircuitDocument) -> [Issue] {
-        let threshold = doc.manufacturing.minWallThickness
+    ///
+    /// Runs on the flattened doc (`check` passes it in): pairs of the
+    /// document's own routes report exactly as before, pairs with at least
+    /// one sub-part-internal side report as `.subpartWall`.
+    private static func clearanceIssues(
+        in doc: CircuitDocument,
+        parentRouteCount: Int = .max,
+        labels labelOverrides: [UUID: String]? = nil
+    ) -> [Issue] {
+        let m = doc.manufacturing
+        let threshold = wallScanThreshold(m)
         guard threshold > 0 else { return [] }
-        let channelRadius = doc.manufacturing.channelDiameter / 2
-        let edges = collectRouteEdges(in: doc)
+        let channelRadius = m.channelDiameter / 2
+        let edges = collectRouteEdges(in: doc, parentRouteCount: parentRouteCount,
+                                      labelOverrides: labelOverrides)
         guard edges.count >= 2 else { return [] }
 
         struct PairKey: Hashable {
@@ -1155,38 +1386,64 @@ enum DRC {
                 self.first = ordered.0; self.second = ordered.1; self.layer = layer
             }
         }
-        var reported: Set<PairKey> = []
-        var issues: [Issue] = []
+        // Worst wall per pair, so a pair that grazes a warning-grade wall in
+        // one spot and an error-grade wall in another reports the error.
+        var best: [PairKey: (wall: Double, a: ChannelEdge, b: ChannelEdge)] = [:]
         for i in 0..<edges.count {
             for j in (i + 1)..<edges.count {
                 let a = edges[i], b = edges[j]
                 if a.netId == b.netId { continue }
                 if a.layer != b.layer { continue }
-                let key = PairKey(a.netId, b.netId, a.layer)
-                if reported.contains(key) { continue }
                 let d = segmentDistance(a.a, a.b, b.a, b.b)
                 let wall = d - 2 * channelRadius
                 guard wall < threshold else { continue }
-                reported.insert(key)
-                issues.append(Issue(
-                    netId: a.netId, netLabel: a.netLabel,
-                    kind: .channelClearance(
-                        otherNetId: b.netId, otherNetLabel: b.netLabel,
-                        layer: a.layer, wall: max(0, wall),
-                        selfSegmentIndex: a.segmentIndex,
-                        otherSegmentIndex: b.segmentIndex
-                    )
-                ))
+                let key = PairKey(a.netId, b.netId, a.layer)
+                if let cur = best[key], cur.wall <= wall { continue }
+                best[key] = (wall, a, b)
             }
         }
-        return issues
+        let issues = best.values.map { found -> Issue in
+            let severity = wallSeverity(found.wall, m)
+            if found.a.fromSubpart || found.b.fromSubpart {
+                // Attribute the issue to the sub-part side ("U1.n3 ↔ n5"
+                // reads better than the reverse when U1 is the stranger).
+                let (s, o) = found.a.fromSubpart ? (found.a, found.b) : (found.b, found.a)
+                return Issue(
+                    netId: s.netId, netLabel: s.netLabel,
+                    kind: .subpartWall(
+                        neighbor: .channel, otherNetId: o.netId,
+                        otherLabel: o.netLabel, layer: s.layer,
+                        wall: max(0, found.wall),
+                        position: approachPoint(s.a, s.b, o.a, o.b)
+                    ),
+                    severity: severity
+                )
+            }
+            return Issue(
+                netId: found.a.netId, netLabel: found.a.netLabel,
+                kind: .channelClearance(
+                    otherNetId: found.b.netId, otherNetLabel: found.b.netLabel,
+                    layer: found.a.layer, wall: max(0, found.wall),
+                    selfSegmentIndex: found.a.segmentIndex,
+                    otherSegmentIndex: found.b.segmentIndex
+                ),
+                severity: severity
+            )
+        }
+        // Dictionary order is arbitrary; sort so recomputes are stable.
+        return issues.sorted { $0.summary < $1.summary }
     }
 
-    private static func collectRouteEdges(in doc: CircuitDocument) -> [ChannelEdge] {
+    private static func collectRouteEdges(
+        in doc: CircuitDocument,
+        parentRouteCount: Int = .max,
+        labelOverrides: [UUID: String]? = nil
+    ) -> [ChannelEdge] {
         let labels = Dictionary(uniqueKeysWithValues: doc.logic.nets.map { ($0.id, $0.label) })
         var out: [ChannelEdge] = []
-        for route in doc.physical.routes {
-            let label = labels[route.netId] ?? "?"
+        for (routeIndex, route) in doc.physical.routes.enumerated() {
+            let label = labelOverrides?[route.netId] ?? labels[route.netId] ?? "?"
+            let fromSubpart = routeIndex >= parentRouteCount
             for (segIdx, seg) in route.segments.enumerated() {
                 let pts = seg.waypoints
                 guard pts.count >= 2 else { continue }
@@ -1194,7 +1451,8 @@ enum DRC {
                     out.append(ChannelEdge(
                         netId: route.netId, netLabel: label,
                         segmentIndex: segIdx, layer: seg.layer,
-                        a: pts[i].position, b: pts[i + 1].position
+                        a: pts[i].position, b: pts[i + 1].position,
+                        fromSubpart: fromSubpart
                     ))
                 }
             }
@@ -1320,60 +1578,74 @@ enum DRC {
     /// outlets share fluid anyway. One issue per (offending port, other net,
     /// layer); the channel pass runs first so a clash that's both a channel and
     /// that net's outlet reports once, as the channel.
-    private static func portBoreClearanceIssues(in doc: CircuitDocument) -> [Issue] {
-        let threshold = doc.manufacturing.minWallThickness
+    private static func portBoreClearanceIssues(
+        in doc: CircuitDocument,
+        labels labelOverrides: [UUID: String]? = nil
+    ) -> [Issue] {
+        let m = doc.manufacturing
+        let threshold = wallScanThreshold(m)
         guard threshold > 0 else { return [] }
         let bores = collectPortBores(in: doc)
         guard !bores.isEmpty else { return [] }
-        let channelRadius = doc.manufacturing.channelDiameter / 2
-        let routeEdges = collectRouteEdges(in: doc)
+        let channelRadius = m.channelDiameter / 2
+        let routeEdges = collectRouteEdges(in: doc, labelOverrides: labelOverrides)
 
         struct PairKey: Hashable { let port: UUID; let other: UUID; let layer: Layer }
-        var reported: Set<PairKey> = []
         var issues: [Issue] = []
 
-        // Outlet vs foreign routed channels.
+        // Outlet vs foreign routed channels. Worst wall per pair so the
+        // reported severity is the pair's true one.
+        var bestChannel: [PairKey: (bore: PortBore, edge: ChannelEdge, wall: Double)] = [:]
         for bore in bores {
             for edge in routeEdges where edge.layer == bore.layer && edge.netId != bore.netId {
                 let wall = segmentDistance(bore.a, bore.b, edge.a, edge.b) - (bore.radius + channelRadius)
-                guard wall < threshold,
-                      reported.insert(PairKey(port: bore.componentId, other: edge.netId, layer: bore.layer)).inserted
-                else { continue }
-                issues.append(Issue(
-                    netId: bore.netId, netLabel: bore.netLabel,
-                    kind: .portBoreClearance(
-                        portComponentId: bore.componentId, portLabel: bore.label,
-                        neighbor: .channel, otherComponentId: nil,
-                        otherNetId: edge.netId, otherLabel: edge.netLabel,
-                        layer: bore.layer, wall: max(0, wall),
-                        position: approachPoint(bore.a, bore.b, edge.a, edge.b)
-                    )
-                ))
+                guard wall < threshold else { continue }
+                let key = PairKey(port: bore.componentId, other: edge.netId, layer: bore.layer)
+                if let current = bestChannel[key], current.wall <= wall { continue }
+                bestChannel[key] = (bore, edge, wall)
             }
+        }
+        for found in bestChannel.values {
+            issues.append(Issue(
+                netId: found.bore.netId, netLabel: found.bore.netLabel,
+                kind: .portBoreClearance(
+                    portComponentId: found.bore.componentId, portLabel: found.bore.label,
+                    neighbor: .channel, otherComponentId: nil,
+                    otherNetId: found.edge.netId, otherLabel: found.edge.netLabel,
+                    layer: found.bore.layer, wall: max(0, found.wall),
+                    position: approachPoint(found.bore.a, found.bore.b, found.edge.a, found.edge.b)
+                ),
+                severity: wallSeverity(found.wall, m)
+            ))
         }
 
         // Outlet vs other outlets.
+        var bestOutlet: [PairKey: (a: PortBore, b: PortBore, wall: Double)] = [:]
         for i in 0..<bores.count {
             for j in (i + 1)..<bores.count {
                 let a = bores[i], b = bores[j]
                 guard a.netId != b.netId, a.layer == b.layer else { continue }
                 let wall = segmentDistance(a.a, a.b, b.a, b.b) - (a.radius + b.radius)
-                guard wall < threshold,
-                      reported.insert(PairKey(port: a.componentId, other: b.netId, layer: a.layer)).inserted
-                else { continue }
-                issues.append(Issue(
-                    netId: a.netId, netLabel: a.netLabel,
-                    kind: .portBoreClearance(
-                        portComponentId: a.componentId, portLabel: a.label,
-                        neighbor: .outlet, otherComponentId: b.componentId,
-                        otherNetId: b.netId, otherLabel: b.label,
-                        layer: a.layer, wall: max(0, wall),
-                        position: approachPoint(a.a, a.b, b.a, b.b)
-                    )
-                ))
+                guard wall < threshold else { continue }
+                let key = PairKey(port: a.componentId, other: b.netId, layer: a.layer)
+                if let current = bestOutlet[key], current.wall <= wall { continue }
+                bestOutlet[key] = (a, b, wall)
             }
         }
-        return issues
+        for found in bestOutlet.values {
+            issues.append(Issue(
+                netId: found.a.netId, netLabel: found.a.netLabel,
+                kind: .portBoreClearance(
+                    portComponentId: found.a.componentId, portLabel: found.a.label,
+                    neighbor: .outlet, otherComponentId: found.b.componentId,
+                    otherNetId: found.b.netId, otherLabel: found.b.label,
+                    layer: found.a.layer, wall: max(0, found.wall),
+                    position: approachPoint(found.a.a, found.a.b, found.b.a, found.b.b)
+                ),
+                severity: wallSeverity(found.wall, m)
+            ))
+        }
+        return issues.sorted { $0.summary < $1.summary }
     }
 
     // MARK: - Testing-point clearance
@@ -1387,9 +1659,12 @@ enum DRC {
     /// laterally-near depth-1 foreign channel on its way out) — it mirrors the
     /// depth-aware thin-wall bore branch. One issue per test point (its worst
     /// offence) keeps the sidebar from spamming.
-    private static func testPointClearanceIssues(in doc: CircuitDocument) -> [Issue] {
+    private static func testPointClearanceIssues(
+        in doc: CircuitDocument,
+        labels labelOverrides: [UUID: String]? = nil
+    ) -> [Issue] {
         let m = doc.manufacturing
-        let threshold = m.minWallThickness
+        let threshold = wallScanThreshold(m)
         guard threshold > 0, !doc.physical.testPoints.isEmpty else { return [] }
         let boreR = m.portBoreDiameter / 2
         let channelR = m.channelDiameter / 2
@@ -1412,7 +1687,7 @@ enum DRC {
         }
         guard !bores.isEmpty else { return [] }
 
-        let edges = collectRouteEdges(in: doc)
+        let edges = collectRouteEdges(in: doc, labelOverrides: labelOverrides)
         var issues: [Issue] = []
 
         // 1. Against foreign-net channels (Z-band aware).
@@ -1426,7 +1701,7 @@ enum DRC {
                 let centre = (dxy * dxy + dz * dz).squareRoot()
                 let wall = centre - channelR - boreR
                 if wall < threshold, worst == nil || wall < worst!.wall {
-                    worst = (max(0, wall), edge.layer, edge.netLabel)
+                    worst = (wall, edge.layer, edge.netLabel)
                 }
             }
             if let w = worst {
@@ -1435,8 +1710,9 @@ enum DRC {
                     kind: .testPointClearance(
                         testPointId: bore.tp.id, testPointName: bore.tp.name,
                         neighbor: .channel, otherLabel: w.otherLabel,
-                        layer: w.layer, wall: w.wall, position: bore.pos
-                    )
+                        layer: w.layer, wall: max(0, w.wall), position: bore.pos
+                    ),
+                    severity: wallSeverity(w.wall, m)
                 ))
             }
         }
@@ -1456,11 +1732,82 @@ enum DRC {
                         neighbor: .testPoint, otherLabel: b.tp.name,
                         layer: doc.physical.testPointLayer(a.tp),
                         wall: max(0, wall), position: a.pos
-                    )
+                    ),
+                    severity: wallSeverity(wall, m)
                 ))
             }
         }
         return issues
+    }
+
+    // MARK: - Sub-part pin drift
+
+    /// Flags hoisted sub-part transistor / LED pin bores that sit measurably
+    /// off-centre from the channel that plumbs them — the "constants drift"
+    /// case. The flatten computes pin positions with the PARENT's constants
+    /// (that is what `PlateBuilder` drills), but the sub-part's internal
+    /// routes were drawn against the library file's own constants; when the
+    /// two disagree (`padsOffset`, usually) every affected pad prints with
+    /// its drop bore offset from the channel end. Bore and channel still
+    /// fuse while the drift stays under a channel radius — the board works,
+    /// the aperture just shrinks — so nothing else reports it: the wall
+    /// checks treat the pair as same-net (correctly), and each file looks
+    /// perfect on its own.
+    ///
+    /// Same closest-route attribution as `collectBores`' `plumbedNet`, and
+    /// the same known approximation: a pin whose net is unrouted inside the
+    /// part can misattribute to a foreign channel passing within the merge
+    /// radius — that geometry is already flagged by the wall checks.
+    /// Warning severity: drifted pads print and work, they're just not what
+    /// the part's designer drew. One issue per (component, pin).
+    private static func subpartPinDriftIssues(
+        in doc: CircuitDocument,
+        parentComponentIds: Set<UUID>,
+        parentRouteCount: Int,
+        labels labelOverrides: [UUID: String]? = nil
+    ) -> [Issue] {
+        let m = doc.manufacturing
+        let channelRadius = m.channelDiameter / 2
+        /// Offsets below this are grid-snap / float noise, not drift.
+        let noiseFloor = 0.05
+        // Cheap skip for the no-sub-parts case (flat == parent doc).
+        guard doc.logic.components.contains(where: { !parentComponentIds.contains($0.id) })
+        else { return [] }
+        let edges = collectRouteEdges(in: doc, parentRouteCount: parentRouteCount,
+                                      labelOverrides: labelOverrides)
+        guard !edges.isEmpty else { return [] }
+
+        var issues: [Issue] = []
+        for placement in doc.physical.placements {
+            guard !parentComponentIds.contains(placement.componentId),
+                  let comp = doc.logic.components.first(where: { $0.id == placement.componentId }),
+                  comp.kind == .transistor || comp.kind == .led
+            else { continue }
+            let fp = comp.footprint(m, snapshots: doc.librarySnapshots)
+            for pin in fp.pins {
+                let pinLayer = placement.resolvedLayer(of: pin, on: comp)
+                let world = placement.worldPosition(of: pin)
+                var closest = Double.greatestFiniteMagnitude
+                var plumbed: ChannelEdge?
+                for e in edges where e.layer.plate == pinLayer.plate {
+                    let d = pointSegmentDistance(world, e.a, e.b)
+                    if d < closest { closest = d; plumbed = e }
+                }
+                // Beyond a channel radius nothing plumbs this pin — that's
+                // the wall checks' / connectivity's territory, not drift.
+                guard let channel = plumbed, closest > noiseFloor, closest < channelRadius
+                else { continue }
+                issues.append(Issue(
+                    netId: channel.netId, netLabel: channel.netLabel,
+                    kind: .subpartPinDrift(
+                        componentLabel: comp.label, pinKey: pin.key,
+                        drift: closest, layer: pinLayer, position: world
+                    ),
+                    severity: .warning
+                ))
+            }
+        }
+        return issues.sorted { $0.summary < $1.summary }
     }
 
     // MARK: - Cross-net electrical merge
@@ -1475,8 +1822,13 @@ enum DRC {
     /// Includes the via-vs-foreign-channel case implicitly: a `.via` waypoint
     /// at XY on layer L appears as a degenerate (length-0) edge at that XY,
     /// and `segmentDistance` reduces to point-to-segment for it.
-    private static func crossNetMergeIssues(in doc: CircuitDocument) -> [Issue] {
-        let (flat, labels) = doc.flattenedWithLabels()
+    ///
+    /// `flat`/`labels` are the shared flatten computed once in `check` (this
+    /// used to flatten internally; the minimiser calls `check` per trial, so
+    /// the flatten is shared across every flattened check now).
+    private static func crossNetMergeIssues(
+        flat: CircuitDocument, labels: [UUID: String]
+    ) -> [Issue] {
         let threshold = flat.manufacturing.channelDiameter
 
         struct E {
@@ -1618,23 +1970,37 @@ enum DRC {
 
     /// Walks every channel polyline edge and flags places where the printed
     /// wall between the channel and a nearby feature (outer face, another
-    /// channel, a vertical bore) is thinner than `minWallThickness`.
+    /// channel, a vertical bore) is thinner than `minWallThickness` (error)
+    /// or `preferredWallThickness` (warning).
     /// Shares the wall-thickness model with `channelClearance` (which owns the
     /// same-layer different-net channel case) but covers what that one can't:
     /// the outer face, vertical bores, and cross-layer channel pairs whose 3D
     /// wall is thin. `crossNetMerge` is the orthogonal electrical check —
     /// centre distance under `channelDiameter`, i.e. the tubes actually overlap.
     ///
-    /// Dedup is per `(netId, segmentIndex, neighbor)` so a long parallel
-    /// run reports one issue per neighbor category rather than per edge.
-    private static func thinWallIssues(in doc: CircuitDocument) -> [Issue] {
+    /// Runs on the flattened doc (`check` passes it in): findings among the
+    /// document's own geometry report as `.thinWall` exactly as before;
+    /// findings with a sub-part-internal side report as `.subpartWall`. The
+    /// board outline always comes from `parent` — a sub-part's own outline
+    /// isn't a printed face inside the parent, the parent's is.
+    ///
+    /// Dedup is per `(netId, segmentIndex, neighbor)` at the *worst* wall, so
+    /// a long parallel run reports one issue per neighbor category rather
+    /// than per edge — and a mixed warning/error run reports the error.
+    private static func thinWallIssues(
+        in doc: CircuitDocument,
+        parent: CircuitDocument? = nil,
+        parentRouteCount: Int = .max,
+        parentComponentIds: Set<UUID>? = nil,
+        labels labelOverrides: [UUID: String]? = nil
+    ) -> [Issue] {
         let m = doc.manufacturing
-        let threshold = m.minWallThickness
+        let threshold = wallScanThreshold(m)
         guard threshold > 0 else { return [] }
 
-        let labels = Dictionary(uniqueKeysWithValues: doc.logic.nets.map { ($0.id, $0.label) })
         let channelRadius = m.channelDiameter / 2
-        let edges = collectRouteEdges(in: doc)
+        let edges = collectRouteEdges(in: doc, parentRouteCount: parentRouteCount,
+                                      labelOverrides: labelOverrides)
         guard !edges.isEmpty else { return [] }
 
         // True outer-polygon edges: the rectangular `boardOutline` with each
@@ -1647,10 +2013,13 @@ enum DRC {
         // A design flagged as a reusable sub-component has no real outer face
         // (its outline is embedded inside a larger plate), so suppress the
         // board-edge wall check for it — an empty edge set turns the per-edge
-        // loop below into a no-op without a second code path. The flag is read
-        // off the top-level doc only; this never reaches a sub-part's internal
-        // routes, so a parent re-checks its own edges with its own flag.
-        let outlineEdges = (doc.skipEdgeWallDRC ?? false) ? [] : outerBoundaryEdges(in: doc)
+        // loop below into a no-op without a second code path. The flag (and
+        // the outline itself) is read off the parent doc, never a hoisted
+        // sub-part: a sub-part's own edge anchors mean nothing against the
+        // parent's outline.
+        let outlineDoc = parent ?? doc
+        let outlineEdges = (outlineDoc.skipEdgeWallDRC ?? false)
+            ? [] : outerBoundaryEdges(in: outlineDoc)
 
         // Bores carry the world-Z band they occupy so the wall check can tell
         // a real same-depth conflict from a buried channel passing safely over
@@ -1661,36 +2030,52 @@ enum DRC {
         // Port / vent / vacuum-source bores enter horizontally and
         // intentionally meet the outer face — `collectBores` never emits
         // them, so they can't produce false positives at every port.
-        let bores = collectBores(in: doc)
+        let bores = collectBores(in: doc, parentComponentIds: parentComponentIds,
+                                 parentRouteCount: parentRouteCount,
+                                 labelOverrides: labelOverrides)
 
         struct ReportKey: Hashable {
             let netId: UUID
+            /// Classic findings keep the per-segment granularity; sub-part
+            /// findings use -1 — their segments aren't user-visible, so two
+            /// rows differing only by segment would read as duplicates.
             let segmentIndex: Int
             let neighbor: ThinWallNeighbor
+            /// Sub-part findings dedup on who the other side is instead.
+            let otherNetId: UUID?
+            let otherLabel: String?
+            let layer: Layer?
         }
-        var reported: Set<ReportKey> = []
-        var issues: [Issue] = []
+        struct Candidate {
+            let edge: ChannelEdge
+            let neighbor: ThinWallNeighbor
+            let otherNetId: UUID?
+            let otherLabel: String?
+            let otherFromSubpart: Bool
+            let gap: Double
+            let position: Point
+        }
+        var best: [ReportKey: Candidate] = [:]
 
-        func emit(edge: ChannelEdge, neighbor: ThinWallNeighbor,
-                  gap: Double, position: Point) {
-            let key = ReportKey(
-                netId: edge.netId,
-                segmentIndex: edge.segmentIndex,
-                neighbor: neighbor
+        func record(edge: ChannelEdge, neighbor: ThinWallNeighbor,
+                    otherNetId: UUID? = nil, otherLabel: String? = nil,
+                    otherFromSubpart: Bool = false,
+                    gap: Double, position: Point) {
+            let subpartFinding = edge.fromSubpart || otherFromSubpart
+            let key = subpartFinding
+                ? ReportKey(netId: edge.netId, segmentIndex: -1, neighbor: neighbor,
+                            otherNetId: otherNetId, otherLabel: otherLabel,
+                            layer: edge.layer)
+                : ReportKey(netId: edge.netId, segmentIndex: edge.segmentIndex,
+                            neighbor: neighbor, otherNetId: nil, otherLabel: nil,
+                            layer: nil)
+            if let current = best[key], current.gap <= gap { return }
+            best[key] = Candidate(
+                edge: edge, neighbor: neighbor,
+                otherNetId: otherNetId, otherLabel: otherLabel,
+                otherFromSubpart: otherFromSubpart,
+                gap: gap, position: position
             )
-            if reported.contains(key) { return }
-            reported.insert(key)
-            let label = labels[edge.netId] ?? edge.netLabel
-            issues.append(Issue(
-                netId: edge.netId, netLabel: label,
-                kind: .thinWall(
-                    neighbor: neighbor,
-                    layer: edge.layer,
-                    gap: max(0, gap),
-                    segmentIndex: edge.segmentIndex,
-                    position: position
-                )
-            ))
         }
 
         for edge in edges {
@@ -1705,7 +2090,7 @@ enum DRC {
                     // Report position: approachPoint reads "near here" with
                     // enough fidelity for the canvas ping.
                     let pos = approachPoint(edge.a, edge.b, outlineE.a, outlineE.b)
-                    emit(edge: edge, neighbor: .outerFace, gap: wall, position: pos)
+                    record(edge: edge, neighbor: .outerFace, gap: wall, position: pos)
                 }
             }
 
@@ -1733,7 +2118,10 @@ enum DRC {
                 let wall = centre - 2 * channelRadius
                 if wall < threshold {
                     let pos = approachPoint(edge.a, edge.b, other.a, other.b)
-                    emit(edge: edge, neighbor: .channel, gap: wall, position: pos)
+                    record(edge: edge, neighbor: .channel,
+                           otherNetId: other.netId, otherLabel: other.netLabel,
+                           otherFromSubpart: other.fromSubpart,
+                           gap: wall, position: pos)
                 }
             }
 
@@ -1764,12 +2152,41 @@ enum DRC {
                 let centre = (dxy * dxy + dz * dz).squareRoot()
                 let wall = centre - channelRadius - bore.radius
                 if wall < threshold {
-                    emit(edge: edge, neighbor: .bore, gap: wall, position: bore.position)
+                    record(edge: edge, neighbor: .bore,
+                           otherNetId: bore.netId, otherLabel: bore.label,
+                           otherFromSubpart: bore.fromSubpart,
+                           gap: wall, position: bore.position)
                 }
             }
         }
 
-        return issues
+        let issues = best.values.map { c -> Issue in
+            let severity = wallSeverity(c.gap, m)
+            if c.edge.fromSubpart || c.otherFromSubpart {
+                return Issue(
+                    netId: c.edge.netId, netLabel: c.edge.netLabel,
+                    kind: .subpartWall(
+                        neighbor: c.neighbor, otherNetId: c.otherNetId,
+                        otherLabel: c.otherLabel, layer: c.edge.layer,
+                        wall: max(0, c.gap), position: c.position
+                    ),
+                    severity: severity
+                )
+            }
+            return Issue(
+                netId: c.edge.netId, netLabel: c.edge.netLabel,
+                kind: .thinWall(
+                    neighbor: c.neighbor,
+                    layer: c.edge.layer,
+                    gap: max(0, c.gap),
+                    segmentIndex: c.edge.segmentIndex,
+                    position: c.position
+                ),
+                severity: severity
+            )
+        }
+        // Dictionary order is arbitrary; sort so recomputes are stable.
+        return issues.sorted { $0.summary < $1.summary }
     }
 
     /// One segment of the printed plate's actual outer edge.

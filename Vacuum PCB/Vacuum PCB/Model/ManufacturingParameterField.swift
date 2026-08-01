@@ -98,6 +98,8 @@ struct ManufacturingParameterField: Identifiable {
                 \.minChannelSpacing),
         .number("minWallThickness", "Channels", "Min wall thickness (DRC)",
                 \.minWallThickness),
+        .number("preferredWallThickness", "Channels", "Preferred wall (warn below)",
+                \.preferredWallThickness),
         .flag("flatBottomChannels", "Channels", "Flat-bottom channels", \.flatBottomChannels),
         .number("testPointLabelSize", "Channels", "Test point label size",
                 \.testPointLabelSize),

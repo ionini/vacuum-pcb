@@ -573,6 +573,8 @@ func drcHistogram(_ issues: [DRC.Issue]) -> [(String, Int)] {
         case .stencilHole: key = "stencilHole"
         case .portBoreClearance(_, _, let n, _, _, _, _, _, _): key = "portBoreClearance(\(n.rawValue))"
         case .testPointClearance(_, _, let n, _, _, _, _): key = "testPointClearance(\(n.rawValue))"
+        case .subpartWall(let n, _, _, _, _, _): key = "subpartWall(\(n.rawValue))"
+        case .subpartPinDrift: key = "subpartPinDrift"
         }
         counts[key, default: 0] += 1
     }
@@ -1634,8 +1636,11 @@ do {
     case "check":
         let issues = DRC.check(doc)
         let rats = Ratsnest.missingEdges(doc)
-        print("DRC issues: \(issues.count)")
-        for issue in issues { print("  \(issue.summary)") }
+        let errors = issues.filter { $0.severity == .error }
+        let warnings = issues.filter { $0.severity == .warning }
+        print("DRC issues: \(issues.count) (\(errors.count) error(s), \(warnings.count) warning(s))")
+        for issue in errors { print("  ✗ \(issue.summary)") }
+        for issue in warnings { print("  ⚠ \(issue.summary)") }
         print("Ratsnest — still-unrouted connections: \(rats.count)")
         for e in rats {
             print(String(format: "  [%@] (%.2f,%.2f) %@ → (%.2f,%.2f) %@",
@@ -1751,12 +1756,13 @@ do {
         // physical proof. Brute-force by design.
         let settleCap = max(steps, 20000)
         var allPass = true
-        print("── connectivity (DRC + ratsnest, top-level) ──")
+        print("── connectivity (DRC + ratsnest, sub-parts flattened) ──")
         let conn = Validators.connectivity(doc)
-        print("  DRC issues: \(conn.drcIssues.count), unrouted: \(conn.unrouted)")
-        for issue in conn.drcIssues.prefix(40) { print("    \(issue.summary)") }
+        print("  DRC errors: \(conn.errors.count), warnings: \(conn.warnings.count), unrouted: \(conn.unrouted)")
+        for issue in conn.errors.prefix(40) { print("    ✗ \(issue.summary)") }
+        for issue in conn.warnings.prefix(40) { print("    ⚠ \(issue.summary)") }
         allPass = conn.pass && allPass
-        print("  \(conn.pass ? "✓ PASS" : "✗ FAIL")")
+        print("  \(conn.pass ? (conn.warnings.isEmpty ? "✓ PASS" : "⚠ PASS (with warnings)") : "✗ FAIL")")
         print("── self-containment (staleness) ──")
         let stale = Validators.staleness(doc, libDir: libDir)
         reportStaleness(stale, libDir: libDir, json: false)

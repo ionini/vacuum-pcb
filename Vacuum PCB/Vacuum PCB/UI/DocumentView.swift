@@ -1249,8 +1249,13 @@ private struct DRCSummarySection: View {
     @State private var unrouted: [RatsnestEdge] = []
 
     var body: some View {
-        // Nets carrying any problem — a DRC issue or an unrouted connection.
-        let problemNetIds = Set(issues.map(\.netId)).union(unrouted.map(\.netId))
+        // Nets carrying a hard problem — a DRC error or an unrouted
+        // connection. Warnings (walls under the preferred comfort wall but
+        // printable) get their own yellow section below so they neither
+        // repaint the header red nor hide behind a green tick.
+        let errors = issues.filter { $0.severity == .error }
+        let warnings = issues.filter { $0.severity == .warning }
+        let problemNetIds = Set(errors.map(\.netId)).union(unrouted.map(\.netId))
         let totalNets = circuit.logic.nets.count
         Group {
             if totalNets == 0 {
@@ -1263,7 +1268,7 @@ private struct DRCSummarySection: View {
                 Label("\(problemNetIds.count) of \(totalNets) nets have issues",
                       systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
-                ForEach(issues.prefix(6)) { issue in
+                ForEach(errors.prefix(6)) { issue in
                     Button {
                         onFocus(issue)
                     } label: {
@@ -1287,9 +1292,32 @@ private struct DRCSummarySection: View {
                         .multilineTextAlignment(.leading)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                let extra = max(0, issues.count - 6) + max(0, unrouted.count - 6)
+                let extra = max(0, errors.count - 6) + max(0, unrouted.count - 6)
                 if extra > 0 {
                     Text("… and \(extra) more")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            if !warnings.isEmpty {
+                Label("\(warnings.count) warning\(warnings.count == 1 ? "" : "s")",
+                      systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.yellow)
+                ForEach(warnings.prefix(4)) { issue in
+                    Button {
+                        onFocus(issue)
+                    } label: {
+                        Text(issue.summary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                }
+                if warnings.count > 4 {
+                    Text("… and \(warnings.count - 4) more")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }

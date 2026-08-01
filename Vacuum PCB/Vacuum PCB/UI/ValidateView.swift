@@ -214,12 +214,22 @@ final class ValidationModel {
     private typealias Report = Validators.Report
 
     private static func connectivityReport(_ c: Validators.ConnResult) -> Report {
+        let warnings = c.warnings
         if c.pass {
-            return Report(id: titles[0], title: titles[0], status: .pass,
-                          detail: ["All nets routed, no DRC issues (top level)."])
+            if warnings.isEmpty {
+                return Report(id: titles[0], title: titles[0], status: .pass,
+                              detail: ["All nets routed, no DRC issues (sub-parts included)."])
+            }
+            // Printable, but flagged (thin-but-legal wall, drifted sub-part
+            // pad) — a yellow gate so warnings can't hide behind a green tick.
+            var d = ["All nets routed, no DRC errors — \(warnings.count) warning(s):"]
+            d += warnings.prefix(6).map { "• \($0.summary)" }
+            return Report(id: titles[0], title: titles[0], status: .warn, detail: d)
         }
-        var d = ["DRC issues: \(c.drcIssues.count)", "Unrouted nets: \(c.unrouted)"]
-        d += c.drcIssues.prefix(6).map { "• \($0.summary)" }
+        let errors = c.errors
+        var d = ["DRC errors: \(errors.count)", "Unrouted nets: \(c.unrouted)"]
+        if !warnings.isEmpty { d.append("Warnings: \(warnings.count)") }
+        d += errors.prefix(6).map { "• \($0.summary)" }
         return Report(id: titles[0], title: titles[0], status: .fail, detail: d)
     }
 

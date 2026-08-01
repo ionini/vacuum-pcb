@@ -92,6 +92,10 @@ struct ManufacturingSettingsView: View {
                 row("Port bore taper (°)", $draftMfg.portBoreTaperDegrees)
                 row("Min channel spacing (routing)", $draftMfg.minChannelSpacing)
                 row("Min wall thickness (DRC)", $draftMfg.minWallThickness)
+                row("Preferred wall (warn below)", $draftMfg.preferredWallThickness)
+                Text("Min wall is the hard DRC limit — a thinner printed wall is expected to break through (error). Preferred wall is a softer bar: walls between the two report as yellow warnings. Set 0 to turn the warning tier off. Both are edge-to-edge and are also enforced inside placed sub-parts, using this board's constants.")
+                    .font(.caption2).foregroundStyle(.secondary)
+                spacingGuards
                 Text("Port bore diameter is the narrow (route-side) end. The bore tapers outward at the given draft angle so it widens toward the board edge — 0° gives a straight cylinder.")
                     .font(.caption2).foregroundStyle(.secondary)
                 // Purely a 3D/print property (no effect on the 2D layout/DRC), so
@@ -283,6 +287,54 @@ struct ManufacturingSettingsView: View {
             || (scope == .full
                 && draftBoard != document.circuit.physical.boardOutline.size)
             || draftSkipEdgeWall != (document.circuit.skipEdgeWallDRC ?? false)
+    }
+
+    // MARK: - Consistency guards
+
+    /// Live warnings on the draft values that keep the two spacing knobs
+    /// coherent. `minChannelSpacing` is centre-to-centre (the auto-router's
+    /// keep-out); the DRC walls are edge-to-edge — so the router only
+    /// produces DRC-clean layouts when
+    /// `spacing ≥ channelDiameter + minWallThickness`. Soft warnings with a
+    /// one-tap fix, never a silent rewrite of the stored values.
+    @ViewBuilder private var spacingGuards: some View {
+        let errorFloor = draftMfg.channelDiameter + draftMfg.minWallThickness
+        let warnFloor = draftMfg.channelDiameter + draftMfg.preferredWallThickness
+        if draftMfg.minChannelSpacing < errorFloor {
+            guardRow(
+                String(format: "Routing spacing %.2f mm is centre-to-centre — below channel diameter + min wall (%.2f mm) the auto-router will produce layouts that fail DRC.",
+                       draftMfg.minChannelSpacing, errorFloor),
+                fixTitle: String(format: "Set spacing to %.2f mm", errorFloor)
+            ) { draftMfg.minChannelSpacing = errorFloor }
+        } else if draftMfg.preferredWallThickness > 0,
+                  draftMfg.minChannelSpacing < warnFloor {
+            guardRow(
+                String(format: "Routing spacing %.2f mm satisfies the min wall but not the preferred wall — auto-routes will draw wall warnings. %.2f mm clears both.",
+                       draftMfg.minChannelSpacing, warnFloor),
+                fixTitle: String(format: "Set spacing to %.2f mm", warnFloor)
+            ) { draftMfg.minChannelSpacing = warnFloor }
+        }
+        if draftMfg.interLayerWall < draftMfg.minWallThickness {
+            guardRow(
+                String(format: "Inter-layer wall %.2f mm is below the min wall %.2f mm — every stacked-layer channel pair fails DRC by construction.",
+                       draftMfg.interLayerWall, draftMfg.minWallThickness),
+                fixTitle: String(format: "Set inter-layer wall to %.2f mm", draftMfg.minWallThickness)
+            ) { draftMfg.interLayerWall = draftMfg.minWallThickness }
+        }
+    }
+
+    private func guardRow(
+        _ message: String, fixTitle: String, fix: @escaping () -> Void
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .font(.caption2)
+                .foregroundStyle(.orange)
+            Button(fixTitle, action: fix)
+                .font(.caption2)
+                .buttonStyle(.borderless)
+        }
+        .padding(.vertical, 2)
     }
 
     private func apply() {

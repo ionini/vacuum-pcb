@@ -98,6 +98,7 @@ struct ManufacturingClipboardTests {
         incoming.castingMargin += 1
         incoming.moldWallThickness += 1
         incoming.minWallThickness += 0.1
+        incoming.preferredWallThickness += 0.1
         incoming.flatBottomChannels.toggle()
         incoming.modifierMarginXY += 0.5
         incoming.modifierMarginZ += 0.2
