@@ -575,6 +575,7 @@ func drcHistogram(_ issues: [DRC.Issue]) -> [(String, Int)] {
         case .testPointClearance(_, _, let n, _, _, _, _): key = "testPointClearance(\(n.rawValue))"
         case .subpartWall(let n, _, _, _, _, _): key = "subpartWall(\(n.rawValue))"
         case .subpartPinDrift: key = "subpartPinDrift"
+        case .sealedCavity: key = "sealedCavity"
         }
         counts[key, default: 0] += 1
     }

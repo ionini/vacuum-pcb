@@ -285,6 +285,22 @@ enum DRC {
                 layer: Layer,
                 position: Point
             )
+
+            /// A piece of this net's printed channel network forms its own
+            /// sealed cavity: no channel, same-plate via, resistor or
+            /// cross-silicone bridge joins it to the rest of the net, and it
+            /// has no opening of its own (port / vent / source / connector
+            /// bore, testing point). Whatever taps into the fragment is cut
+            /// off on the printed board. The classic cause is a route drawn
+            /// against a sub-part pin that later moved: the endpoint still
+            /// sits inside the ratsnest snap tolerance (a dimple radius), so
+            /// connectivity reads green, but the print only heals gaps up to
+            /// a channel diameter — the channel dead-ends short of the bore.
+            case sealedCavity(
+                refs: [String],   // hole refs inside the fragment, worst first
+                layer: Layer,
+                position: Point   // first hole — where to ping
+            )
         }
 
         var summary: String {
@@ -365,6 +381,12 @@ enum DRC {
                     : "routed with different constants — check padsOffset"
                 return "\(componentLabel) pin \(pinKey) bore \(String(format: "%.2f", drift)) mm "
                     + "off its channel on \(layer.uiLabel) (\(cause))"
+            case let .sealedCavity(refs, layer, pos):
+                let shown = refs.prefix(3).joined(separator: ", ")
+                let more = refs.count > 3 ? " +\(refs.count - 3) more" : ""
+                return "\(netLabel): \(shown)\(more) print as a sealed cavity on \(layer.uiLabel) "
+                    + "near (\(String(format: "%.1f", pos.x)), \(String(format: "%.1f", pos.y))) — "
+                    + "no channel reaches the rest of the net"
             }
         }
     }
@@ -459,6 +481,14 @@ enum DRC {
             // Select the offending testing point so the user can drag it along
             // its rail (or press F) to clear the wall.
             return .testPoint(testPointId)
+        case let .sealedCavity(refs, _, _):
+            // The fragment's holes name the components it strands (hoisted
+            // refs like "U2.Q3.a" select the sub-part instance; a bare ref is
+            // one of this document's own components). Add the net's own pins
+            // so a parent-level net highlights its endpoints too.
+            var sides: [(netId: UUID?, label: String)] = [(issue.netId, issue.netLabel)]
+            sides.append(contentsOf: refs.map { (nil, $0) })
+            return flattenedSidesSelection(sides, in: document)
         }
     }
 
@@ -541,6 +571,8 @@ enum DRC {
             return (pos, layer)
         case let .subpartPinDrift(_, _, _, layer, pos):
             return (pos, layer)
+        case let .sealedCavity(_, layer, pos):
+            return (pos, layer)
         case .unplacedPin, .noRouteDrawn, .matingIncompatible, .matingDoubleBooked:
             return nil
         }
@@ -584,6 +616,9 @@ enum DRC {
         issues.append(contentsOf: testPointClearanceIssues(in: geoDoc, labels: geoLabels))
         issues.append(contentsOf: pinDriftIssues(
             in: geoDoc, parentRouteCount: parentRouteCount, labels: geoLabels))
+        if useFlat {
+            issues.append(contentsOf: sealedCavityIssues(in: document))
+        }
         return issues
     }
 
@@ -1829,6 +1864,110 @@ enum DRC {
                         drift: closest, layer: pinLayer, position: world
                     ),
                     severity: .warning
+                ))
+            }
+        }
+        return issues.sorted { $0.summary < $1.summary }
+    }
+
+    // MARK: - Sealed print fragments
+
+    /// Flags nets whose *printed* channel network splits into pieces the
+    /// board can never join. The physical-volume decomposition applies the
+    /// same connectivity the plates print with (`PlateBuilder`'s waypoint
+    /// extension, bore-overlap healing up to one channel diameter, via
+    /// pairing, resistor serpentines); this pass groups its cavities per
+    /// net, joins a net's top/bottom cavities through cross-silicone bridge
+    /// pairs, and reports every remaining fragment that has no external
+    /// opening (port / vent / source / connector bore, testing point).
+    ///
+    /// This is the check `checkNet`'s union-find cannot do: its pin-snap
+    /// tolerance is a dimple radius (2.5 mm+), wide enough to forgive a
+    /// route that dead-ends short of a sub-part boundary pin — but the
+    /// print only heals gaps up to one channel diameter, and a flattened
+    /// board drops boundary pins entirely, so nothing extends the channel
+    /// and the bore prints sealed (the Incrementor 4bit n16/n24 case: two
+    /// vent taps orphaned 2 mm from their manifold, every check green).
+    /// Fragments that do open to the outside are the tube-mated pattern
+    /// (connector-joined assemblies) and stay exempt; fully unrouted nets
+    /// are `noRouteDrawn`'s territory and stay quiet here.
+    private static func sealedCavityIssues(in document: CircuitDocument) -> [Issue] {
+        // The *simulation* flatten, not the CAD one `check` already holds:
+        // physicalVolumes walks `logic.nets` for pin bores, and only the
+        // simulation flatten rebuilds the netlist for hoisted internals
+        // (the CAD flatten keeps the parent's nets, whose pins reference
+        // the dropped sub-part placements). Net labels come pre-prefixed
+        // ("U1.U2.n3") on the flattened nets themselves.
+        let flat = document.flattenedForSimulation().document
+        let labels = Dictionary(flat.logic.nets.map { ($0.id, $0.label) },
+                                uniquingKeysWith: { a, _ in a })
+        let routedNets = Set(flat.physical.routes.map(\.netId))
+        guard !routedNets.isEmpty else { return [] }
+        let volumes = physicalVolumes(flat)
+        guard volumes.count > 1 else { return [] }
+        let eps = 0.05
+
+        // Union cavities joined by a cross-silicone bridge: a through-hole
+        // present at the same XY on both plates mates when assembled.
+        var parent = Array(0..<volumes.count)
+        func find(_ x: Int) -> Int {
+            var c = x
+            while parent[c] != c { parent[c] = parent[parent[c]]; c = parent[c] }
+            return c
+        }
+        func union(_ a: Int, _ b: Int) {
+            let ra = find(a), rb = find(b)
+            if ra != rb { parent[ra] = rb }
+        }
+        let bridges: [(vol: Int, pos: Point)] = volumes.indices.flatMap { i in
+            volumes[i].holes.filter(\.isBridge).map { (i, $0.pos) }
+        }
+        for i in 0..<bridges.count {
+            for j in (i + 1)..<bridges.count
+            where volumes[bridges[i].vol].plate != volumes[bridges[j].vol].plate {
+                if abs(bridges[i].pos.x - bridges[j].pos.x) < eps,
+                   abs(bridges[i].pos.y - bridges[j].pos.y) < eps {
+                    union(bridges[i].vol, bridges[j].vol)
+                }
+            }
+        }
+
+        // A cavity the bench (or a mating tube) can reach from outside the
+        // plate. Every edge-bore feature name contains "edge"; a testing
+        // point bores out to the plate face.
+        func isExternal(_ v: Volume) -> Bool {
+            !v.testPoints.isEmpty || v.holes.contains { $0.feature.contains("edge") }
+        }
+
+        var volsByNet: [UUID: Set<Int>] = [:]
+        for i in volumes.indices {
+            for n in volumes[i].nets where routedNets.contains(n) {
+                volsByNet[n, default: []].insert(i)
+            }
+        }
+
+        var issues: [Issue] = []
+        var reported: Set<String> = []   // fragment ids — resistor-merged fragments carry several nets
+        for (netId, vols) in volsByNet {
+            var pieces: [Int: [Int]] = [:]
+            for i in vols { pieces[find(i), default: []].append(i) }
+            guard pieces.count > 1 else { continue }
+            func external(_ piece: [Int]) -> Bool { piece.contains { isExternal(volumes[$0]) } }
+            func holeCount(_ piece: [Int]) -> Int { piece.reduce(0) { $0 + volumes[$1].holes.count } }
+            // Reference piece — an externally reachable one if any, else the
+            // biggest: the "rest of the net" the fragments are cut off from.
+            let ranked = pieces.values.sorted {
+                (external($0) ? 1 : 0, holeCount($0)) > (external($1) ? 1 : 0, holeCount($1))
+            }
+            for piece in ranked.dropFirst() where !external(piece) {
+                let fragmentId = piece.map { volumes[$0].id }.sorted().joined(separator: "+")
+                guard reported.insert(fragmentId).inserted else { continue }
+                let holes = piece.flatMap { volumes[$0].holes }
+                guard let first = holes.first else { continue }
+                issues.append(Issue(
+                    netId: netId, netLabel: labels[netId] ?? "?",
+                    kind: .sealedCavity(
+                        refs: holes.map(\.ref), layer: first.layer, position: first.pos)
                 ))
             }
         }

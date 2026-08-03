@@ -15,10 +15,15 @@ import Foundation
 //   • a net crossing both plates → two (or more) volumes, one per plate,
 //     joined only at the through-holes — which aren't connected yet.
 //
-// Connectivity mirrors `Ratsnest`/`PlateBuilder` exactly so it matches what
-// actually prints: a route segment's waypoints are extended to snap to nearby
-// pins on the same layer (a route reaches a pad through its bore, not at an
-// exact point), and a via joins layers only where ≥2 meet. The one departure:
+// Connectivity mirrors `PlateBuilder` exactly so it matches what actually
+// prints: a route segment's waypoints are extended to snap to nearby
+// transistor source/drain pins on the same layer (the only pins the CAD
+// pipeline extends channels toward — `collectPinPositions`), any two same-net
+// bores within one channel diameter fuse (overlapping voids in CSG), and a
+// via joins layers only where ≥2 meet. Note this is deliberately *stricter*
+// than `Ratsnest`/DRC's logical union-find, whose pin-snap tolerance is a
+// dimple radius: a route can pass ratsnest yet print short — that split is
+// exactly what DRC's sealed-cavity pass reads off these volumes. The one departure:
 // a via that spans both plates is a cross-silicone through-hole — we do NOT
 // join the plates through it, so each plate's cavities stand alone. It instead
 // surfaces as a "bridge" hole on each plate.
@@ -128,6 +133,10 @@ struct Volume: Identifiable, Hashable {
     var id: String
     var plate: Plate
     var netLabel: String
+    /// Every net with any geometry in this cavity (≥2 when a resistor joins
+    /// nets into one open volume). Lets per-net checks (DRC's sealed-cavity
+    /// pass) map a net to the set of cavities it actually prints as.
+    var nets: Set<UUID>
     var holes: [VolumeHole]
     /// Geometry that makes up this cavity (for building its 3D highlight mesh).
     var segments: [VolumeSegment]
@@ -194,7 +203,16 @@ func physicalVolumes(_ doc: CircuitDocument) -> [Volume] {
             placedPins.append(PlacedPin(ref: "\(comp.label).\(pinName)",
                                         feature: continuityFeature(comp, pinKey: pinRef.pinKey),
                                         layer: layer, pos: pos, pinRef: pinRef))
-            pinsByLayer[layer, default: []].append(pos)
+            // Channel-end extension targets — transistor source/drain pads
+            // ONLY, mirroring `PlateBuilder.collectPinPositions`: the printed
+            // channel is extended toward a drifted pad bore, but never toward
+            // a port / vent / source pin. Every other junction has to earn
+            // its connectivity from real bore overlap (the channel-diameter
+            // heal below), or the model would call cavities joined that the
+            // print leaves 2 mm apart (the Incrementor 4bit vent-tap case).
+            if comp.kind == .transistor, pinRef.pinKey == "a" || pinRef.pinKey == "b" {
+                pinsByLayer[layer, default: []].append(pos)
+            }
         }
         for pin in placedPins {
             let n = nodeIndex(net.id, pin.layer, pin.pos)
@@ -371,13 +389,23 @@ func physicalVolumes(_ doc: CircuitDocument) -> [Volume] {
     var resByRoot: [Int: [VolumeResistor]] = [:]
     var featuresByRoot: [Int: [VolumeFeature]] = [:]
     var netsByRoot: [Int: Set<String>] = [:]
+    var netIdsByRoot: [Int: Set<UUID>] = [:]
     for ph in pendingHoles {
         let root = find(ph.node)
         holesByRoot[root, default: []].append(ph.hole)
         netsByRoot[root, default: []].insert(netLabelById[nodes[ph.node].net] ?? "?")
+        netIdsByRoot[root, default: []].insert(nodes[ph.node].net)
     }
-    for ps in pendingSegs { segsByRoot[find(ps.node), default: []].append(ps.seg) }
-    for pv in pendingVias { viasByRoot[find(pv.node), default: []].append(pv.via) }
+    for ps in pendingSegs {
+        let root = find(ps.node)
+        segsByRoot[root, default: []].append(ps.seg)
+        netIdsByRoot[root, default: []].insert(ps.seg.net)
+    }
+    for pv in pendingVias {
+        let root = find(pv.node)
+        viasByRoot[root, default: []].append(pv.via)
+        netIdsByRoot[root, default: []].insert(pv.via.net)
+    }
     for pr in pendingResistors { resByRoot[find(pr.node), default: []].append(pr.res) }
     for pf in pendingFeatures { featuresByRoot[find(pf.node), default: []].append(pf.feature) }
     var tpsByRoot: [Int: [VolumeTestPoint]] = [:]
@@ -385,7 +413,7 @@ func physicalVolumes(_ doc: CircuitDocument) -> [Volume] {
 
     // Built without ids; ids are assigned after the final sort below.
     struct RawVolume {
-        var plate: Plate; var netLabel: String; var holes: [VolumeHole]
+        var plate: Plate; var netLabel: String; var nets: Set<UUID>; var holes: [VolumeHole]
         var segments: [VolumeSegment]; var resistors: [VolumeResistor]; var vias: [VolumeVia]
         var features: [VolumeFeature]; var testPoints: [VolumeTestPoint]
     }
@@ -403,7 +431,8 @@ func physicalVolumes(_ doc: CircuitDocument) -> [Volume] {
         case 1, 2: label = labels.joined(separator: " / ")
         default:   label = "\(labels.prefix(2).joined(separator: " / ")) +\(labels.count - 2)"
         }
-        raw.append(RawVolume(plate: plate, netLabel: label, holes: sortedHoles,
+        raw.append(RawVolume(plate: plate, netLabel: label, nets: netIdsByRoot[root] ?? [],
+                             holes: sortedHoles,
                              segments: segsByRoot[root] ?? [],
                              resistors: resByRoot[root] ?? [],
                              vias: viasByRoot[root] ?? [],
@@ -423,7 +452,7 @@ func physicalVolumes(_ doc: CircuitDocument) -> [Volume] {
     return sorted.map { r in
         let id: String
         if r.plate == .top { topN += 1; id = "T\(topN)" } else { bottomN += 1; id = "B\(bottomN)" }
-        return Volume(id: id, plate: r.plate, netLabel: r.netLabel, holes: r.holes,
+        return Volume(id: id, plate: r.plate, netLabel: r.netLabel, nets: r.nets, holes: r.holes,
                       segments: r.segments, resistors: r.resistors, vias: r.vias,
                       features: r.features, testPoints: r.testPoints)
     }
