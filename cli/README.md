@@ -57,7 +57,7 @@ BIN=.build/debug/vacuum-cli
 | `--all-nets` | Also print every net's pressure. |
 | `--phase "SETS[@CAP]"` | Run a **stateful sequence**, carrying latch/register state across phases. `SETS` is comma-separated `LABEL=VALUE` (sticky — unnamed inputs hold). Each phase runs until it settles or hits `CAP` steps (default 20000), then prints its probes. Repeatable; runs in order. Overrides `--set`. |
 | `--epsilon N` | Settle threshold for `--phase` (default 1e-5). |
-| `--param NAME=VALUE` | Override a `SimulationParameters` field. Repeatable. Names: `resistance`, `flow`, `pumpMax`, `onConductance`, `offConductance`, `gateThreshold`, `gateHysteresis`, `capacitance`, `busDrive`, `droop`, `leak`, `dt`. |
+| `--param NAME=VALUE` | Override a `SimulationParameters` field. Repeatable. Names: `resistance`, `flow`, `pumpMax`, `onConductance`, `offConductance`, `gateThreshold`, `gateHysteresis`, `capacitance`, `channelCapacitancePerMm`, `busDrive`, `droop`, `leak`, `channelR`, `internalLeak`, `dt`. |
 | `--json` | Machine-readable output — parse this for exact assertions. |
 
 ### Sequential designs (`--phase`)
@@ -92,9 +92,9 @@ has been released loses its bit faster the higher the leak, and a refresh
   --phase "WRITE=vac,B0=vac,B1=vac,B2=vac,B3=vac"
 ```
 
-A stored 1 reads back as deep vacuum and a stored 0 as atmosphere; bumping
-`resistance` and `flow` above their defaults sharpens that separation on
-bus/latch designs.
+A stored 1 reads back as deep vacuum and a stored 0 as atmosphere; lowering
+`resistance` and raising `flow` from their defaults (as the example above
+does) sharpens that separation on bus/latch designs.
 
 ### Supply budget (`flows`)
 
@@ -145,11 +145,16 @@ settled state (e.g. a register in hold).
 BIN=.build/debug/vacuum-cli
 EX="Vacuum PCB/Vacuum PCB/Examples/inverter.vpcb"
 
-"$BIN" simulate "$EX" --steps 5000 --set IN=atm --probe OUT   # OUT ≈ 0.10 (low)
-"$BIN" simulate "$EX" --steps 5000 --set IN=vac --probe OUT   # OUT ≈ 0.94 (high)
+"$BIN" simulate "$EX" --steps 5000 --set IN=atm --probe OUT   # OUT ≈ 0.66 (low)
+"$BIN" simulate "$EX" --steps 5000 --set IN=vac --probe OUT   # OUT ≈ 0.98 (high)
 ```
 
-`IN` high (atmosphere) → `OUT` low (vacuum), and vice versa: it inverts. With a
+`IN` high (atmosphere) → `OUT` low (vacuum), and vice versa: it inverts. Low
+is ≈ −0.34 atm, not a textbook 0.1 — the defaults are bench-calibrated (pump
+floor 0.4, real supply and seal losses), so margins read like the printed
+board's; it's still far past the 0.87 gate-on point. The low case also has a
+slow settle tail (leak vs pump is a slow equilibrium — it creeps a few
+hundredths deeper over the next ~15k steps). With a
 weaker pump default the gate can't switch and both cases read the same — which
 is itself a useful thing for the tool to reveal.
 
@@ -285,9 +290,12 @@ a dense board is routable at all.
   exact R ∝ length scaling) subdivides routed nets so channels drop
   pressure under flow — supply-run starvation, bus-leg sag and mid-channel
   test-point readings are visible by default. The external pump tube is
-  modelled by `flow` (default 0.09, board-fitted; a bare-tube divider
-  measures ≈ 0.13 — open gap), not `channelR` (it isn't a route).
-  `onConductance` (default 0.42, bench-fitted from the readback ladder)
+  modelled by `flow` (default 0.13, the bare-tube divider measured
+  directly; the old 0.09 board-fit's extra restriction turned out to be
+  clamp-dependent interface leak, which now lives in `leak`, default
+  0.013), not `channelR` (it isn't a route).
+  `onConductance` (default 1.0, the deep-gate value from the
+  single-transistor divider rig; the earlier 0.42 was a shallow-gate fit)
   makes open transistors realistically restrictive. For the old idealised
   solve:
   `--param flow=30 --param channelR=0 --param onConductance=5

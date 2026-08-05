@@ -73,21 +73,30 @@ BIN=.build/debug/vacuum-cli
   blank all-atm state, so it *cannot* show held memory — use `--phase` for that.
 - `--param NAME=VALUE`  Override a `SimulationParameters` field. Repeatable.
   Names: `resistance`, `flow`, `pumpMax`, `onConductance`, `offConductance`,
-  `gateThreshold`, `gateHysteresis`, `capacitance`, `busDrive`, `droop`,
-  `leak`, `channelR`, `internalLeak`, `dt`.
+  `gateThreshold`, `gateHysteresis`, `capacitance`, `channelCapacitancePerMm`,
+  `busDrive`, `droop`, `leak`, `channelR`, `internalLeak`, `dt`.
   Defaults are bench-calibrated (Jul 2026): `gateThreshold` 0.9 (membranes
-  actuate at ≈ −0.1 atm), `gateHysteresis` 0.03, `onConductance` 0.42 (an
-  open membrane is barely stronger than an S resistor — fitted from the
-  bus-readback ladder's 0.05 atm leg drop; `busDrive` matches it),
-  `resistance` 0.45, `pumpMax` 0.4 (the bench pump measured directly:
-  −0.6 atm; the weaker bench pump is 0.7), `flow` 0.09 (the pump edge
-  doubles as the *external supply line* — the bench tube; it isn't a
-  route, so `channelR` can't see it; board-fitted — a bare-tube divider
-  measures ≈ 0.13, the gap is an open question), `channelR` 0.006
+  actuate at ≈ −0.1 atm), `gateHysteresis` 0.03, `onConductance` 1.0 (the
+  deep-gate value, measured 2026-07-14 on the single-transistor divider
+  rig — real membrane conductance rises with gate depth; the earlier 0.42
+  was a shallow-gate fit from the bus-readback ladder, and `busDrive`
+  still sits at 0.42), `resistance` 1.5 (the standard resistor at the
+  current 0.35 mm bore, board-calibrated Jul 17–18 2026; boards printed
+  at the older ~0.5 mm bore match their bench at ≈ 0.45), `pumpMax` 0.4
+  (the bench pump measured directly: −0.6 atm; the weaker bench pump is
+  0.7), `flow` 0.13 (the pump edge doubles as the *external supply line*
+  — the bench tube; it isn't a route, so `channelR` can't see it; 0.13 is
+  the bare-tube divider measured directly — the Jul 13 2026 inverter-board
+  experiment showed the old 0.09 board-fit's extra restriction was
+  clamp-dependent interface leak, which belongs in `leak`, so lower `flow`
+  only to model a loose build), `channelR` 0.006
   (coupon-measured: 40/80 mm dividers, exact R ∝ length; routed nets
   subdivide into channel nodes: supply
   runs, bus legs and vent runs drop pressure under flow, and probes/test
-  points read their actual tap position), `leak` 0.025. So a default run
+  points read their actual tap position), `leak` 0.013 (fitted to the
+  well-clamped single-cell inverter board's −0.32 atm hold anchor; raise
+  toward 0.025+ for a poorly-clamped board that bleeds its rails). So a
+  default run
   reproduces the bench: rails sag under static pull-up draw, recover as the
   draw changes, and logic margins are as thin as the printed board's.
   For the old idealised digital behaviour use
