@@ -68,9 +68,17 @@ BIN=.build/debug/vacuum-cli
   registers, latches): write a value in one phase, release, then read it back in
   a later phase. `SETS` is comma-separated `LABEL=VALUE`; drives are **sticky**
   (unnamed inputs hold their previous value). Each phase runs until it settles
-  (or hits `CAP` steps, default 20000) and prints its probes. Repeatable; phases
+  (or hits `CAP` steps, default 100000) and prints its probes. Repeatable; phases
   run in order. Overrides `--set`. A plain `--steps` run always re-seeds from a
   blank all-atm state, so it *cannot* show held memory — use `--phase` for that.
+  Settled `--phase` values are the authoritative readings (settling = largest
+  per-net movement over a 100-step window under `--epsilon`; fixed `--steps` is
+  for step-budgeted regression diffs). **Bound hold phases explicitly**
+  (`…,B0=nan@10000` = hold 100 sim-seconds): with the default leak an
+  unrefreshed cell's only settled state is "forgotten", so an uncapped hold
+  phase runs to the cap and the read-back comes up empty — a leaky register's
+  real guarantee is "readable after N seconds", and `@CAP` is how you say N. A
+  hold phase reporting `did NOT settle` is expected (it's a timed wait).
 - `--param NAME=VALUE`  Override a `SimulationParameters` field. Repeatable.
   Names: `resistance`, `flow`, `pumpMax`, `onConductance`, `offConductance`,
   `gateThreshold`, `gateHysteresis`, `capacitance`, `channelCapacitancePerMm`,
@@ -80,7 +88,8 @@ BIN=.build/debug/vacuum-cli
   deep-gate value, measured 2026-07-14 on the single-transistor divider
   rig — real membrane conductance rises with gate depth; the earlier 0.42
   was a shallow-gate fit from the bus-readback ladder, and `busDrive`
-  still sits at 0.42), `resistance` 1.5 (the standard resistor at the
+  deliberately keeps that 0.42: an external drive arrives through socket
+  + tube, which has no deep-gated membrane), `resistance` 1.5 (the standard resistor at the
   current 0.35 mm bore, board-calibrated Jul 17–18 2026; boards printed
   at the older ~0.5 mm bore match their bench at ≈ 0.45), `pumpMax` 0.4
   (the bench pump measured directly: −0.6 atm; the weaker bench pump is
@@ -103,7 +112,9 @@ BIN=.build/debug/vacuum-cli
   `--param flow=30 --param channelR=0 --param onConductance=5
   --param resistance=0.3` (ideal manifold, lossless channels, perfect
   valves); `--param leak=0` seals the board perfectly.
-- `--epsilon N`  Settle threshold for `--phase` (default 1e-5).
+- `--epsilon N`  Settle threshold for `--phase` (default 1e-5): largest
+  per-net movement across a 100-step window (one sim-second), not per-step —
+  per-step deltas under-report slow leak↔pump tails.
 - `--json`      Machine-readable output — parse this when asserting exact values.
 
 Example — validate a 4-bit register stores and reads back:
@@ -111,7 +122,7 @@ Example — validate a 4-bit register stores and reads back:
 ```sh
 "$BIN" simulate reg.vpcb \
   --phase "WRITE=atm,READ=vac,B0=vac,B1=vac,B2=vac,B3=vac" \  # write 1111
-  --phase "READ=atm,B0=atm,B1=atm,B2=atm,B3=atm" \            # release/hold
+  --phase "READ=atm,B0=atm,B1=atm,B2=atm,B3=atm@10000" \      # release/hold 100 s
   --phase "WRITE=vac"                                          # read back -> LEDs
 ```
 

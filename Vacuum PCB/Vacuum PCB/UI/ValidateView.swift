@@ -183,13 +183,13 @@ final class ValidationModel {
                 if onChecks[3], !isCancelled() {
                     setProgress("Exhaustive sweep…")
                     post(3, Validators.sweep(
-                        network: net, params: params, maxSteps: 20000, epsilon: 1e-5, maxCombos: 4096, holds: holds,
+                        network: net, params: params, maxSteps: 100_000, epsilon: 1e-5, maxCombos: 4096, holds: holds,
                         isCancelled: isCancelled
                     )) { Self.sweepReport($0) }
                 }
                 if onChecks[4], !isCancelled() {
                     let marg = Validators.margins(
-                        network: net, base: params, tol: 0.2, maxSteps: 20000, epsilon: 1e-5, maxCombos: 4096, holds: holds,
+                        network: net, base: params, tol: 0.2, maxSteps: 100_000, epsilon: 1e-5, maxCombos: 4096, holds: holds,
                         isCancelled: isCancelled
                     ) { c, total, _, _, _ in setProgress("Margins corner \(c)/\(total)…") }
                     post(4, marg) { Self.marginsReport($0) }

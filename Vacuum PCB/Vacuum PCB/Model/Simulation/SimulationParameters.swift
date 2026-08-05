@@ -58,11 +58,16 @@ struct SimulationParameters: Equatable {
     var pumpFlowCapacity: Double
 
     /// Conductance of a bidirectional connector pin's *soft* drive (a bus
-    /// terminal the user has asserted to Vac/Atm during standalone sim). Sized
-    /// to match `transistorOnConductance` so a poked bus pin behaves like one
-    /// on-board pass transistor tied to a rail — strong enough to move an
-    /// otherwise-idle bus, weak enough that a real on-board driver pulling the
-    /// other way still contends rather than being clamped out.
+    /// terminal the user has asserted to Vac/Atm during standalone sim).
+    /// Models the external bench drive's whole path — socket, tube,
+    /// fitting — as fitted from the bus-readback ladder's leg drop. Strong
+    /// enough to move an otherwise-idle bus, weak enough that a real
+    /// on-board driver pulling the other way still contends rather than
+    /// being clamped out. Historically sized equal to
+    /// `transistorOnConductance`; the two parted ways when the Jul 14 2026
+    /// divider rig moved on-conductance to its deep-gate value — an
+    /// external socket + tube has no deep-gated membrane to get stronger
+    /// with, so this keeps the interface figure (see the defaults note).
     var busDriveConductance: Double
 
     /// Shape of the pump's Q-vs-P curve. Exponent on the normalised remaining
@@ -143,7 +148,7 @@ struct SimulationParameters: Equatable {
     //   is bore-blind (length only), so boards printed at the older ~0.5 mm
     //   bore need resistance ≈ 0.45 to match their bench — e.g. the
     //   "Inverter tests" calibration board, whose INV1 −0.32 anchor still
-    //   reproduces at 0.45 but reads −0.26 at this default. The pull-up/vent
+    //   reproduces at 0.45 but reads −0.28 at this default. The pull-up/vent
     //   balance that motivated 0.45 stays safe: higher R/mm weakens pull-ups
     //   against vents, so vented logic-0s sit even clearer of the 0.93
     //   off-point.
@@ -184,16 +189,23 @@ struct SimulationParameters: Equatable {
         // 0.09 and/or raising `leakConductance`; crank toward 30 for an
         // ideal manifold right at the barb.
         pumpFlowCapacity: 0.13,
-        // Matches `transistorOnConductance` by design (see its doc): an
-        // externally-driven bus pin behaves like one more membrane valve
-        // to a rail, and the bench drive arrives through the same kind of
-        // socket + tube.
+        // The external-drive interface figure: 0.42 is the bus-readback
+        // ladder fit, and the restriction it measured lives in the socket
+        // + tube + fitting the bench drive arrives through. It matched
+        // `transistorOnConductance` while that was also 0.42; when the
+        // Jul 14 2026 divider rig moved on-conductance to its deep-gate
+        // 1.0, this deliberately stayed put — the external path has no
+        // membrane that opens further with gate depth — and the Jul 19
+        // acceptance battery (D-latch bus board, 4-bit register, inverter
+        // fixture) is green with the pair split.
         busDriveConductance: 0.42,
         pumpDroopExponent: -0.14,
         // Fitted (Jul 13 2026) to the pre-registered pinning reading on the
         // well-clamped single-cell inverter board: INV1 (the inter-stage
         // node) held at logic-1 measured −0.32 atm, which this value
-        // reproduces (−0.323) at the bare-tube `pumpFlowCapacity` above. The
+        // reproduces (−0.316 at the settled state; the −0.323 previously
+        // quoted here came from the old per-step settle test, which stopped
+        // short of equilibrium) at the bare-tube `pumpFlowCapacity` above. The
         // earlier 0.025 came from the leakier D-latch board and smeared into
         // the supply fit; separating supply (bare-tube stiffness) from seal
         // (this) is what let both land on the bench. Raise back toward 0.025+

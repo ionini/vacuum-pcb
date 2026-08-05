@@ -502,6 +502,76 @@ extension SimulationEngine {
         fileprivate var prev: [Double]
     }
 
+    /// Windowed settle test for convergence loops (validators, CLI
+    /// `--phase` / `flows` / sweeps). A per-step threshold
+    /// (`lastMaxDelta < ε`) mistakes slow tails for convergence: near a
+    /// leak↔pump equilibrium the per-step delta can sit below any ε for
+    /// thousands of steps while the state still has orders of magnitude
+    /// more travel left — remaining motion ≈ delta × tail constant, e.g.
+    /// the inverter example declared "settled" 0.021 atm shy of its true
+    /// equilibrium at ε=1e-5. Comparing against a snapshot from `window`
+    /// steps back bounds movement per sim-time instead: "settled" means
+    /// the state moved less than ε across the last `window` steps
+    /// (100 = one sim-second at the default dt). A tail with step
+    /// constant τ then stops with only ~ε·τ/window of travel left —
+    /// sub-milliatmosphere for the tails the leak model produces.
+    /// Detection lands up to one window late; the extra steps are the
+    /// price of the number being right.
+    struct SettleWindow {
+        let epsilon: Double
+        let window: Int
+        private var reference: [Double] = []
+        private var referenceDict: [UUID: Double] = [:]
+        private var age = 0
+
+        init(epsilon: Double, window: Int = 100) {
+            self.epsilon = epsilon
+            self.window = max(1, window)
+        }
+
+        /// Windows a caller's step budget: small caps (tests, micro-holds)
+        /// get a proportionally smaller window so convergence stays
+        /// reachable within the budget; everyone else gets the standard
+        /// 100-step (one sim-second) window.
+        init(epsilon: Double, cap: Int) {
+            self.init(epsilon: epsilon, window: min(100, max(1, cap / 2)))
+        }
+
+        /// Compiled path: feed every step's node-indexed pressures.
+        /// Compares (and re-snapshots) once per window boundary.
+        mutating func settled(_ pressures: [Double]) -> Bool {
+            if pressures.isEmpty { return true }
+            if reference.isEmpty { reference = pressures; age = 0; return false }
+            age += 1
+            guard age >= window else { return false }
+            var maxDelta = 0.0
+            for i in 0..<min(reference.count, pressures.count) {
+                maxDelta = max(maxDelta, abs(pressures[i] - reference[i]))
+            }
+            reference = pressures
+            age = 0
+            return maxDelta < epsilon
+        }
+
+        /// Dictionary path: the same test over net-keyed pressures. Only
+        /// keys present in both snapshots count, mirroring the per-step
+        /// loop's old `prev[netId] ?? value` guard (sub-nodes appear one
+        /// step after seeding) at window granularity.
+        mutating func settled(_ pressures: [UUID: Double]) -> Bool {
+            if pressures.isEmpty { return true }
+            if referenceDict.isEmpty { referenceDict = pressures; age = 0; return false }
+            age += 1
+            guard age >= window else { return false }
+            var maxDelta = 0.0
+            for (id, v) in pressures {
+                if let r = referenceDict[id] { maxDelta = max(maxDelta, abs(v - r)) }
+            }
+            referenceDict = pressures
+            age = 0
+            return maxDelta < epsilon
+        }
+    }
+
     /// True when `step` would subdivide routed nets into their channel
     /// graphs for these parameters.
     static func isSubdivided(network: PneumaticNetwork, params: SimulationParameters) -> Bool {

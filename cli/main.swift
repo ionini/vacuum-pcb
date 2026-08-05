@@ -101,9 +101,11 @@ struct PhaseResult {
 /// always re-seeds from a blank (all-atmosphere) state.
 ///
 /// Input drives are *sticky*: each phase only overrides the labels it names;
-/// everything else holds its previous value. Each phase runs until the largest
-/// per-net pressure change between steps falls below `epsilon` (it "settles"),
-/// or until its `maxSteps` cap — whichever comes first.
+/// everything else holds its previous value. Each phase runs until it settles
+/// — the largest per-net pressure movement across a 100-step window falls
+/// below `epsilon` (per-step deltas lie on slow leak↔pump tails; see
+/// `SimulationEngine.SettleWindow`) — or until its `maxSteps` cap, whichever
+/// comes first.
 func simulateSequence(
     network: PneumaticNetwork,
     params: SimulationParameters,
@@ -160,19 +162,20 @@ func simulateSequence(
             var r = run ?? SimulationEngine.makeRunState(
                 compiled: c, pressures: pressures, transistorOpenness: transistors)
             run = nil
+            var settle = SimulationEngine.SettleWindow(epsilon: epsilon, cap: phase.maxSteps)
             for _ in 0..<max(1, phase.maxSteps) {
                 SimulationEngine.step(compiled: c, params: params,
                                       state: &r, softInputValues: soft)
                 steps += 1
-                if r.lastMaxDelta < epsilon { converged = true; break }
+                if settle.settled(r.pressures) { converged = true; break }
             }
             let out = SimulationEngine.publish(compiled: c, state: r)
             pressures = out.pressures
             transistors = out.transistorOpenness
             run = r
         } else {
+            var settle = SimulationEngine.SettleWindow(epsilon: epsilon, cap: phase.maxSteps)
             for _ in 0..<max(1, phase.maxSteps) {
-                let prev = pressures
                 SimulationEngine.step(
                     network: network,
                     params: params,
@@ -181,11 +184,7 @@ func simulateSequence(
                     transistorOpenness: &transistors
                 )
                 steps += 1
-                var maxDelta = 0.0
-                for (netId, value) in pressures {
-                    maxDelta = max(maxDelta, abs(value - (prev[netId] ?? value)))
-                }
-                if maxDelta < epsilon { converged = true; break }
+                if settle.settled(pressures) { converged = true; break }
             }
         }
         results.append(PhaseResult(
@@ -1295,12 +1294,13 @@ SIMULATE OPTIONS:
                         memory: write in one phase, read it back in a later
                         one). SETS is comma-separated LABEL=VALUE; drives are
                         sticky (unnamed inputs hold). Each phase runs until it
-                        settles or hits CAP steps (default 20000). Repeatable;
+                        settles or hits CAP steps (default 100000). Repeatable;
                         phases run in order. Overrides --set.
                         e.g. --phase "READ=vac,B0=vac,B1=vac,B2=vac,B3=vac"
                              --phase "READ=atm,B0=atm,B1=atm,B2=atm,B3=atm"
                              --phase "WRITE=vac"
-  --epsilon N           Settle threshold for --phase (default 1e-5).
+  --epsilon N           Settle threshold (default 1e-5): largest per-net
+                        movement across a 100-step window (one sim-second).
   --param NAME=VALUE    Override a simulation parameter. Repeatable. Names:
                         resistance, flow, pumpMax, onConductance,
                         offConductance, gateThreshold, gateHysteresis,
@@ -1516,8 +1516,10 @@ do {
     case "simulate":
         if !phaseArgs.isEmpty {
             // Stateful sequence: carry latch/register state across phases.
-            // Default per-phase cap is generous since convergence exits early.
-            let defaultCap = max(steps, 20000)
+            // Default per-phase cap is generous since convergence exits early
+            // (the windowed settle test rides slow leak↔pump tails out, so
+            // honest settles run longer than the old per-step test did).
+            let defaultCap = max(steps, 100_000)
             let phases = phaseArgs.map { parsePhase($0, defaultMaxSteps: defaultCap) }
             let results = simulateSequence(network: network, params: params, phases: phases, epsilon: epsilon)
             reportSequence(network: network, results: results, probeFilter: probeFilter, json: json)
@@ -1541,7 +1543,7 @@ do {
     case "flows":
         // Settle first — the budget is only meaningful once transient chamber
         // charging has died down (the report says so if it hasn't).
-        let settleCap = max(steps, 20000)
+        let settleCap = max(steps, 100_000)
         let finalPressures: [UUID: Double]
         let finalInputs: [UUID: Double]
         let converged: Bool
@@ -1725,14 +1727,14 @@ do {
         if !stitched.allSatisfy({ bodyPasses($0.mesh) }) { exit(1) }
 
     case "sweep":
-        let settleCap = max(steps, 20000)
+        let settleCap = max(steps, 100_000)
         let sw = Validators.sweep(network: network, params: params,
                                   maxSteps: settleCap, epsilon: epsilon, maxCombos: maxCombos, holds: holds)
         reportSweep(sw, json: json)
         if !sw.allConverged { exit(1) }
 
     case "margins":
-        let settleCap = max(steps, 20000)
+        let settleCap = max(steps, 100_000)
         let prog: (Int, Int, String, Bool, Int) -> Void = { c, total, desc, conv, flips in
             if !json {
                 let line = "  corner \(c)/\(total) [\(desc)]: "
@@ -1755,7 +1757,7 @@ do {
         // Umbrella: every headless guarantee in one gate. CONNECTIVITY here is
         // top-level only (per `check`); descend into subpart files for a full
         // physical proof. Brute-force by design.
-        let settleCap = max(steps, 20000)
+        let settleCap = max(steps, 100_000)
         var allPass = true
         print("── connectivity (DRC + ratsnest, sub-parts flattened) ──")
         let conn = Validators.connectivity(doc)

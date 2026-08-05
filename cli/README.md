@@ -55,8 +55,8 @@ BIN=.build/debug/vacuum-cli
 | `--set LABEL=VALUE` | Drive an input. `VALUE` is `vac`/`atm` or a number in `0…1`. Repeatable. |
 | `--probe LABEL` | Only report this probe. Repeatable. |
 | `--all-nets` | Also print every net's pressure. |
-| `--phase "SETS[@CAP]"` | Run a **stateful sequence**, carrying latch/register state across phases. `SETS` is comma-separated `LABEL=VALUE` (sticky — unnamed inputs hold). Each phase runs until it settles or hits `CAP` steps (default 20000), then prints its probes. Repeatable; runs in order. Overrides `--set`. |
-| `--epsilon N` | Settle threshold for `--phase` (default 1e-5). |
+| `--phase "SETS[@CAP]"` | Run a **stateful sequence**, carrying latch/register state across phases. `SETS` is comma-separated `LABEL=VALUE` (sticky — unnamed inputs hold). Each phase runs until it settles or hits `CAP` steps (default 100000), then prints its probes. Repeatable; runs in order. Overrides `--set`. Give *hold* phases an explicit finite `@CAP` — see below. |
+| `--epsilon N` | Settle threshold (default 1e-5): the largest per-net movement across a 100-step window (one sim-second), not a per-step delta — slow leak↔pump tails move less than any per-step threshold while still far from equilibrium. |
 | `--param NAME=VALUE` | Override a `SimulationParameters` field. Repeatable. Names: `resistance`, `flow`, `pumpMax`, `onConductance`, `offConductance`, `gateThreshold`, `gateHysteresis`, `capacitance`, `channelCapacitancePerMm`, `busDrive`, `droop`, `leak`, `channelR`, `internalLeak`, `dt`. |
 | `--json` | Machine-readable output — parse this for exact assertions. |
 
@@ -95,6 +95,25 @@ has been released loses its bit faster the higher the leak, and a refresh
 A stored 1 reads back as deep vacuum and a stored 0 as atmosphere; lowering
 `resistance` and raising `flow` from their defaults (as the example above
 does) sharpens that separation on bus/latch designs.
+
+**Bound your hold phases.** With the default leak, an unrefreshed cell's only
+*settled* state is "forgotten" — a hold phase left to run to convergence
+either never settles or settles empty, and the subsequent read shows nothing.
+That's the physics, not a bug: what a leaky register guarantees is "still
+readable after N seconds", so express the hold as sim-time with an explicit
+cap — `@10000` is 100 sim-seconds at the default dt:
+
+```sh
+"$BIN" simulate reg.vpcb \
+  --phase "WRITE=atm,READ=vac,B0=vac,B1=vac,B2=vac,B3=vac" \  # store
+  --phase "WRITE=atm,READ=atm,B0=nan,B1=nan,B2=nan,B3=nan@10000" \  # hold 100 s
+  --phase "WRITE=vac,READ=atm"                                 # read back
+```
+
+(The hold phase reporting `did NOT settle` is expected — it's a timed wait,
+not a settle.) Before the windowed settle test this was hidden: the old
+per-step criterion "settled" hold phases while the cells were still draining,
+so sequences accidentally tested short holds.
 
 ### Supply budget (`flows`)
 
@@ -153,8 +172,10 @@ EX="Vacuum PCB/Vacuum PCB/Examples/inverter.vpcb"
 is ≈ −0.34 atm, not a textbook 0.1 — the defaults are bench-calibrated (pump
 floor 0.4, real supply and seal losses), so margins read like the printed
 board's; it's still far past the 0.87 gate-on point. The low case also has a
-slow settle tail (leak vs pump is a slow equilibrium — it creeps a few
-hundredths deeper over the next ~15k steps). With a
+slow settle tail (leak vs pump is a slow equilibrium): its true equilibrium is
+0.622, which `--phase "IN=atm"` lands on automatically (settles ≈ 16k steps).
+Settled `--phase` values are the authoritative numbers; fixed `--steps` runs
+are for step-budgeted comparisons and regression diffs. With a
 weaker pump default the gate can't switch and both cases read the same — which
 is itself a useful thing for the tool to reveal.
 

@@ -34,8 +34,11 @@ enum Validators {
     }
 
     /// Solve from a blank state to convergence, or up to `maxSteps`. "Converged"
-    /// means the largest per-net pressure change between steps fell below
-    /// `epsilon`; a circuit that never settles is oscillating / metastable.
+    /// means the state stopped moving: the largest per-net pressure change
+    /// across a 100-step window (one sim-second at the default dt) fell below
+    /// `epsilon` — see `SimulationEngine.SettleWindow` for why a per-step
+    /// delta can't be trusted on slow leak↔pump tails. A circuit that never
+    /// settles is oscillating / metastable.
     /// `isCancelled` is polled every few hundred steps; a cancelled settle
     /// returns early with `converged == false` (callers that cancel discard
     /// the result anyway).
@@ -59,26 +62,25 @@ enum Validators {
             let soft = SimulationEngine.softInputValues(network: network, inputs: inputs)
             var run = SimulationEngine.makeRunState(
                 compiled: compiled, pressures: pressures, transistorOpenness: transistors)
+            var settle = SimulationEngine.SettleWindow(epsilon: epsilon, cap: maxSteps)
             for _ in 0..<max(1, maxSteps) {
                 if steps % 256 == 0, isCancelled?() == true { break }
                 SimulationEngine.step(compiled: compiled, params: params,
                                       state: &run, softInputValues: soft)
                 steps += 1
-                if run.lastMaxDelta < epsilon { converged = true; break }
+                if settle.settled(run.pressures) { converged = true; break }
             }
             pressures = SimulationEngine.publish(compiled: compiled, state: run).pressures
         } else {
+            var settle = SimulationEngine.SettleWindow(epsilon: epsilon, cap: maxSteps)
             for _ in 0..<max(1, maxSteps) {
                 if steps % 256 == 0, isCancelled?() == true { break }
-                let prev = pressures
                 SimulationEngine.step(
                     network: network, params: params,
                     pressures: &pressures, inputs: inputs, transistorOpenness: &transistors
                 )
                 steps += 1
-                var maxDelta = 0.0
-                for (netId, v) in pressures { maxDelta = max(maxDelta, abs(v - (prev[netId] ?? v))) }
-                if maxDelta < epsilon { converged = true; break }
+                if settle.settled(pressures) { converged = true; break }
             }
         }
         return (pressures, converged, steps)
