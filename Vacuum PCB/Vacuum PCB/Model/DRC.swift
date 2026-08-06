@@ -76,6 +76,14 @@ enum DRC {
         let id: UUID
         let position: Point
         let layer: Layer
+        /// Tints the pulse: red for errors, orange for warnings.
+        var severity: Severity = .error
+        /// Short measurement shown in a chip next to the pulse — the wall
+        /// that tripped the check ("0.32 mm"), when the issue has one.
+        var label: String? = nil
+        /// Route segments to glow in the severity colour while the focus is
+        /// live — both halves of a clearance pair, not just the selected one.
+        var glowSegments: [PhysicalSelection.RouteSegmentRef] = []
     }
 
     /// How bad an issue is. Wall checks classify each finding: below
@@ -120,14 +128,17 @@ enum DRC {
             /// distance minus both channel radii), clamped at 0.
             /// `selfSegmentIndex` is into the issue's net; the other pair
             /// (`otherNetId`, `otherSegmentIndex`) identifies the foreign
-            /// segment so we can highlight both on click.
+            /// segment so we can highlight both on click. `position` is the
+            /// midpoint of the thin wall itself (closest approach of the two
+            /// offending edges) — where the focus ping lands.
             case channelClearance(
                 otherNetId: UUID,
                 otherNetLabel: String,
                 layer: Layer,
                 wall: Double,
                 selfSegmentIndex: Int,
-                otherSegmentIndex: Int
+                otherSegmentIndex: Int,
+                position: Point
             )
             /// Two electrically distinct nets are CSG-merged in the printed
             /// plate — channel centerlines pass within `channelDiameter`
@@ -313,7 +324,7 @@ enum DRC {
                 return "\(netLabel): pin \(p.pinKey) unreached by routing"
             case .orphanVia(let p, _):
                 return "\(netLabel): unpaired via at (\(String(format: "%.1f", p.x)), \(String(format: "%.1f", p.y)))"
-            case .channelClearance(_, let other, let layer, let wall, _, _):
+            case .channelClearance(_, let other, let layer, let wall, _, _, _):
                 let where_ = layer.uiLabel
                 let wallTxt = wall < 0.01 ? "touching" : "\(String(format: "%.2f", wall)) mm wall"
                 return "\(netLabel) ↔ \(other) on \(where_): \(wallTxt)"
@@ -389,6 +400,26 @@ enum DRC {
                     + "no channel reaches the rest of the net"
             }
         }
+
+        /// Compact measurement for canvas chips: the printed wall that
+        /// tripped a clearance / wall check ("0.32 mm", "touching"). Nil for
+        /// kinds that don't measure a gap.
+        var gapText: String? {
+            let gap: Double
+            switch kind {
+            case let .channelClearance(_, _, _, wall, _, _, _): gap = wall
+            case let .thinWall(_, _, g, _, _): gap = g
+            case let .screwClearance(_, _, g, _): gap = g
+            case let .viaSpacing(_, _, _, g, _): gap = g
+            case let .viaPad(_, _, g, _): gap = g
+            case let .stencilHole(_, g, _): gap = g
+            case let .portBoreClearance(_, _, _, _, _, _, _, wall, _): gap = wall
+            case let .testPointClearance(_, _, _, _, _, wall, _): gap = wall
+            case let .subpartWall(_, _, _, _, wall, _): gap = wall
+            default: return nil
+            }
+            return gap < 0.01 ? "touching" : String(format: "%.2f mm", gap)
+        }
     }
 
     /// Maps an issue to a physical-canvas selection that highlights the
@@ -407,7 +438,7 @@ enum DRC {
             return .placement(pinRef.componentId)
         case .orphanVia(_, let segIdx):
             return .routeSegment(netId: issue.netId, segmentIndex: segIdx)
-        case let .channelClearance(otherNetId, _, _, _, selfSeg, otherSeg):
+        case let .channelClearance(otherNetId, _, _, _, selfSeg, otherSeg, _):
             // Highlight the self-segment as the focused route, and the
             // foreign segment via its waypoints so both halves of the
             // collision are visible at once. The placements set is left
@@ -537,13 +568,8 @@ enum DRC {
                   segIdx < route.segments.count
             else { return nil }
             return (pos, route.segments[segIdx].layer)
-        case let .channelClearance(_, _, layer, _, selfSeg, _):
-            guard let route = document.physical.routes.first(where: { $0.netId == issue.netId }),
-                  selfSeg < route.segments.count
-            else { return nil }
-            let pts = route.segments[selfSeg].waypoints.map(\.position)
-            guard !pts.isEmpty else { return nil }
-            return (pts[pts.count / 2], layer)
+        case let .channelClearance(_, _, layer, _, _, _, pos):
+            return (pos, layer)
         case .disconnectedPin(let ref):
             guard let placement = document.physical.placements.first(where: { $0.componentId == ref.componentId }),
                   let comp = document.logic.components.first(where: { $0.id == ref.componentId }),
@@ -575,6 +601,62 @@ enum DRC {
             return (pos, layer)
         case .unplacedPin, .noRouteDrawn, .matingIncompatible, .matingDoubleBooked:
             return nil
+        }
+    }
+
+    /// Route segments to glow in the severity colour while an issue is
+    /// focused — both halves of a clearance pair, so the user sees exactly
+    /// which two channels pinch (the plain selection only accents the self
+    /// segment). Only kinds that address top-level segments participate;
+    /// sub-part internals aren't addressable in the parent canvas.
+    static func glowSegments(for issue: Issue) -> [PhysicalSelection.RouteSegmentRef] {
+        switch issue.kind {
+        case let .channelClearance(otherNetId, _, _, _, selfSeg, otherSeg, _):
+            return [
+                .init(netId: issue.netId, segmentIndex: selfSeg),
+                .init(netId: otherNetId, segmentIndex: otherSeg),
+            ]
+        case let .thinWall(_, _, _, segIdx, _),
+             let .orphanVia(_, segIdx):
+            return [.init(netId: issue.netId, segmentIndex: segIdx)]
+        default:
+            return []
+        }
+    }
+
+    /// A persistent wall-violation badge on the physical canvas — every
+    /// finding from the wall / clearance family (the checks that measure a
+    /// printed gap) drops one at its narrowest spot, so thin walls are
+    /// visible at a glance instead of one sidebar click at a time.
+    struct CanvasMarker: Identifiable, Hashable {
+        let id: UUID
+        let position: Point
+        let layer: Layer
+        let severity: Severity
+        let label: String?
+        /// Stencil-sheet findings show in silicone-sheet mode instead of
+        /// following the per-layer filter — their geometry lives on the sheet.
+        let onStencil: Bool
+    }
+
+    static func canvasMarkers(for issues: [Issue], in document: CircuitDocument) -> [CanvasMarker] {
+        issues.compactMap { issue in
+            switch issue.kind {
+            case .channelClearance, .thinWall, .screwClearance, .viaSpacing,
+                 .viaPad, .stencilHole, .portBoreClearance, .testPointClearance,
+                 .subpartWall:
+                break
+            default:
+                return nil
+            }
+            guard let (pos, layer) = focusPosition(for: issue, in: document) else { return nil }
+            let onStencil: Bool
+            if case .stencilHole = issue.kind { onStencil = true } else { onStencil = false }
+            return CanvasMarker(
+                id: issue.id, position: pos, layer: layer,
+                severity: issue.severity, label: issue.gapText,
+                onStencil: onStencil
+            )
         }
     }
 
@@ -1480,7 +1562,8 @@ enum DRC {
                     otherNetId: found.b.netId, otherNetLabel: found.b.netLabel,
                     layer: found.a.layer, wall: max(0, found.wall),
                     selfSegmentIndex: found.a.segmentIndex,
-                    otherSegmentIndex: found.b.segmentIndex
+                    otherSegmentIndex: found.b.segmentIndex,
+                    position: approachPoint(found.a.a, found.a.b, found.b.a, found.b.b)
                 ),
                 severity: severity
             )
@@ -2118,16 +2201,47 @@ enum DRC {
         return issues
     }
 
-    /// Midpoint of the two segments' midpoints. Good enough to drop a marker
-    /// near the offending area — the user inspects the canvas for the exact
-    /// crossing, and a closest-point solve would be heavier than the rest of
-    /// this check combined.
+    /// Middle of the thin wall itself: the midpoint of the two segments'
+    /// closest pair of points. Crossing segments return the intersection.
+    /// This is where the canvas ping / marker lands, so it must sit exactly
+    /// where the gap is narrowest — the old midpoint-of-midpoints landed
+    /// half a segment away on long parallel runs and read as random.
+    /// Only computed for pairs already below the wall threshold, so the
+    /// extra endpoint projections cost nothing in the common no-issue case.
     private static func approachPoint(
         _ a: Point, _ b: Point, _ c: Point, _ d: Point
     ) -> Point {
-        let m1 = Point(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
-        let m2 = Point(x: (c.x + d.x) / 2, y: (c.y + d.y) / 2)
-        return Point(x: (m1.x + m2.x) / 2, y: (m1.y + m2.y) / 2)
+        if segmentsIntersect(a, b, c, d) {
+            // Line-line solve; the guard above proves a proper crossing, so
+            // the denominator is non-zero.
+            let r = Point(x: b.x - a.x, y: b.y - a.y)
+            let s = Point(x: d.x - c.x, y: d.y - c.y)
+            let denom = r.x * s.y - r.y * s.x
+            let t = ((c.x - a.x) * s.y - (c.y - a.y) * s.x) / denom
+            return Point(x: a.x + t * r.x, y: a.y + t * r.y)
+        }
+        // Closest pair among endpoint-to-opposite-segment projections — the
+        // non-crossing minimum is always anchored at one of the four ends.
+        var bestDist = Double.infinity
+        var bestPair = (a, c)
+        for (p, s1, s2) in [(a, c, d), (b, c, d), (c, a, b), (d, a, b)] {
+            let q = closestPointOnSegment(p, s1, s2)
+            let dist = (p.x - q.x) * (p.x - q.x) + (p.y - q.y) * (p.y - q.y)
+            if dist < bestDist {
+                bestDist = dist
+                bestPair = (p, q)
+            }
+        }
+        return Point(x: (bestPair.0.x + bestPair.1.x) / 2,
+                     y: (bestPair.0.y + bestPair.1.y) / 2)
+    }
+
+    private static func closestPointOnSegment(_ p: Point, _ a: Point, _ b: Point) -> Point {
+        let dx = b.x - a.x, dy = b.y - a.y
+        let lenSq = dx * dx + dy * dy
+        guard lenSq > 0 else { return a }
+        let t = max(0, min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq))
+        return Point(x: a.x + t * dx, y: a.y + t * dy)
     }
 
     // MARK: - Wall thickness

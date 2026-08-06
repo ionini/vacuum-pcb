@@ -21,6 +21,16 @@ struct RoutesOverlay: View {
     /// `attached` is rendered with `delta` added to its stored position, so
     /// the connected routes rubber-band along with the placement.
     var placementOverride: PlacementRouteOverride?
+    /// Set while a DRC issue focus is live: the offending segment pair glows
+    /// in the severity colour underneath everything, so both channels of a
+    /// clearance clash stand out — the plain selection accent was too subtle
+    /// to spot among a board of routes.
+    var issueGlow: IssueGlow?
+
+    struct IssueGlow: Equatable {
+        let segments: [PhysicalSelection.RouteSegmentRef]
+        let severity: DRC.Severity
+    }
 
     struct DragOverride: Equatable {
         let netId: UUID
@@ -88,6 +98,41 @@ extension RoutesOverlay {
                             )
                         )
                     }
+                }
+            }
+
+            // DRC focus glow: paint the offending segment pair in the
+            // severity colour, wide and doubled (soft outer + solid inner)
+            // so both halves of the clash pop even on a dense board. Under
+            // the main pass, so the segments' own colours stay readable.
+            if let glow = issueGlow {
+                let glowColor: Color = glow.severity == .error ? .red : .orange
+                for ref in glow.segments {
+                    guard let route = document.physical.routes.first(where: { $0.netId == ref.netId }),
+                          ref.segmentIndex < route.segments.count else { continue }
+                    let segment = route.segments[ref.segmentIndex]
+                    guard visible.contains(segment.layer) else { continue }
+                    let positions = waypoints(
+                        for: ref.netId, segmentIndex: ref.segmentIndex,
+                        fallback: segment.waypoints.map(\.position)
+                    )
+                    let pts = positions.map { transform.toScreen($0) }
+                    guard pts.count >= 2 else { continue }
+                    var path = Path()
+                    path.move(to: pts[0])
+                    for p in pts.dropFirst() { path.addLine(to: p) }
+                    ctx.stroke(
+                        path,
+                        with: .color(glowColor.opacity(0.3)),
+                        style: StrokeStyle(lineWidth: channelStroke + 10,
+                                           lineCap: .round, lineJoin: .round)
+                    )
+                    ctx.stroke(
+                        path,
+                        with: .color(glowColor.opacity(0.75)),
+                        style: StrokeStyle(lineWidth: channelStroke + 3,
+                                           lineCap: .round, lineJoin: .round)
+                    )
                 }
             }
 
