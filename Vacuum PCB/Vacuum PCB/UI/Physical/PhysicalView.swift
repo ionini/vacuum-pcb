@@ -35,6 +35,10 @@ struct PhysicalView: View {
     @State private var routingLayer: Layer = .top
     @State private var routingError: String?
     @State private var showRatsnest: Bool = true
+    /// Persistent wall-violation badges (red/orange diamonds at each thin
+    /// spot). On by default — a wall error is a failed print, so it should
+    /// be visible while routing, not only after a sidebar click.
+    @State private var showDRCMarkers: Bool = true
     @State private var showPressureMap: Bool = false
     @State private var pressureSigma: Double = 10.0
     @State private var pressurePopover: Bool = false
@@ -61,7 +65,8 @@ struct PhysicalView: View {
             showPressureMap: showPressureMap,
             pressureSigma: pressureSigma,
             dragWithRoutes: dragWithRoutes,
-            issueFocus: issueFocus
+            issueFocus: issueFocus,
+            showDRCMarkers: showDRCMarkers
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .toolbar { physicalToolbar }
@@ -129,6 +134,13 @@ struct PhysicalView: View {
             }
             .toggleStyle(.button)
             .help("Show dashed hint lines between pins on the same net that aren't routed yet")
+        }
+        ToolbarItem(placement: .automatic) {
+            Toggle(isOn: $showDRCMarkers) {
+                Label("DRC Markers", systemImage: "exclamationmark.triangle")
+            }
+            .toggleStyle(.button)
+            .help("Mark every thin-wall / clearance violation on the canvas — red for errors, orange for warnings")
         }
         ToolbarItem(placement: .automatic) {
             // Sticky equivalent of Cmd-drag on macOS. With this on, every

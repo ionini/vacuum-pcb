@@ -780,13 +780,18 @@ struct DocumentView: View {
         if let sel { physicalSelection = sel }
         selectedTab = .physical
         if let (pos, layer) = focal {
-            let token = DRC.Focus(id: UUID(), position: pos, layer: layer)
+            let token = DRC.Focus(
+                id: UUID(), position: pos, layer: layer,
+                severity: issue.severity,
+                label: issue.gapText,
+                glowSegments: DRC.glowSegments(for: issue)
+            )
             issueFocus = token
             // Self-clear after the animation runs its course so a stale
             // marker doesn't sit around forever. The id check skips the
             // clear if the user clicked another issue in the meantime.
             Task { @MainActor in
-                try? await Task.sleep(for: .seconds(2))
+                try? await Task.sleep(for: .seconds(4))
                 if issueFocus?.id == token.id { issueFocus = nil }
             }
         }

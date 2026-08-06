@@ -36,6 +36,9 @@ struct PhysicalCanvasView: View {
     /// auto-clear timer. We re-mount the overlay on each new focus via
     /// `.id(focus.id)` so the animation restarts.
     var issueFocus: DRC.Focus?
+    /// Whether the persistent wall-violation badges (DRCMarkersOverlay)
+    /// are drawn. Toolbar toggle, on by default.
+    var showDRCMarkers: Bool
 
     @State private var transform: CanvasTransform = .default
     @State private var mouseLocation: CGPoint = .zero
@@ -222,7 +225,11 @@ struct PhysicalCanvasView: View {
                     selection: selection,
                     manufacturing: manufacturing,
                     dragOverride: dragOverride,
-                    placementOverride: placementRouteOverride
+                    placementOverride: placementRouteOverride,
+                    issueGlow: issueFocus.map {
+                        RoutesOverlay.IssueGlow(segments: $0.glowSegments,
+                                                severity: $0.severity)
+                    }
                 )
                 ViasOverlay(
                     document: document.circuit,
@@ -262,10 +269,20 @@ struct PhysicalCanvasView: View {
                     directRoute: ModifierKeys.commandHeld || straightRouting
                 )
 
+                if showDRCMarkers {
+                    DRCMarkersOverlay(
+                        document: document.circuit,
+                        transform: transform,
+                        visible: visible
+                    )
+                }
+
                 if let focus = issueFocus, visible.contains(focus.layer) {
                     IssueFocusPing(
                         position: focus.position,
-                        transform: transform
+                        transform: transform,
+                        severity: focus.severity,
+                        label: focus.label
                     )
                     .id(focus.id)
                     .allowsHitTesting(false)
@@ -2783,30 +2800,48 @@ struct ParkingDropDelegate: DropDelegate {
     }
 }
 
-/// Sonar-style pulse drawn at a DRC issue's focal point. Single ring that
-/// scales outward and fades to zero opacity over ~1.5 s. Mounting it with a
-/// fresh `id` per click restarts the animation, so re-clicking the same
-/// issue still pings.
+/// Sonar-style pulse drawn at a DRC issue's focal point, tinted by severity
+/// (red = error, orange = warning). Two staggered rings scale outward and
+/// fade over ~1.5 s each; a fixed crosshair ring and the measurement chip
+/// stay put so the eye can still find the exact spot — and read the wall
+/// that tripped the check — after the pulses fade. Mounting it with a fresh
+/// `id` per click restarts the animation, so re-clicking the same issue
+/// still pings.
 private struct IssueFocusPing: View {
     let position: Point
     let transform: CanvasTransform
+    var severity: DRC.Severity = .error
+    var label: String?
     @State private var animate = false
 
     var body: some View {
         let screen = transform.toScreen(position)
-        // Two stacked rings: the outer ring carries the pulse motion; the
-        // inner ring stays put as a fixed crosshair so the user's eye can
-        // still find the exact spot after the pulse has faded out.
+        let color: Color = severity == .error ? .red : .orange
         ZStack {
             Circle()
-                .stroke(Color.orange, lineWidth: 3)
+                .stroke(color, lineWidth: 3)
                 .frame(width: 18, height: 18)
-                .scaleEffect(animate ? 5 : 1)
+                .scaleEffect(animate ? 6 : 1)
                 .opacity(animate ? 0 : 1)
             Circle()
-                .stroke(Color.orange, lineWidth: 2)
+                .stroke(color, lineWidth: 3)
+                .frame(width: 18, height: 18)
+                .scaleEffect(animate ? 6 : 1)
+                .opacity(animate ? 0 : 0.9)
+                .animation(.easeOut(duration: 1.5).delay(0.5), value: animate)
+            Circle()
+                .stroke(color, lineWidth: 2)
                 .frame(width: 12, height: 12)
-                .opacity(animate ? 0.4 : 1)
+                .opacity(animate ? 0.6 : 1)
+            if let label {
+                Text(label)
+                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(color.opacity(0.92), in: RoundedRectangle(cornerRadius: 5))
+                    .offset(y: 22)
+            }
         }
         .position(screen)
         .onAppear {
