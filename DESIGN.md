@@ -76,16 +76,19 @@ Defaults in `ManufacturingConstants.defaults`. Tuned after the
 XOR-with-LED test print. Per-document; a printed plate is bound to the
 parameters it was generated for.
 
-| Field                    | Default   | Notes |
-| ------------------------ | --------- | --- |
-| `plateThickness`         | 4.0 mm    | |
-| `channelDiameter`        | 1.5 mm    | Reused for source/drain/gate drop bores (one number to print-validate). |
-| `portBoreDiameter`       | 1.7 mm    | Sized for a 17-gauge blunt needle press-fit. Adjustable per-document; bore can taper from this diameter outward via `portBoreTaperDegrees`. |
-| `siliconeThickness`      | 0.1 mm    | Tuned to the actual silicone sheet on hand. |
-| `dimpleDiameter`         | 5.0 mm    | Dome depth derived from diameter (hemispherical) plus `dimpleSphereOffset` and `dimpleDepth`. |
-| `dimpleDepth`            | 1.0 mm    | |
-| `gridPitch`              | 1.0 mm    | |
-| `minChannelSpacing`      | 1.5 mm    | Centerline-to-centerline; enforced by DRC and the auto-router halo. |
+| Field                     | Default   | Notes |
+| ------------------------- | --------- | --- |
+| `plateThickness`          | 3.0 mm    | |
+| `channelDiameter`         | 1.5 mm    | Reused for source/drain/gate drop bores (one number to print-validate). |
+| `portBoreDiameter`        | 1.7 mm    | Sized for a 17-gauge blunt needle press-fit. Adjustable per-document; bore can taper from this diameter outward via `portBoreTaperDegrees`. |
+| `siliconeThickness`       | 0.1 mm    | Code default only — the sheet actually on hand is 0.5 mm; set per-document. |
+| `dimpleDiameter`          | 5.0 mm    | Dome cavity depth is `dimpleDiameter/2 + dimpleSphereOffset`. |
+| `dimpleDepth`             | 1.0 mm    | Legacy flat-cylinder depth; kept for codable compatibility, unused by the dome geometry. |
+| `dimpleSphereOffset`      | 1.0 mm    | |
+| `gridPitch`               | 1.0 mm    | |
+| `minChannelSpacing`       | 1.5 mm    | Centerline-to-centerline comfort spacing: auto-router keep-out halo and the sim's channel-proximity window. *Not* a DRC limit. |
+| `minWallThickness`        | 0.5 mm    | The DRC-enforced wall limit — edge-to-edge (diameter-aware), channel vs. any nearby feature. |
+| `resistorChannelDiameter` | 0.6 mm    | Serpentine orifice bore; S/M/L change zigzag count, not width. |
 
 The physical layout also stores `topLayers` / `bottomLayers` (number of
 stacked channel layers per plate, default 1 each) and per-placement
