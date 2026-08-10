@@ -36,10 +36,11 @@ struct ManufacturingConstants: Codable, Hashable {
     var dimpleDepth: Double
 
     /// Distance from the plate's silicone-facing surface to the centre of the
-    /// dome's defining sphere, measured into the plate body. Matches the
-    /// Fusion 360 source sketch: revolving the disk's larger cap (the part on
-    /// the cavity side of the surface line) around the vertical axis. Depth
-    /// of the cavity into the plate is `dimpleDiameter/2 + dimpleSphereOffset`.
+    /// dome's defining sphere, measured into the *silicone gap* (the centre
+    /// sits outside the plate body). Matches the Fusion 360 source sketch:
+    /// revolving the cap on the cavity side of the surface line around the
+    /// vertical axis. Depth of the cavity into the plate is
+    /// `dimpleDiameter/2 − dimpleSphereOffset` (1.5 mm at defaults).
     var dimpleSphereOffset: Double
 
     /// Diameter of the source/drain pad sphere. The pads are two halves of a
@@ -109,11 +110,11 @@ struct ManufacturingConstants: Codable, Hashable {
     var ledDimpleDiameter: Double
 
     /// Distance from the plate's silicone-facing surface to the centre of
-    /// the LED dome's defining sphere, measured into the plate body. Raw
-    /// depth value — not computed from diameter, matching how the
-    /// schematic is drawn. The cavity depth is
-    /// `ledDimpleDiameter/2 + ledDimpleDepth` (same formula as
-    /// `dimpleSphereOffset` for transistors).
+    /// the LED dome's defining sphere, measured into the *silicone gap*
+    /// (same construction as the transistor gate's `dimpleSphereOffset`).
+    /// Raw offset value — not computed from diameter, matching how the
+    /// schematic is drawn. The cavity depth into the plate is
+    /// `ledDimpleDiameter/2 − ledDimpleDepth` (2.0 mm at defaults).
     var ledDimpleDepth: Double
 
     /// Distance the screw head's top (and the nut's bottom) protrudes past

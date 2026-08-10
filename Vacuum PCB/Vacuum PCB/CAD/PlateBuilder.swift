@@ -216,8 +216,8 @@ enum PlateBuilder {
             case .led:
                 // Dimple on the placement layer — same dome construction as
                 // a transistor's gate, but with the LED's own diameter and
-                // raw depth (sphere centre `ledDimpleDepth` mm into the
-                // plate body, *not* derived from diameter).
+                // raw sphere offset (centre `ledDimpleDepth` mm into the
+                // silicone gap, *not* derived from diameter).
                 let ledDimple = ledDimpleMesh(
                     at: placement.position, layer: placement.layer, m: m,
                     topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ

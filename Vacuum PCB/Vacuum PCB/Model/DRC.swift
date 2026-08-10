@@ -986,13 +986,15 @@ enum DRC {
                     let face = faceZ(pinLayer.plate)
                     // Drop bore runs from the silicone face to its channel
                     // midline; a transistor gate / LED indicator carves a dome
-                    // reaching `cavityDepth` past the face. Matches the reach
-                    // used by `thinWallIssues`.
+                    // whose defining sphere is centred `sphereOffset` *outside*
+                    // the plate (in the silicone gap), so the cap intrudes
+                    // radius − offset past the face. Matches the cutter in
+                    // `PlateBuilder.dimpleMesh` / `ledDimpleMesh`.
                     var reach = abs(m.midZ(for: pinLayer) - face)
                     if comp.kind == .transistor, pin.key == "gate" {
-                        reach = max(reach, m.dimpleDiameter / 2 + m.dimpleSphereOffset)
+                        reach = max(reach, m.dimpleDiameter / 2 - m.dimpleSphereOffset)
                     } else if comp.kind == .led {
-                        reach = max(reach, m.ledDimpleDiameter / 2 + m.ledDimpleDepth)
+                        reach = max(reach, m.ledDimpleDiameter / 2 - m.ledDimpleDepth)
                     }
                     let zEnd = face + (pinLayer.plate == .top ? reach : -reach)
                     let world = placement.worldPosition(of: pin)
