@@ -171,7 +171,9 @@ struct ManufacturingSettingsView: View {
             group("Stencil") {
                 if scope == .full { row("Thickness", $draftMfg.stencilThickness) }
                 row("Via hole padding", $draftMfg.stencilViaPadding)
+                stencilHoleReadout(draftMfg.channelDiameter + draftMfg.stencilViaPadding)
                 row("Screw hole padding", $draftMfg.stencilScrewPadding)
+                stencilHoleReadout(ScrewGeometry.throughDiameter + draftMfg.stencilScrewPadding)
                 Text(scope == .full
                      ? "Flat cutting template exported next to the plates. Holes at every cross-silicone via and screw shaft; sized to the silicone sheet so it doubles as a 1:1 cutting guide. Via hole padding adds to each via hole's diameter (0–2 mm) to compensate for the silicone plug contracting when squished between the plates. Screw hole padding does the same for every screw bore (0–6 mm on top of the 2.2 mm shaft clearance, standalone and connector end-cap alike) — no fluid crosses those, so they can be opened up well past the via holes to keep the silicone from being pinched against the shaft."
                      : "Via hole padding adds to each cross-silicone via hole's diameter in the stencil (0–2 mm) to compensate for the silicone plug contracting when squished between the plates. Screw hole padding does the same for every screw bore (0–6 mm on top of the 2.2 mm shaft clearance) — no fluid crosses those, so they can be opened up well past the via holes.")
@@ -410,6 +412,17 @@ struct ManufacturingSettingsView: View {
                 .foregroundStyle(.secondary)
             content()
         }
+    }
+
+    /// Live readout of the stencil hole diameter a padding row produces —
+    /// base bore + draft padding, mirroring PlateBuilder's stencil pass
+    /// (via holes: channel diameter; screw holes: the 2.2 mm shaft
+    /// clearance) — so the user sees the exported size, not just the delta.
+    private func stencilHoleReadout(_ diameter: Double) -> some View {
+        Text(String(format: "→ %.2f mm hole", diameter))
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+            .frame(maxWidth: .infinity, alignment: .trailing)
     }
 
     private func row(_ label: String, _ value: Binding<Double>) -> some View {
