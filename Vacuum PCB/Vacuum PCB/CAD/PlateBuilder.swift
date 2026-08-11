@@ -2050,8 +2050,16 @@ enum PlateBuilder {
         let outerFaceZ = tp.plate == .top
             ? topInnerZ + topThickness
             : bottomInnerZ - bottomThickness
+        // A screw volcano dome at the same XY adds `screwProtrusion` of
+        // material past the outer face (unioned before the cutters run), so
+        // the bore must overshoot past the dome's plateau or the volcano
+        // caps the hole — same trick as the LED viewing hole.
+        let outerOvershoot = m.screwProtrusion > 0
+            ? m.screwProtrusion + 0.5
+            : 0.1
         return testPointBoreSolid(at: world, plate: tp.plate,
-                                  innerZ: midZ, outerZ: outerFaceZ, m: m)
+                                  innerZ: midZ, outerZ: outerFaceZ, m: m,
+                                  outerOvershoot: outerOvershoot)
     }
 
     /// Vertical tapered test-point bore between a channel midline (`innerZ`)
@@ -2061,12 +2069,13 @@ enum PlateBuilder {
     /// same +0.15 mm trick the channels use).
     static func testPointBoreSolid(
         at p: Point, plate: Plate, innerZ: Double, outerZ: Double,
-        m: ManufacturingConstants, extraR: Double = 0
+        m: ManufacturingConstants, extraR: Double = 0,
+        outerOvershoot: Double = 0.1   // past the outer face for clean CSG;
+                                       // raised to clear a screw volcano dome
     ) -> Mesh {
         let routeR = m.portBoreDiameter / 2 + extraR
         let taperRad = m.portBoreTaperDegrees * .pi / 180
         let innerOvershoot = 0.05   // bite into the channel for a clean opening
-        let outerOvershoot = 0.1    // overshoot the outer face for clean CSG
         let length = abs(outerZ - innerZ) + innerOvershoot + outerOvershoot
         let edgeR = routeR + length * tan(taperRad)
 
