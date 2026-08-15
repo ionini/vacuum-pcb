@@ -326,15 +326,17 @@ struct SubpartExpandedView: View {
         .allowsHitTesting(false)
     }
 
-    /// Library-local via XYs that appear as a `.via` waypoint on both a T0
-    /// and a B0 segment of the same net. Same approximate-match tolerance
-    /// (0.05 mm) used elsewhere for paired-via bookkeeping.
+    /// Library-local via XYs that appear as a `.via` waypoint on both a
+    /// top-plate and a bottom-plate segment of the same net, at any depth —
+    /// mirrors `PhysicalLayout.crossSiliconeViaPositions` (a T0↔B1 via
+    /// crosses the sheet just like a T0↔B0 one). Same approximate-match
+    /// tolerance (0.05 mm) used elsewhere for paired-via bookkeeping.
     private func crossSiliconeViaPositions(in part: PartsLibrary.Part) -> [Point] {
         var result: [Point] = []
         for route in part.document.physical.routes {
             var topPositions: [Point] = []
             var bottomPositions: [Point] = []
-            for segment in route.segments where segment.layer.depth == 0 {
+            for segment in route.segments {
                 for wp in segment.waypoints where wp.kind == .via {
                     switch segment.layer.plate {
                     case .top:    topPositions.append(wp.position)

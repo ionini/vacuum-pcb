@@ -297,17 +297,18 @@ enum Minimizer {
     }
 
     /// Cheap per-iteration count of silicone-crossing vias: per route, the paired
-    /// count of depth-0 `.via` waypoints on opposite plates. Mirrors the T0/B0
-    /// rule in `PhysicalLayout.crossSiliconeViaPositions` but skips its O(n²) XY
-    /// matching — the negotiated router emits a crossing as one via waypoint on
-    /// each plate, so `min(top, bottom)` per route is the crossing count. A cost
+    /// count of `.via` waypoints on opposite plates (any depth). Mirrors the
+    /// cross-plate rule in `PhysicalLayout.crossSiliconeViaPositions` but skips
+    /// its O(n²) XY matching — the negotiated router emits a crossing as one via
+    /// waypoint on each plate, so `min(top, bottom)` per route is the crossing
+    /// count (an upper bound when same-plate vias inflate one side). A cost
     /// proxy only; Stats and the adopt gate use the exact counter. Internal so
-    /// tests can pin it to the exact count.
+    /// tests can bound it against the exact count.
     static func crossSiliconeViaCount(_ doc: CircuitDocument) -> Int {
         var total = 0
         for route in doc.physical.routes {
             var top = 0, bottom = 0
-            for seg in route.segments where seg.layer.depth == 0 {
+            for seg in route.segments {
                 for wp in seg.waypoints where wp.kind == .via {
                     if seg.layer.plate == .top { top += 1 } else { bottom += 1 }
                 }

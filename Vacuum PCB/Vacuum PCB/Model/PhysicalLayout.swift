@@ -377,21 +377,25 @@ struct PhysicalLayout: Codable, Hashable {
         return "TP\(n)"
     }
 
-    /// Via XYs that pair a T0 segment with a B0 segment on the *same net* —
-    /// the only via kind that actually punches through the silicone sheet
-    /// sandwiched between the plates. Same-plate vias (a route stepping
-    /// between depths inside one plate) never cross silicone and are skipped.
+    /// Via XYs that pair a top-plate segment with a bottom-plate segment on
+    /// the *same net*, at **any depth** — every such bore passes through the
+    /// silicone sheet sandwiched between the plates, exactly the set
+    /// `PlateBuilder`'s via cutter drills through both plates (it must not be
+    /// restricted to depth 0: a T0↔B1 via crosses the sheet just the same,
+    /// and filtering by depth left its silicone hole uncut). Same-plate vias
+    /// (a route stepping between depths inside one plate) never cross
+    /// silicone and are skipped.
     ///
-    /// Used by the silicone-sheet view overlay and the stencil CAD pass.
-    /// Matching uses a 0.05 mm tolerance, the same the rest of the
-    /// codebase uses for paired-via bookkeeping.
+    /// Used by the silicone-sheet view overlay, the stencil CAD pass and the
+    /// stencil tear-check DRC. Matching uses a 0.05 mm tolerance, the same
+    /// the rest of the codebase uses for paired-via bookkeeping.
     func crossSiliconeViaPositions() -> [Point] {
         let eps = 0.05
         var result: [Point] = []
         for route in routes {
             var topPositions: [Point] = []
             var bottomPositions: [Point] = []
-            for segment in route.segments where segment.layer.depth == 0 {
+            for segment in route.segments {
                 for wp in segment.waypoints where wp.kind == .via {
                     switch segment.layer.plate {
                     case .top:    topPositions.append(wp.position)
