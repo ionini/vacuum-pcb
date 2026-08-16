@@ -54,6 +54,10 @@ enum ManufacturingActions {
                                       m.screwDomeBaseDiameter)
         s.screwHeadDepth = max(0.1, m.screwHeadDepth)
         s.screwNutDepth = max(0.1, m.screwNutDepth)
+        // Cap at the head diameter: a bore wider than the countersink would
+        // swallow the head straight through the plate.
+        s.screwThroughDiameter = max(0.5, min(ScrewGeometry.headDiameter,
+                                              m.screwThroughDiameter))
         s.stencilThickness = max(0.05, m.stencilThickness)
         s.stencilViaPadding = max(0.0, min(2.0, m.stencilViaPadding))
         s.stencilScrewPadding = max(0.0, min(6.0, m.stencilScrewPadding))

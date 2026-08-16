@@ -753,7 +753,7 @@ enum DRC {
         // `stencilScrewPadding` — the whole point of the check is the land left
         // between a hole and its neighbour, and the neighbour is as wide as the
         // stencil actually cuts it.
-        let screwRadius = (ScrewGeometry.throughDiameter + m.stencilScrewPadding) / 2
+        let screwRadius = (m.screwThroughDiameter + m.stencilScrewPadding) / 2
         let comps = Dictionary(flat.logic.components.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
 
         var padded = flat.physical.crossSiliconeViaPositions().map {
@@ -1087,7 +1087,8 @@ enum DRC {
                 topInnerZ: topInnerZ, topThickness: topThickness,
                 bottomInnerZ: bottomInnerZ, bottomThickness: bottomThickness,
                 protrusion: m.screwProtrusion, headDepth: m.screwHeadDepth,
-                nutDepth: m.screwNutDepth, headSide: screw.headSide
+                nutDepth: m.screwNutDepth,
+                throughDiameter: m.screwThroughDiameter, headSide: screw.headSide
             )
             for edge in edges {
                 let dxy = pointSegmentDistance(screw.p, edge.a, edge.b)

@@ -66,11 +66,11 @@ struct PlacementBodyView: View {
         .allowsHitTesting(false)
     }
 
-    /// Screw clearance hole as the *stencil* punches it — the 2.2 mm bore plus
-    /// `stencilScrewPadding`. Sheet-mode glyphs only; the plate views keep
-    /// drawing the bare bore, which is what the plates actually get.
+    /// Screw clearance hole as the *stencil* punches it — the through-bore
+    /// plus `stencilScrewPadding`. Sheet-mode glyphs only; the plate views
+    /// keep drawing the bare bore, which is what the plates actually get.
     private var sheetScrewDiameter: Double {
-        ScrewGeometry.throughDiameter + manufacturing.stencilScrewPadding
+        manufacturing.screwThroughDiameter + manufacturing.stencilScrewPadding
     }
 
     /// Silicone-sheet mode: draw only the feature that punches through the
@@ -265,7 +265,7 @@ struct PlacementBodyView: View {
         // the opposite plate's tint so the user can see at a glance which
         // side the screw is oriented to.
         let headR = ScrewGeometry.headDiameter / 2 * transform.ptsPerMm
-        let throughR = ScrewGeometry.throughDiameter / 2 * transform.ptsPerMm
+        let throughR = manufacturing.screwThroughDiameter / 2 * transform.ptsPerMm
         let hexCircumR = (ScrewGeometry.hexAcrossFlats / sqrt(3.0)) * transform.ptsPerMm
 
         let headColor = plateColor(placement.layer)
@@ -367,7 +367,7 @@ struct PlacementBodyView: View {
             screwCount: component.connectorScrewCount ?? ComponentKind.connectorMinScrewCount
         )
         let endX = (fp.exclusionRect.origin.x + fp.exclusionRect.size.width / 2) * transform.ptsPerMm
-        let throughR = ScrewGeometry.throughDiameter / 2 * transform.ptsPerMm
+        let throughR = manufacturing.screwThroughDiameter / 2 * transform.ptsPerMm
         let headR = ScrewGeometry.headDiameter / 2 * transform.ptsPerMm
         let hexCircumR = (ScrewGeometry.hexAcrossFlats / sqrt(3.0)) * transform.ptsPerMm
         for sy in screwYs {

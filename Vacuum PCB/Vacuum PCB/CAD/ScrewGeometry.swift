@@ -2,17 +2,15 @@ import Foundation
 import Euclid
 
 /// Mechanical-fastener constants and CSG geometry for `.screw` placements.
-/// Dimensions are hardcoded for one M2-class fastener profile — promote to
-/// `ManufacturingConstants` if/when designs need multiple sizes in one
-/// document.
+/// Head and nut dimensions are hardcoded for one M2-class fastener profile —
+/// promote to `ManufacturingConstants` if/when designs need multiple sizes in
+/// one document. The clearance through-bore already is per-document
+/// (`ManufacturingConstants.screwThroughDiameter`), passed in by callers.
 enum ScrewGeometry {
     /// Countersink head cavity carved into the top plate from the top face
     /// downward. Sized for a flanged M2 head sitting flush with the board.
     /// Depth is per-document (`ManufacturingConstants.screwHeadDepth`).
     static let headDiameter: Double = 5.1
-    /// Clearance bore through both plates (and through the silicone, which
-    /// the user punches at assembly). Sized so an M2 shaft slips through.
-    static let throughDiameter: Double = 2.2
     /// Hex-nut pocket carved into the bottom plate from the bottom face
     /// upward. The pocket is sized by parallel-face distance (across flats);
     /// the inscribed circle radius is `acrossFlats / 2`, the circumscribed
@@ -103,6 +101,7 @@ enum ScrewGeometry {
         topInnerZ: Double, topThickness: Double,
         bottomInnerZ: Double, bottomThickness: Double,
         protrusion: Double, headDepth: Double, nutDepth: Double,
+        throughDiameter: Double,
         headSide: Plate
     ) -> [ClearanceColumn] {
         let z = profileZ(
@@ -151,6 +150,7 @@ enum ScrewGeometry {
         domeBaseDiameter: Double,
         headDepth: Double,
         nutDepth: Double,
+        throughDiameter: Double,
         headSide: Plate = .top
     ) -> CSG {
         let eps = 0.05

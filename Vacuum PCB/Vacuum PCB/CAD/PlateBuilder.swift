@@ -273,6 +273,7 @@ enum PlateBuilder {
                     domeBaseDiameter: m.screwDomeBaseDiameter,
                     headDepth: m.screwHeadDepth,
                     nutDepth: m.screwNutDepth,
+                    throughDiameter: m.screwThroughDiameter,
                     headSide: placement.layer
                 )
                 topCutters.append(contentsOf: screw.topCutters)
@@ -443,6 +444,7 @@ enum PlateBuilder {
                         domeBaseDiameter: m.screwDomeBaseDiameter,
                         headDepth: m.screwHeadDepth,
                         nutDepth: m.screwNutDepth,
+                        throughDiameter: m.screwThroughDiameter,
                         headSide: .top
                     )
                     switch role {
@@ -560,7 +562,7 @@ enum PlateBuilder {
         // Screw holes get their own, usually much larger, relief: no fluid
         // crosses them, so a wide hole only spares the silicone from being
         // pinched against the shaft (and forgives an off-centre hand cut).
-        let stencilScrewDiameter = ScrewGeometry.throughDiameter + m.stencilScrewPadding
+        let stencilScrewDiameter = m.screwThroughDiameter + m.stencilScrewPadding
         for position in doc.physical.crossSiliconeViaPositions() {
             stencilCutters.append((position, stencilViaDiameter))
         }

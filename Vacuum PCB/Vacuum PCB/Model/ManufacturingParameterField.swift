@@ -128,6 +128,8 @@ struct ManufacturingParameterField: Identifiable {
         .number("padsFilletRadius", "Transistor source/drain pads", "Edge fillet radius",
                 \.padsFilletRadius),
 
+        .number("screwThroughDiameter", "Screws", "Through-hole diameter",
+                \.screwThroughDiameter),
         .number("screwHeadDepth", "Screws", "Head depth", \.screwHeadDepth),
         .number("screwNutDepth", "Screws", "Nut depth", \.screwNutDepth),
         .number("screwProtrusion", "Screws", "Head/nut protrusion", \.screwProtrusion),

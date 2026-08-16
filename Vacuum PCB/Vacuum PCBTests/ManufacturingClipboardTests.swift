@@ -92,6 +92,7 @@ struct ManufacturingClipboardTests {
         incoming.screwDomeBaseDiameter += 1
         incoming.screwHeadDepth += 0.5
         incoming.screwNutDepth += 0.5
+        incoming.screwThroughDiameter += 0.2
         incoming.stencilThickness += 0.1
         incoming.stencilViaPadding += 0.5
         incoming.stencilScrewPadding += 0.5

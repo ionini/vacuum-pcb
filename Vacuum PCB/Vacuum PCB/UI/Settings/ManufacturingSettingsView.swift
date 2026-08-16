@@ -159,11 +159,12 @@ struct ManufacturingSettingsView: View {
 
             if scope == .full {
                 group("Screws") {
+                    row("Through-hole diameter", $draftMfg.screwThroughDiameter)
                     row("Head depth", $draftMfg.screwHeadDepth)
                     row("Nut depth", $draftMfg.screwNutDepth)
                     row("Head/nut protrusion", $draftMfg.screwProtrusion)
                     row("Volcano base diameter", $draftMfg.screwDomeBaseDiameter)
-                    Text("Head and nut depths size the countersink and hex pocket to whatever fastener you're using (defaults match an M2-class screw). Protrusion is how far the head and nut stick past their plate's outer face — 0 keeps both flush. Positive values reduce the inlay and rise a Mt-Fuji-shaped volcano around the protruding portion so the head/nut is still held by printed material on the sides; the cavity stays open at the top so a driver can still reach the fastener. Volcano base diameter sets how wide the dome is at its base; the flat plateau on top always sits 0.75 mm outside the cavity, so widening the base only widens the slope. Volcano fields are ignored when protrusion is 0.")
+                    Text("Through-hole diameter is the shaft's clearance bore through both plates — the screw must slip through freely, not thread into the plastic, or the plastic instead of the nut sets the plate separation (printed holes come out slightly undersized; when in doubt go wider). Head and nut depths size the countersink and hex pocket to whatever fastener you're using (defaults match an M2-class screw). Protrusion is how far the head and nut stick past their plate's outer face — 0 keeps both flush. Positive values reduce the inlay and rise a Mt-Fuji-shaped volcano around the protruding portion so the head/nut is still held by printed material on the sides; the cavity stays open at the top so a driver can still reach the fastener. Volcano base diameter sets how wide the dome is at its base; the flat plateau on top always sits 0.75 mm outside the cavity, so widening the base only widens the slope. Volcano fields are ignored when protrusion is 0.")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
             }
@@ -173,10 +174,10 @@ struct ManufacturingSettingsView: View {
                 row("Via hole padding", $draftMfg.stencilViaPadding)
                 stencilHoleReadout(draftMfg.channelDiameter + draftMfg.stencilViaPadding)
                 row("Screw hole padding", $draftMfg.stencilScrewPadding)
-                stencilHoleReadout(ScrewGeometry.throughDiameter + draftMfg.stencilScrewPadding)
+                stencilHoleReadout(draftMfg.screwThroughDiameter + draftMfg.stencilScrewPadding)
                 Text(scope == .full
-                     ? "Flat cutting template exported next to the plates. Holes at every cross-silicone via and screw shaft; sized to the silicone sheet so it doubles as a 1:1 cutting guide. Via hole padding adds to each via hole's diameter (0–2 mm) to compensate for the silicone plug contracting when squished between the plates. Screw hole padding does the same for every screw bore (0–6 mm on top of the 2.2 mm shaft clearance, standalone and connector end-cap alike) — no fluid crosses those, so they can be opened up well past the via holes to keep the silicone from being pinched against the shaft."
-                     : "Via hole padding adds to each cross-silicone via hole's diameter in the stencil (0–2 mm) to compensate for the silicone plug contracting when squished between the plates. Screw hole padding does the same for every screw bore (0–6 mm on top of the 2.2 mm shaft clearance) — no fluid crosses those, so they can be opened up well past the via holes.")
+                     ? "Flat cutting template exported next to the plates. Holes at every cross-silicone via and screw shaft; sized to the silicone sheet so it doubles as a 1:1 cutting guide. Via hole padding adds to each via hole's diameter (0–2 mm) to compensate for the silicone plug contracting when squished between the plates. Screw hole padding does the same for every screw bore (0–6 mm on top of the screw through-hole diameter, standalone and connector end-cap alike) — no fluid crosses those, so they can be opened up well past the via holes to keep the silicone from being pinched against the shaft."
+                     : "Via hole padding adds to each cross-silicone via hole's diameter in the stencil (0–2 mm) to compensate for the silicone plug contracting when squished between the plates. Screw hole padding does the same for every screw bore (0–6 mm on top of the screw through-hole diameter) — no fluid crosses those, so they can be opened up well past the via holes.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
 

@@ -145,6 +145,16 @@ struct ManufacturingConstants: Codable, Hashable {
     /// outer face.
     var screwNutDepth: Double
 
+    /// Diameter of the screw's clearance bore through both plates (and, plus
+    /// `stencilScrewPadding`, through the silicone). Must let the shaft slip
+    /// through *freely*: a bore the screw has to thread its way into leaves
+    /// the plastic — not the nut — carrying the clamp load, so the plates sit
+    /// at whatever separation the plastic thread grabbed and gasket
+    /// compression can only jump in discrete steps (bench finding,
+    /// 2026-08-16). FDM holes also print undersized. Legacy hardcoded value
+    /// was 2.2 (M2 close fit); new documents default to 2.4 (M2 normal fit).
+    var screwThroughDiameter: Double
+
     /// Thickness of the auxiliary stencil sheet exported alongside the
     /// plates. The stencil is a flat body matching the board outline with
     /// through-holes at every cross-silicone via and screw shaft — print it
@@ -161,7 +171,7 @@ struct ManufacturingConstants: Codable, Hashable {
     var stencilViaPadding: Double
 
     /// Extra diameter added to each screw clearance hole in the *stencil* only
-    /// (the plate bores stay at `ScrewGeometry.throughDiameter`). Screw holes
+    /// (the plate bores stay at `screwThroughDiameter`). Screw holes
     /// want far more relief than via holes: a via hole only has to stay clear
     /// of a fluid path, while silicone squeezed against a rigid shaft gets
     /// pinched and extrudes into the bore, and a hand-cut hole that small is
@@ -255,6 +265,7 @@ struct ManufacturingConstants: Codable, Hashable {
         screwDomeBaseDiameter: 8.1,
         screwHeadDepth: 1.5,
         screwNutDepth: 1.5,
+        screwThroughDiameter: 2.4,
         stencilThickness: 0.2,
         stencilViaPadding: 0,
         stencilScrewPadding: 1.0,
@@ -284,6 +295,7 @@ struct ManufacturingConstants: Codable, Hashable {
         case plateCornerFillet
         case ledDimpleDiameter, ledDimpleDepth
         case screwProtrusion, screwDomeBaseDiameter, screwHeadDepth, screwNutDepth
+        case screwThroughDiameter
         case stencilThickness, stencilViaPadding, stencilScrewPadding
         case castingMargin, moldWallThickness
         case minWallThickness, preferredWallThickness
@@ -303,6 +315,7 @@ struct ManufacturingConstants: Codable, Hashable {
          ledDimpleDiameter: Double, ledDimpleDepth: Double,
          screwProtrusion: Double, screwDomeBaseDiameter: Double,
          screwHeadDepth: Double, screwNutDepth: Double,
+         screwThroughDiameter: Double = 2.2,
          stencilThickness: Double, stencilViaPadding: Double,
          stencilScrewPadding: Double = 0,
          castingMargin: Double = 2.0, moldWallThickness: Double = 3.0,
@@ -333,6 +346,7 @@ struct ManufacturingConstants: Codable, Hashable {
         self.screwDomeBaseDiameter = screwDomeBaseDiameter
         self.screwHeadDepth = screwHeadDepth
         self.screwNutDepth = screwNutDepth
+        self.screwThroughDiameter = screwThroughDiameter
         self.stencilThickness = stencilThickness
         self.stencilViaPadding = stencilViaPadding
         self.stencilScrewPadding = stencilScrewPadding
@@ -393,6 +407,11 @@ struct ManufacturingConstants: Codable, Hashable {
                                                forKey: .screwHeadDepth) ?? 2.7
         screwNutDepth = try c.decodeIfPresent(Double.self,
                                               forKey: .screwNutDepth) ?? 1.7
+        // Pinned to 2.2 (the old hardcoded `ScrewGeometry.throughDiameter`)
+        // so reopening an existing board never silently resizes bores in
+        // plates the user may already have printed.
+        screwThroughDiameter = try c.decodeIfPresent(Double.self,
+                                                     forKey: .screwThroughDiameter) ?? 2.2
         stencilThickness = try c.decodeIfPresent(Double.self,
                                                  forKey: .stencilThickness) ?? 0.2
         stencilViaPadding = try c.decodeIfPresent(Double.self,

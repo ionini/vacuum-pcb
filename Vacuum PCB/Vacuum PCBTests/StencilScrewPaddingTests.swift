@@ -55,8 +55,8 @@ struct StencilScrewPaddingTests {
     func paddingWidensStencilHole() {
         var doc = makeDoc()
         addScrew(&doc, label: "S1", at: Point(x: 40, y: 20))
-        // 1.4 mm out from the centre: outside the bare 2.2 mm bore (r = 1.1),
-        // inside a hole padded by 2 mm (r = 2.1).
+        // 1.4 mm out from the centre: outside the bare 2.4 mm default bore
+        // (r = 1.2), inside a hole padded by 2 mm (r = 2.2).
         let probe = Vector(41.4, 20, 0)
 
         doc.manufacturing.stencilScrewPadding = 0
@@ -70,7 +70,7 @@ struct StencilScrewPaddingTests {
         // The plates keep the fastener's own clearance bore either way — the
         // padding is a silicone-relief parameter, not a screw-fit one. Probed
         // at z = 1 mm: inside the top plate (0.05…3.05), below the head
-        // countersink, and 1.4 mm out from the 2.2 mm bore → printed material.
+        // countersink, and 1.4 mm out from the 2.4 mm bore → printed material.
         let plateProbe = Vector(41.4, 20, 1.0)
         #expect(bare.topPlate.intersects(plateProbe))
         #expect(padded.topPlate.intersects(plateProbe))
