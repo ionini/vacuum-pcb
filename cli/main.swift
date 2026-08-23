@@ -670,16 +670,21 @@ func reportMesh(_ r: Validators.MeshResult, json: Bool) {
 
 /// The solids the STL export ships, in the GUI's order, with empty bodies
 /// dropped. Mirrors `STLExportDocument` / DocumentView's Bambu path:
-/// top plate, bottom plate, stencil, mold frame.
+/// top plate, bottom plate, stencil, one gasket stencil per `.bottomExtend`
+/// connector (`stencil_<label>`), mold frame.
 func exportBodies(_ out: PlateBuilder.Output) -> [(name: String, mesh: Mesh)] {
-    [("topPlate", out.topPlate), ("bottomPlate", out.bottomPlate),
-     ("stencil", out.stencil), ("moldFrame", out.moldFrame)]
+    ([("topPlate", out.topPlate), ("bottomPlate", out.bottomPlate),
+      ("stencil", out.stencil)]
+     + out.connectorStencils.map { ("stencil_\($0.name)", $0.mesh) }
+     + [("moldFrame", out.moldFrame)])
         .filter { !$0.1.isEmpty }
         .map { (name: $0.0, mesh: $0.1) }
 }
 
 /// Resolve a `--body` selector to one of `exportBodies`' names. Accepts the
 /// canonical camelCase name plus the obvious short forms, case-insensitively.
+/// Connector gasket stencils aren't fixed names — they're matched against the
+/// built body list at the call site instead.
 func canonicalBodyName(_ raw: String) -> String? {
     switch raw.lowercased() {
     case "topplate", "top": return "topPlate"
@@ -1223,14 +1228,16 @@ USAGE:
 
   vacuum-cli export <file.vpcb> [--out PATH] [--body NAME] [--json]
       Build the printed solids and write them as a single binary STL — the
-      same bodies (top plate, bottom plate, stencil, mold frame), per-body
-      makeWatertight() and merge the GUI's "Save STL" / Bambu path produces.
+      same bodies (top plate, bottom plate, stencil, one gasket stencil per
+      .bottomExtend connector, mold frame), per-body makeWatertight() and
+      merge the GUI's "Save STL" / Bambu path produces.
       Defaults to <file>.stl beside the input. Reports each solid's volume
       and watertightness; exits non-zero (file still written) if any solid is
       not watertight, since a slicer would reject it.
       --body writes ONE solid instead of the whole set — topPlate,
-      bottomPlate, stencil or moldFrame (short forms: top, bottom, mold).
-      Useful for printing a single plate as its own object.
+      bottomPlate, stencil, stencil_<connector label> or moldFrame (short
+      forms: top, bottom, mold). Useful for printing a single plate as its
+      own object.
       --label TEXT unions raised Helvetica text onto the (single) body's upper
       face, centred — so copies that differ only by a swept parameter can still
       be told apart after they leave the bed. --label-size (default 4 mm) and
@@ -1250,9 +1257,10 @@ USAGE:
       plates stay separate objects, so they can be arranged and printed
       independently (e.g. one plate per job). Never select all four files at
       once (they'd fold into ONE inseparable object) and never "Split
-      objects" (splitting detaches the modifier). The stencil / mold frame
-      (no pneumatics) are written as separate <base>_stencil.stl /
-      <base>_mold.stl objects when present.
+      objects" (splitting detaches the modifier). The stencil / connector
+      gasket stencils / mold frame (no pneumatics) are written as separate
+      <base>_stencil.stl / <base>_stencil_<label>.stl / <base>_mold.stl
+      objects when present.
       Also writes <base>_bambu_export.json (unless --no-manifest). --out is
       the destination directory (default: a <base>_bambu folder beside the
       input). --modifier-xy / --modifier-z override the wall / roof-floor
@@ -1692,10 +1700,16 @@ do {
         // --body writes ONE named solid instead of the whole set, so a script can
         // print a single plate without hand-editing the multi-solid STL.
         if let selector = bodySelector {
-            guard let wanted = canonicalBodyName(selector) else {
-                fail("error: unknown --body \(selector) — expected topPlate, bottomPlate, stencil or moldFrame")
-            }
             let available = bodies.map(\.name)
+            // Fixed names resolve through the canonical table; connector
+            // gasket stencils (`stencil_<label>`) are matched against the
+            // built list case-insensitively.
+            let wanted = canonicalBodyName(selector)
+                ?? available.first { $0.lowercased() == selector.lowercased() }
+            guard let wanted else {
+                fail("error: unknown --body \(selector) — expected topPlate, bottomPlate, stencil, "
+                     + "a connector gasket stencil (stencil_<label>) or moldFrame")
+            }
             bodies = bodies.filter { $0.name == wanted }
             if bodies.isEmpty {
                 fail("error: this board has no \(wanted) — it produced \(available.joined(separator: ", "))")

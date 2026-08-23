@@ -181,6 +181,16 @@ struct ManufacturingSettingsView: View {
                     .font(.caption2).foregroundStyle(.secondary)
             }
 
+            group("Connector gasket") {
+                row("Gasket width", $draftMfg.connectorGasketWidth)
+                row("Via hole padding", $draftMfg.connectorGasketViaPadding)
+                stencilHoleReadout(draftMfg.channelDiameter + draftMfg.connectorGasketViaPadding)
+                row("Screw hole padding", $draftMfg.connectorGasketScrewPadding)
+                stencilHoleReadout(draftMfg.screwThroughDiameter + draftMfg.connectorGasketScrewPadding)
+                Text("Each bottom-extend connector's silicone is cut as its own crushed-gasket piece by a per-connector stencil: a stadium-shaped band concentric to the pin/screw row (cast in the same pour, separated when cut). Gasket width is the band's radial silicone past each pin hole's edge — it must stay inside the protrusion footprint to seal against plate on both sides. The paddings mirror the stencil's via/screw paddings but run wider by default: the crushed band stretches, closing pin holes inward (via padding compensates), and any silicone left near a screw shaft gets squeezed onto the threads and steals clamp force from the nut (screw padding keeps it clear).")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+
             if scope == .full {
                 group("Mold") {
                     row("Casting margin", $draftMfg.castingMargin)

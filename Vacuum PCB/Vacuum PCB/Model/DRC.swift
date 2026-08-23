@@ -721,20 +721,23 @@ enum DRC {
 
     // MARK: - Stencil cutting-sheet crowding
 
-    /// Flags places where the silicone cutting *stencil* would tear: a fluid
-    /// through-hole (a cross-silicone via or a bottom-extend connector pin, both
-    /// enlarged by `stencilViaPadding`) sits within `minWallThickness` of another
-    /// hole in the sheet — another fluid hole, a screw clearance bore, or a
-    /// transistor / LED dimple (where the silicone has to flex). Stencil-only —
-    /// the printed plate bores are unaffected by either padding, so this never
-    /// duplicates the plate checks. Runs on the *flattened* design because the
-    /// stencil itself is built flattened (it punches sub-part vias too), so a
-    /// top-level-only pass would miss almost every hole. The flatten is
-    /// computed once in `check` and passed in.
+    /// Flags places where a silicone cutting *stencil* would tear: a fluid
+    /// through-hole sits within `minWallThickness` of another hole in the same
+    /// cut piece. The silicone is cut into separate pieces — the board sheet
+    /// (cross-silicone vias, standalone screw bores, dimples) and one gasket
+    /// per `.bottomExtend` connector (its pin tubes + end-cap screws, at the
+    /// gasket paddings — see `ConnectorGasket`) — and holes only threaten each
+    /// other *within* a piece: a connector hole near a board via is fine, the
+    /// pieces are cut apart there anyway. Stencil-only — the printed plate
+    /// bores are unaffected by any padding, so this never duplicates the plate
+    /// checks. Runs on the *flattened* design because the stencils are built
+    /// flattened (they punch sub-part vias too), so a top-level-only pass
+    /// would miss almost every hole. The flatten is computed once in `check`
+    /// and passed in.
     ///
     /// Every pair measured has a fluid hole on at least one side, deliberately:
     /// what's at stake is the silicone land a via or pin needs to seal against,
-    /// which is why `stencilScrewPadding` has to be in the screw radius here —
+    /// which is why the screw paddings have to be in the screw radii here —
     /// a relief hole widened into a via's land leaks. Two *screw* holes merging
     /// is not a defect (nothing seals or flows between them), so opening the
     /// screw padding up never flags on its own.
@@ -744,60 +747,6 @@ enum DRC {
         let threshold = m.minWallThickness
 
         struct Hole { let pos: Point; let radius: Double; let label: String }
-        // Fluid holes: cross-silicone vias and bottom-extend connector pins both
-        // carry fluid through the sheet, so both get the `stencilViaPadding`
-        // oversize. The tear check is centred on these — they're the holes whose
-        // surrounding silicone has to seal.
-        let paddedRadius = (m.channelDiameter + m.stencilViaPadding) / 2
-        // Screw bores are neighbours, not centres, but their size still tracks
-        // `stencilScrewPadding` — the whole point of the check is the land left
-        // between a hole and its neighbour, and the neighbour is as wide as the
-        // stencil actually cuts it.
-        let screwRadius = (m.screwThroughDiameter + m.stencilScrewPadding) / 2
-        let comps = Dictionary(flat.logic.components.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-
-        var padded = flat.physical.crossSiliconeViaPositions().map {
-            Hole(pos: $0, radius: paddedRadius, label: "via")
-        }
-        // Neighbours that share the sheet but never pair with each other: screw
-        // clearance shafts (two of those merging is a wider relief pocket, not a
-        // defect) and the transistor / LED dimples the silicone deflects into.
-        var others: [Hole] = []
-        for pl in flat.physical.placements {
-            guard let c = comps[pl.componentId] else { continue }
-            switch c.kind {
-            case .screw:
-                others.append(Hole(pos: pl.position, radius: screwRadius, label: "screw"))
-            case .connector where (c.connectorRole ?? .bottomExtend) == .bottomExtend
-                    && !(c.connectorDebugPorts ?? false):   // debug bores never cross the sheet
-                let fp = c.footprint(m, snapshots: flat.librarySnapshots)
-                for pin in fp.pins {
-                    padded.append(Hole(pos: pl.worldPosition(of: pin), radius: paddedRadius,
-                                       label: "connector pin"))
-                }
-                // End-cap screw bores, punched at the protrusion's outer edge
-                // exactly as `PlateBuilder` cuts them. They sit close to the
-                // pin holes, so a wide screw padding crowds them first.
-                let halfExt = fp.exclusionRect.size.width / 2
-                let screwYs = ComponentKind.connectorScrewLocalYs(
-                    pinCount: c.connectorPinCount ?? 1,
-                    screwCount: c.connectorScrewCount ?? ComponentKind.connectorMinScrewCount
-                )
-                for sy in screwYs {
-                    let endWorld = pl.worldPosition(of: FootprintPin(
-                        key: "_endcap", offset: Point(x: halfExt, y: sy), relativeLayer: .same
-                    ))
-                    others.append(Hole(pos: endWorld, radius: screwRadius, label: "end-cap screw"))
-                }
-            case .transistor:
-                others.append(Hole(pos: pl.position, radius: m.dimpleDiameter / 2, label: "transistor dimple"))
-            case .led:
-                others.append(Hole(pos: pl.position, radius: m.ledDimpleDiameter / 2, label: "LED dimple"))
-            default:
-                break
-            }
-        }
-        guard !padded.isEmpty else { return [] }
 
         func dist(_ a: Point, _ b: Point) -> Double {
             ((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y)).squareRoot()
@@ -807,19 +756,85 @@ enum DRC {
             issues.append(Issue(netId: UUID(), netLabel: "Stencil",
                                 kind: .stencilHole(position: pos, gap: max(0, gap), detail: detail)))
         }
-
-        for i in 0..<padded.count {
-            for j in (i + 1)..<padded.count {
-                let wall = dist(padded[i].pos, padded[j].pos) - padded[i].radius - padded[j].radius
-                if wall < threshold {
-                    emit(midpoint(padded[i].pos, padded[j].pos), wall,
-                         "\(padded[i].label) hole ↔ \(padded[j].label) hole")
+        // Pair check within ONE cut piece: fluid holes against each other and
+        // against the piece's non-fluid neighbours.
+        func check(padded: [Hole], others: [Hole]) {
+            for i in 0..<padded.count {
+                for j in (i + 1)..<padded.count {
+                    let wall = dist(padded[i].pos, padded[j].pos) - padded[i].radius - padded[j].radius
+                    if wall < threshold {
+                        emit(midpoint(padded[i].pos, padded[j].pos), wall,
+                             "\(padded[i].label) hole ↔ \(padded[j].label) hole")
+                    }
+                }
+                for o in others {
+                    let wall = dist(padded[i].pos, o.pos) - padded[i].radius - o.radius
+                    if wall < threshold { emit(midpoint(padded[i].pos, o.pos), wall, "\(padded[i].label) hole ↔ \(o.label)") }
                 }
             }
-            for o in others {
-                let wall = dist(padded[i].pos, o.pos) - padded[i].radius - o.radius
-                if wall < threshold { emit(midpoint(padded[i].pos, o.pos), wall, "\(padded[i].label) hole ↔ \(o.label)") }
+        }
+
+        let comps = Dictionary(flat.logic.components.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+
+        // Board sheet. Fluid holes are the cross-silicone vias, enlarged by
+        // `stencilViaPadding` — the holes whose surrounding silicone has to
+        // seal. Their non-fluid neighbours: standalone screw clearance shafts
+        // (as wide as the stencil actually cuts them, so `stencilScrewPadding`
+        // is in the radius) and the transistor / LED dimples the silicone
+        // deflects into.
+        let paddedRadius = (m.channelDiameter + m.stencilViaPadding) / 2
+        let screwRadius = (m.screwThroughDiameter + m.stencilScrewPadding) / 2
+        let boardPadded = flat.physical.crossSiliconeViaPositions().map {
+            Hole(pos: $0, radius: paddedRadius, label: "via")
+        }
+        var boardOthers: [Hole] = []
+        for pl in flat.physical.placements {
+            guard let c = comps[pl.componentId] else { continue }
+            switch c.kind {
+            case .screw:
+                boardOthers.append(Hole(pos: pl.position, radius: screwRadius, label: "screw"))
+            case .transistor:
+                boardOthers.append(Hole(pos: pl.position, radius: m.dimpleDiameter / 2, label: "transistor dimple"))
+            case .led:
+                boardOthers.append(Hole(pos: pl.position, radius: m.ledDimpleDiameter / 2, label: "LED dimple"))
+            default:
+                break
             }
+        }
+        check(padded: boardPadded, others: boardOthers)
+
+        // One gasket piece per `.bottomExtend` connector: its pin tubes (fluid)
+        // against its end-cap screw bores, both at the gasket diameters
+        // `PlateBuilder` actually cuts (`ConnectorGasket`, the shared source).
+        for pl in flat.physical.placements {
+            guard let c = comps[pl.componentId],
+                  c.kind == .connector,
+                  (c.connectorRole ?? .bottomExtend) == .bottomExtend,
+                  !(c.connectorDebugPorts ?? false)   // debug bores never cross the sheet
+            else { continue }
+            let fp = c.footprint(m, snapshots: flat.librarySnapshots)
+            let pinCentres = fp.pins.map { pl.worldPosition(of: $0) }
+            let halfExt = fp.exclusionRect.size.width / 2
+            let screwYs = ComponentKind.connectorScrewLocalYs(
+                pinCount: c.connectorPinCount ?? 1,
+                screwCount: c.connectorScrewCount ?? ComponentKind.connectorMinScrewCount
+            )
+            let screwCentres = screwYs.map { sy in
+                pl.worldPosition(of: FootprintPin(
+                    key: "_endcap", offset: Point(x: halfExt, y: sy), relativeLayer: .same
+                ))
+            }
+            guard let gasket = ConnectorGasket.layout(
+                pinCentres: pinCentres, screwCentres: screwCentres, m: m
+            ) else { continue }
+            check(
+                padded: gasket.pinHoles.map {
+                    Hole(pos: $0.position, radius: $0.diameter / 2, label: "connector pin")
+                },
+                others: gasket.screwHoles.map {
+                    Hole(pos: $0.position, radius: $0.diameter / 2, label: "end-cap screw")
+                }
+            )
         }
         return issues
     }
