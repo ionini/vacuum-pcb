@@ -444,7 +444,7 @@ struct DocumentView: View {
                     bottom: built.bottomPlate,
                     topFeatures: built.topFeatures,
                     bottomFeatures: built.bottomFeatures,
-                    stencil: built.stencil,
+                    stencil: built.combinedStencil,
                     moldFrame: built.moldFrame,
                     envelope: envelopeMesh,
                     envelopeRevision: envelopeRevision,
@@ -904,7 +904,9 @@ struct DocumentView: View {
 
     private var stlExport: STLExportDocument? {
         guard let built else { return nil }
-        let meshes = [built.topPlate, built.bottomPlate, built.stencil, built.moldFrame]
+        let meshes = ([built.topPlate, built.bottomPlate, built.stencil]
+                      + built.connectorStencils.map(\.mesh)
+                      + [built.moldFrame])
             .filter { !$0.isEmpty }
         return STLExportDocument(meshes: meshes)
     }
@@ -1073,7 +1075,9 @@ struct DocumentView: View {
         // solids' polygons into one multi-solid mesh (Mesh(_:), no CSG) rather
         // than Mesh.merge, which would boolean-union the concentric plates.
         let combined = Mesh(
-            [built.topPlate, built.bottomPlate, built.stencil, built.moldFrame]
+            ([built.topPlate, built.bottomPlate, built.stencil]
+             + built.connectorStencils.map(\.mesh)
+             + [built.moldFrame])
                 .filter { !$0.isEmpty }
                 .flatMap { $0.makeWatertight().polygons }
         )

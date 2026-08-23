@@ -125,7 +125,9 @@ enum Validators {
             body("topPlate", out.topPlate, required: true),
             body("bottomPlate", out.bottomPlate, required: true),
             body("stencil", out.stencil, required: false),
-        ])
+        ] + out.connectorStencils.map {
+            body("stencil_\($0.name)", $0.mesh, required: false)
+        })
     }
 
     // MARK: - Exhaustive logic sweep + convergence

@@ -61,6 +61,11 @@ enum ManufacturingActions {
         s.stencilThickness = max(0.05, m.stencilThickness)
         s.stencilViaPadding = max(0.0, min(2.0, m.stencilViaPadding))
         s.stencilScrewPadding = max(0.0, min(6.0, m.stencilScrewPadding))
+        // Gasket paddings mirror the stencil paddings' ranges; the band width
+        // just needs to stay positive (the capsule degenerates gracefully).
+        s.connectorGasketWidth = max(0.0, m.connectorGasketWidth)
+        s.connectorGasketViaPadding = max(0.0, min(2.0, m.connectorGasketViaPadding))
+        s.connectorGasketScrewPadding = max(0.0, min(6.0, m.connectorGasketScrewPadding))
         s.castingMargin = max(0.0, m.castingMargin)
         s.moldWallThickness = max(0.0, m.moldWallThickness)
         s.minWallThickness = max(0.05, m.minWallThickness)

@@ -24,8 +24,21 @@ enum PlateBuilder {
         /// Flat printed sheet sitting at z=0 (the silicone gap), matching the
         /// board outline and punched through at every cross-silicone via and
         /// screw shaft. Used at assembly as a 1:1 cutting template for the
-        /// silicone sheet. Empty when `stencilThickness` is 0.
+        /// *board sheet* silicone only — connector gaskets get their own
+        /// stencils (`connectorStencils`), so this one carries no connector
+        /// holes and no protrusion extensions; its outer edge doubles as the
+        /// trim line that separates the board sheet from the connector-tab
+        /// silicone. Empty when `stencilThickness` is 0.
         let stencil: Mesh
+        /// One cutting template per `.bottomExtend` connector (debug-ports
+        /// connectors excluded): a stadium-shaped slab concentric to the
+        /// connector's pin/screw row, punched at every pin tube and end-cap
+        /// screw — the crushed-gasket piece the clamp screws compress. Cast
+        /// in the same pour as the board sheet (the mold is unchanged), cut
+        /// as separate pieces. Named by the connector's label (deduplicated)
+        /// for per-file export. Empty when `stencilThickness` is 0. See
+        /// `ConnectorGasket`.
+        let connectorStencils: [(name: String, mesh: Mesh)]
         /// Open-top/open-bottom rounded-rect frame ("cookie cutter") the
         /// silicone sheet is cast in — printed `siliconeThickness` tall and
         /// surrounding the board outline by `castingMargin + moldWallThickness`.
@@ -37,6 +50,15 @@ enum PlateBuilder {
         /// Measured off the cavity solid so overlapping connector tabs are
         /// counted once. 0 when the frame is disabled.
         let siliconeVolumeMM3: Double
+
+        /// Every stencil body — board sheet + connector gaskets — as one
+        /// multi-solid mesh: plain polygon concatenation, no CSG (the bodies
+        /// never overlap in XY — gaskets live in the protrusion area outside
+        /// the board outline). For the 3D preview and combined-STL paths that
+        /// treat "the stencil" as a single display body.
+        var combinedStencil: Mesh {
+            Mesh(([stencil] + connectorStencils.map(\.mesh)).flatMap { $0.polygons })
+        }
     }
 
     static func build(_ doc: CircuitDocument) -> Output {
@@ -83,12 +105,7 @@ enum PlateBuilder {
         // keep volcano domes from overhanging the board edge).
         var topUnclippedAdditions: [Mesh] = []
         var bottomUnclippedAdditions: [Mesh] = []
-        // Silicone (stencil) extensions added by `.bottomExtend` connectors
-        // — the silicone gasket extends with the bottom plate into the
-        // protrusion area so the mating side's top plate can clamp against
-        // it. Empty when no `.bottomExtend` connector is present.
-        var stencilExtensions: [Mesh] = []
-        // World-space outlines of those same `.bottomExtend` protrusions — the
+        // World-space outlines of the `.bottomExtend` protrusions — the
         // casting frame must wrap the silicone where it extends past the board
         // edge, so the mold cavity grows to follow each one.
         var moldExtensionOutlines: [Rect] = []
@@ -367,20 +384,12 @@ enum PlateBuilder {
                 switch role {
                 case .bottomExtend:
                     bottomUnclippedAdditions.append(bodySlab)
-                    // Silicone extends with the bottom plate. Build a
-                    // matching slab at z=0 spanning the *stencil* thickness
-                    // (NOT siliconeThickness — the stencil is a printed
-                    // cutting template that's typically thicker than the
-                    // gasket it shapes). Same rounded outline so the
-                    // stencil's protrusion matches the bottom plate's.
-                    let stencilSlab = plateBase(
-                        outline: protrusionOutline,
-                        thickness: m.stencilThickness,
-                        innerZ: -m.stencilThickness / 2,
-                        side: .top,
-                        edgeChamfer: connectorCornerRadius
-                    )
-                    stencilExtensions.append(stencilSlab)
+                    // The mold still casts silicone across the whole
+                    // protrusion (one pour covers board sheet + connector
+                    // tabs), but the tab silicone is cut by the connector's
+                    // own gasket stencil — built with the other stencils
+                    // below — not by a protrusion-shaped extension of the
+                    // board sheet's stencil.
                     moldExtensionOutlines.append(protrusionOutline)
                 case .topExtend:
                     topUnclippedAdditions.append(bodySlab)
@@ -572,47 +581,62 @@ enum PlateBuilder {
             else { continue }
             stencilCutters.append((placement.position, stencilScrewDiameter))
         }
-        // `.bottomExtend` connector tubes and end-caps pass through the
-        // extended silicone region — punch the same holes in the stencil so
-        // the cutting template lines up with the printed protrusion. A pin
-        // carries fluid through the sheet exactly like a via, so its hole gets
-        // the same shrink padding (`stencilViaDiameter`); the end-cap screw
-        // bores below are rigid clearance holes and take the screw padding,
-        // like any other screw.
-        for placement in doc.physical.placements {
-            guard let component = componentsById[placement.componentId],
-                  component.kind == .connector,
-                  (component.connectorRole ?? .bottomExtend) == .bottomExtend,
-                  !(component.connectorDebugPorts ?? false)   // debug bores never cross the sheet
-            else { continue }
-            let fp = component.footprint(m)
-            for pin in fp.pins {
-                let pinWorld = placement.worldPosition(of: pin)
-                stencilCutters.append((pinWorld, stencilViaDiameter))
-            }
-            // End-cap screw clearance holes — same layout as the bottom
-            // plate's end-cap bores so the stencil punches match. Punches
-            // only the through-bore (not the nut pocket — that's in the
-            // bottom plate proper, not in the silicone gasket).
-            let halfExt = fp.exclusionRect.size.width / 2
-            let screwYs = ComponentKind.connectorScrewLocalYs(
-                pinCount: component.connectorPinCount ?? 1,
-                screwCount: component.connectorScrewCount ?? ComponentKind.connectorMinScrewCount
-            )
-            for sy in screwYs {
-                let endLocal = Point(x: halfExt, y: sy)
-                let endWorld = placement.worldPosition(of: FootprintPin(
-                    key: "_endcap", offset: endLocal, relativeLayer: .same
-                ))
-                stencilCutters.append((endWorld, stencilScrewDiameter))
-            }
-        }
         let stencil = buildStencil(
             outline: outline, thickness: m.stencilThickness,
             cornerRadius: m.plateCornerFillet,
-            extensions: stencilExtensions,
             cutters: stencilCutters
         )
+
+        // Per-connector gasket stencils. Each `.bottomExtend` connector's
+        // silicone is its own crushed-gasket piece — a stadium concentric to
+        // the pin/screw row (see `ConnectorGasket`) — cut by its own template
+        // rather than by holes in the board sheet's stencil. Pins and end-cap
+        // screws take the gasket paddings, not the board-sheet ones: the
+        // crushed band stretches more, so its holes want more relief.
+        var connectorStencils: [(name: String, mesh: Mesh)] = []
+        if m.stencilThickness > 0 {
+            var usedNames: Set<String> = []
+            for placement in doc.physical.placements {
+                guard let component = componentsById[placement.componentId],
+                      component.kind == .connector,
+                      (component.connectorRole ?? .bottomExtend) == .bottomExtend,
+                      !(component.connectorDebugPorts ?? false)   // debug bores never cross the sheet
+                else { continue }
+                let fp = component.footprint(m)
+                let pinCentres = fp.pins.map { placement.worldPosition(of: $0) }
+                // End-cap screw centres — same layout as the bottom plate's
+                // end-cap bores so the gasket's clearance holes line up.
+                let halfExt = fp.exclusionRect.size.width / 2
+                let screwYs = ComponentKind.connectorScrewLocalYs(
+                    pinCount: component.connectorPinCount ?? 1,
+                    screwCount: component.connectorScrewCount ?? ComponentKind.connectorMinScrewCount
+                )
+                let screwCentres = screwYs.map { sy in
+                    placement.worldPosition(of: FootprintPin(
+                        key: "_endcap", offset: Point(x: halfExt, y: sy), relativeLayer: .same
+                    ))
+                }
+                guard let gasket = ConnectorGasket.layout(
+                    pinCentres: pinCentres, screwCentres: screwCentres, m: m
+                ) else { continue }
+                let mesh = buildStencil(
+                    outline: gasket.outline, thickness: m.stencilThickness,
+                    cornerRadius: gasket.cornerRadius,
+                    cutters: gasket.holes
+                )
+                // Name by the connector's label so the exported file is
+                // recognisable; deduplicate (labels aren't unique) with a
+                // numeric suffix in placement order.
+                let base = component.label.isEmpty ? "connector" : component.label
+                var name = base
+                var suffix = 2
+                while !usedNames.insert(name).inserted {
+                    name = "\(base)_\(suffix)"
+                    suffix += 1
+                }
+                connectorStencils.append((name, mesh))
+            }
+        }
 
         // Silicone casting frame — a ring around the full silicone footprint
         // (board outline + any `.bottomExtend` connector protrusions), printed
@@ -631,6 +655,7 @@ enum PlateBuilder {
             topPlate: topOut.plate, bottomPlate: bottomOut.plate,
             topFeatures: topOut.preview, bottomFeatures: bottomOut.preview,
             stencil: stencil,
+            connectorStencils: connectorStencils,
             moldFrame: mold.frame,
             siliconeVolumeMM3: mold.volumeMM3
         )
@@ -638,13 +663,13 @@ enum PlateBuilder {
 
     // MARK: - Stencil
 
-    /// Builds a thin sheet centred on z=0, matching the board outline (with
-    /// the plates' corner fillet so all three bodies stack cleanly in the
-    /// preview), then subtracts a cylinder at every cutter XY. Returns the
-    /// empty mesh when thickness ≤ 0 — the user has disabled stencil export.
+    /// Builds a thin sheet centred on z=0 matching `outline` (rounded by
+    /// `cornerRadius` — the plates' corner fillet for the board sheet, the
+    /// capsule radius for a connector gasket), then subtracts a cylinder at
+    /// every cutter XY. Returns the empty mesh when thickness ≤ 0 — the user
+    /// has disabled stencil export.
     private static func buildStencil(
         outline: Rect, thickness: Double, cornerRadius: Double,
-        extensions: [Mesh] = [],
         cutters: [(position: Point, diameter: Double)]
     ) -> Mesh {
         guard thickness > 0 else { return .empty }
@@ -653,16 +678,10 @@ enum PlateBuilder {
         // the lower face at z = -half and the upper face at z = +half, which
         // is exactly the centred-on-zero slab we want. The polygon winding
         // it produces is correct for an exterior solid.
-        var slab = plateBase(
+        let slab = plateBase(
             outline: outline, thickness: thickness,
             innerZ: -half, side: .top, edgeChamfer: cornerRadius
         )
-        // `.bottomExtend` connectors carry the silicone into the protrusion
-        // area — each extension is a slab in the silicone gap that unions
-        // onto the base stencil so the cutting template includes it.
-        if !extensions.isEmpty {
-            slab = slab.union(Mesh.union(extensions))
-        }
         guard !cutters.isEmpty else { return slab }
         let eps = 0.1
         let cylHeight = thickness + 2 * eps

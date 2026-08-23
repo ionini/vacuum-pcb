@@ -56,6 +56,12 @@ enum BambuExport {
         "\(base)_\(plate.rawValue)_modifier.stl"
     }
     static func stencilFilename(_ base: String) -> String { "\(base)_stencil.stl" }
+    /// One gasket stencil per `.bottomExtend` connector; `name` is the
+    /// connector's (deduplicated) label from `PlateBuilder`, sanitized here
+    /// the same way the base is so any label makes a legal filename.
+    static func connectorStencilFilename(_ base: String, connector name: String) -> String {
+        "\(base)_stencil_\(sanitizedBaseName(name)).stl"
+    }
     static func moldFilename(_ base: String) -> String { "\(base)_mold.stl" }
     static func manifestFilename(_ base: String) -> String { "\(base)_bambu_export.json" }
 
@@ -76,7 +82,9 @@ enum BambuExport {
     /// The separate printed solids the model STL ships, in the GUI's order,
     /// empty bodies dropped. Mirrors `STLExportDocument` and the CLI `export`.
     static func modelBodies(_ out: PlateBuilder.Output) -> [Mesh] {
-        [out.topPlate, out.bottomPlate, out.stencil, out.moldFrame].filter { !$0.isEmpty }
+        ([out.topPlate, out.bottomPlate, out.stencil]
+         + out.connectorStencils.map(\.mesh)
+         + [out.moldFrame]).filter { !$0.isEmpty }
     }
 
     /// The single multi-solid, watertight model mesh in *design* space —
@@ -131,12 +139,17 @@ enum BambuExport {
                 return PlateBuilder.buildInvertedModifier(doc, margins: margins, plate: plate)
             }
         }
-        let posed: [(name: String, plate: Plate?, model: Mesh, modifier: Mesh?, rotation: Euclid.Rotation?)] = [
-            ("top", .top, out.topPlate, plateModifier(.top), nil),
-            ("bottom", .bottom, out.bottomPlate, plateModifier(.bottom), flip),
-            ("stencil", nil, out.stencil, nil, nil),
-            ("mold", nil, out.moldFrame, nil, nil),
-        ]
+        let posed: [(name: String, plate: Plate?, model: Mesh, modifier: Mesh?, rotation: Euclid.Rotation?)] =
+            [
+                ("top", .top, out.topPlate, plateModifier(.top), nil),
+                ("bottom", .bottom, out.bottomPlate, plateModifier(.bottom), flip),
+                ("stencil", nil, out.stencil, nil, nil),
+            ]
+            // One gasket stencil per `.bottomExtend` connector, posed like the
+            // board stencil. The `stencil_` prefix is what `payload` keys the
+            // per-connector filenames off.
+            + out.connectorStencils.map { ("stencil_\($0.name)", nil, $0.mesh, nil, nil) }
+            + [("mold", nil, out.moldFrame, nil, nil)]
         var xCursor = 0.0
         var bodies: [LayoutBody] = []
         for entry in posed where !entry.model.isEmpty {
@@ -174,7 +187,7 @@ enum BambuExport {
         base: String, objects: [PlateObject],
         margins: PlateBuilder.ModifierMargins,
         style: ModifierStyle = .pneumatics,
-        hasStencil: Bool, hasMold: Bool
+        hasStencil: Bool, connectorStencilFiles: [String] = [], hasMold: Bool
     ) -> Data {
         let objectLines = objects.map { o -> String in
             let modifier = o.modifierFilename.map { "\"\($0)\"" } ?? "null"
@@ -183,6 +196,10 @@ enum BambuExport {
         }.joined(separator: ",\n")
         var extra = ""
         if hasStencil { extra += "\n  \"stencil\": \"\(stencilFilename(base))\"," }
+        if !connectorStencilFiles.isEmpty {
+            let list = connectorStencilFiles.map { "\"\($0)\"" }.joined(separator: ", ")
+            extra += "\n  \"connectorStencils\": [\(list)],"
+        }
         if hasMold { extra += "\n  \"mold\": \"\(moldFilename(base))\"," }
         let json = """
         {
@@ -263,14 +280,20 @@ enum BambuExport {
                 modelFilename: modelName, modifierFilename: modifierName,
                 modelMesh: body.model, modifierMesh: body.modifier))
         }
-        // Stencil + mold: separate plain objects (no pneumatics → no
-        // modifier), so they never join a multipart object and can be
-        // arranged / printed independently.
+        // Stencil + connector gasket stencils + mold: separate plain objects
+        // (no pneumatics → no modifier), so they never join a multipart
+        // object and can be arranged / printed independently.
         var hasStencil = false, hasMold = false
+        var connectorStencilFiles: [String] = []
         for body in bodies where body.plate == nil {
             if body.name == "stencil" {
                 hasStencil = true
                 files.append((stencilFilename(baseName), body.model.stlData()))
+            } else if body.name.hasPrefix("stencil_") {
+                let name = connectorStencilFilename(
+                    baseName, connector: String(body.name.dropFirst("stencil_".count)))
+                connectorStencilFiles.append(name)
+                files.append((name, body.model.stlData()))
             } else {
                 hasMold = true
                 files.append((moldFilename(baseName), body.model.stlData()))
@@ -280,7 +303,9 @@ enum BambuExport {
             files.append((manifestFilename(baseName),
                           manifestData(base: baseName, objects: objects,
                                        margins: margins, style: style,
-                                       hasStencil: hasStencil, hasMold: hasMold)))
+                                       hasStencil: hasStencil,
+                                       connectorStencilFiles: connectorStencilFiles,
+                                       hasMold: hasMold)))
         }
         return Payload(files: files, objects: objects)
     }
@@ -324,7 +349,15 @@ enum BambuExport {
             try file.data.write(to: url, options: .atomic)
             urls[file.name] = url
         }
-        let aux = [stencilFilename(baseName), moldFilename(baseName)].compactMap { urls[$0] }
+        // Every written file that isn't a plate pair or the manifest is a
+        // standalone auxiliary body (stencil, connector gasket stencils,
+        // mold), in the payload's order.
+        let pairFiles = Set(p.objects.flatMap {
+            [$0.modelFilename] + ($0.modifierFilename.map { [$0] } ?? [])
+        })
+        let aux = p.files.map(\.name)
+            .filter { $0 != manifestFilename(baseName) && !pairFiles.contains($0) }
+            .compactMap { urls[$0] }
         return WriteResult(
             objects: p.objects.map { o in
                 WriteResult.ExportedObject(

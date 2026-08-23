@@ -141,6 +141,13 @@ struct ManufacturingParameterField: Identifiable {
         .number("stencilScrewPadding", "Stencil", "Screw hole padding",
                 \.stencilScrewPadding),
 
+        .number("connectorGasketWidth", "Connector gasket", "Gasket width",
+                \.connectorGasketWidth),
+        .number("connectorGasketViaPadding", "Connector gasket", "Via hole padding",
+                \.connectorGasketViaPadding),
+        .number("connectorGasketScrewPadding", "Connector gasket", "Screw hole padding",
+                \.connectorGasketScrewPadding),
+
         .number("castingMargin", "Mold", "Casting margin", \.castingMargin),
         .number("moldWallThickness", "Mold", "Wall thickness", \.moldWallThickness),
 

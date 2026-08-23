@@ -181,6 +181,34 @@ struct ManufacturingConstants: Codable, Hashable {
     /// screw bores of `.bottomExtend` connectors alike.
     var stencilScrewPadding: Double
 
+    /// Radial silicone width of a `.bottomExtend` connector's gasket, measured
+    /// outward from the edge of each (padded) pin hole. The connector's
+    /// silicone is cut as its own gasket piece — a stadium-shaped strip
+    /// concentric to the pin/screw row — instead of sharing the board sheet's
+    /// stencil, because the clamped joint works as a *crushed gasket*: all the
+    /// screw force should land on a compact band of silicone around the fluid
+    /// holes, not on a sheet-sized slab. This width is that band's radius past
+    /// the hole edge. Default 2.0 mm; must leave the capsule inside the
+    /// protrusion footprint (`connectorOutwardExtent`) to seal against plate
+    /// material on both sides.
+    var connectorGasketWidth: Double
+
+    /// Extra diameter added to each connector pin (tube) hole in the
+    /// *connector gasket stencil* only — the analogue of `stencilViaPadding`
+    /// for the gasket pieces, kept separate because a crushed gasket stretches
+    /// more than the lightly-clamped board sheet: squeezing the band makes the
+    /// silicone flow inward and close the hole, so gasket holes want more
+    /// relief than board via holes. Default 0.4 mm; clamp 0…2 mm.
+    var connectorGasketViaPadding: Double
+
+    /// Extra diameter added to each end-cap screw clearance hole in the
+    /// *connector gasket stencil* only. Wants even more relief than
+    /// `stencilScrewPadding`: the gasket is deliberately crushed, so silicone
+    /// left near the shaft gets squeezed onto the screw threads and the joint
+    /// rides on rubber instead of the nut. Default 1.6 mm (2.4 → 4.0 mm hole);
+    /// clamp 0…6 mm.
+    var connectorGasketScrewPadding: Double
+
     /// Spacing between the board outline and the inner wall of the silicone
     /// casting frame (the "cookie cutter" you pour the sheet into). Silicone
     /// poured against a wall climbs a meniscus whose width is set by the
@@ -269,6 +297,9 @@ struct ManufacturingConstants: Codable, Hashable {
         stencilThickness: 0.2,
         stencilViaPadding: 0,
         stencilScrewPadding: 1.0,
+        connectorGasketWidth: 2.0,
+        connectorGasketViaPadding: 0.4,
+        connectorGasketScrewPadding: 1.6,
         castingMargin: 2.0,
         moldWallThickness: 3.0,
         minWallThickness: 0.5,
@@ -297,6 +328,7 @@ struct ManufacturingConstants: Codable, Hashable {
         case screwProtrusion, screwDomeBaseDiameter, screwHeadDepth, screwNutDepth
         case screwThroughDiameter
         case stencilThickness, stencilViaPadding, stencilScrewPadding
+        case connectorGasketWidth, connectorGasketViaPadding, connectorGasketScrewPadding
         case castingMargin, moldWallThickness
         case minWallThickness, preferredWallThickness
         case flatBottomChannels
@@ -318,6 +350,9 @@ struct ManufacturingConstants: Codable, Hashable {
          screwThroughDiameter: Double = 2.2,
          stencilThickness: Double, stencilViaPadding: Double,
          stencilScrewPadding: Double = 0,
+         connectorGasketWidth: Double = 2.0,
+         connectorGasketViaPadding: Double = 0.4,
+         connectorGasketScrewPadding: Double = 1.6,
          castingMargin: Double = 2.0, moldWallThickness: Double = 3.0,
          minWallThickness: Double, preferredWallThickness: Double = 0,
          flatBottomChannels: Bool,
@@ -350,6 +385,9 @@ struct ManufacturingConstants: Codable, Hashable {
         self.stencilThickness = stencilThickness
         self.stencilViaPadding = stencilViaPadding
         self.stencilScrewPadding = stencilScrewPadding
+        self.connectorGasketWidth = connectorGasketWidth
+        self.connectorGasketViaPadding = connectorGasketViaPadding
+        self.connectorGasketScrewPadding = connectorGasketScrewPadding
         self.castingMargin = castingMargin
         self.moldWallThickness = moldWallThickness
         self.minWallThickness = minWallThickness
@@ -421,6 +459,16 @@ struct ManufacturingConstants: Codable, Hashable {
         // user may already have printed.
         stencilScrewPadding = try c.decodeIfPresent(Double.self,
                                                     forKey: .stencilScrewPadding) ?? 0
+        // Gasket fields take the live defaults, not pinned legacy values: the
+        // separate connector-gasket stencil didn't exist before these fields
+        // did, so there is no older printed geometry to preserve — an old doc
+        // reopening gets the new gasket pieces at the recommended sizes.
+        connectorGasketWidth = try c.decodeIfPresent(Double.self,
+                                                     forKey: .connectorGasketWidth) ?? 2.0
+        connectorGasketViaPadding = try c.decodeIfPresent(Double.self,
+                                                          forKey: .connectorGasketViaPadding) ?? 0.4
+        connectorGasketScrewPadding = try c.decodeIfPresent(Double.self,
+                                                            forKey: .connectorGasketScrewPadding) ?? 1.6
         castingMargin = try c.decodeIfPresent(Double.self,
                                               forKey: .castingMargin) ?? 2.0
         moldWallThickness = try c.decodeIfPresent(Double.self,
