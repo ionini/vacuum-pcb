@@ -174,12 +174,19 @@ struct SimulateView: View {
             HStack(spacing: 4) {
                 Image(systemName: "gauge.with.dots.needle.50percent")
                     .foregroundStyle(.secondary)
-                Slider(value: $state.params.timeScale, in: 0.1...20.0)
+                // Log-scale ×0.1…×100: the sparse solver + dt 0.05 sustain
+                // ×100 on register-class boards, and a linear track would
+                // bury the ×0.1–×1 watch-the-transient range in its first
+                // few points.
+                Slider(value: Binding(
+                    get: { log10(max(0.1, state.params.timeScale)) },
+                    set: { state.params.timeScale = pow(10, $0) }
+                ), in: -1...2)
                     .frame(width: 100)
                 Text(String(format: "×%.1f", state.params.timeScale))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
-                    .frame(width: 40, alignment: .leading)
+                    .frame(width: 48, alignment: .leading)
             }
         }
 

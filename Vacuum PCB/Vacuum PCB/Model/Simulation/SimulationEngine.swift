@@ -1,4 +1,5 @@
 import Foundation
+import Accelerate
 
 /// Backward-Euler integrator on top of a `PneumaticNetwork`.
 ///
@@ -315,6 +316,14 @@ enum SimulationEngine {
     /// flow-animation trace (~30% of the pegged main thread, all inside
     /// this O(n³) kernel). The arithmetic and its order are unchanged, so
     /// results stay bit-identical to the checked version.
+    ///
+    /// Note (2026-08-23): a dense LAPACK `dgetrf` swap was tried and LOST
+    /// (~1.6× slower on the 302-node register board) — the `factor == 0`
+    /// skip below makes this an accidental sparse solver on the nearly
+    /// banded channel systems, which beats vectorised dense O(n³). The
+    /// compiled path now prefers the genuinely sparse Accelerate path (see
+    /// `SparseTemplate`); this routine remains the dictionary path's solver
+    /// and the compiled path's fallback.
     private static func solve(matrix: inout [Double], rhs: inout [Double], n: Int, into x: inout [Double]) {
         guard n > 0 else { return }
         matrix.withUnsafeMutableBufferPointer { m in
@@ -397,6 +406,161 @@ extension SimulationEngine {
         var anchor: Double
     }
 
+    /// Fixed sparsity pattern of the stamped admittance matrix for one
+    /// `CompiledNetwork`, plus Accelerate's symbolic Cholesky factorisation
+    /// of that pattern, computed once at compile time.
+    ///
+    /// The stamped matrix is symmetric (every stamp is a two-port MNA
+    /// contribution or a pure diagonal add) and strictly diagonally dominant
+    /// with a positive diagonal (every free node carries C/dt), hence SPD —
+    /// so Cholesky applies and a numeric zero pivot cannot occur in
+    /// practice. Channel-subdivided boards make the system large but very
+    /// sparse (chains of spans), which is why a dense solve — naive or
+    /// LAPACK — loses badly here: on the 302-free-node 4-bit register
+    /// board the sparse path multiplied whole-engine throughput ~4× over
+    /// the naive elimination and ~7× over dense `dgetrf`.
+    ///
+    /// The CSC arrays live in raw allocations so the per-step
+    /// `SparseMatrixStructure` can point at them without fighting Swift's
+    /// exclusivity checks. A class so `CompiledNetwork` copies stay cheap
+    /// and `deinit` can release the symbolic factorisation; immutable after
+    /// init, so sharing it across the step queue is safe.
+    final class SparseTemplate: @unchecked Sendable {
+        /// Value-array slots for one `CompiledStamp`: both diagonals and
+        /// the lower-triangle off-diagonal. `jj`/`ij` are -1 for anchored
+        /// (single-node) stamps, all three for skipped stamps.
+        struct StampSlots {
+            var ii: Int32
+            var jj: Int32
+            var ij: Int32
+        }
+
+        let n: Int
+        let nnz: Int
+        /// CSC of the lower triangle (diagonal included), column-major,
+        /// rows ascending within a column — `columnStarts` has n+1 entries.
+        let columnStarts: UnsafeMutablePointer<Int>
+        let rowIndices: UnsafeMutablePointer<Int32>
+        /// free slot → value index of its diagonal entry (capacitance,
+        /// pump, soft-drive and leak adds all land on diagonals).
+        let diagSlots: [Int32]
+        // Slot triples aligned index-for-index with the compiled edge lists.
+        let resistorSlots: [StampSlots]
+        let spanSlots: [StampSlots]
+        let manifoldTieSlots: [StampSlots]
+        let transistorSlots: [StampSlots]
+        let interLeakSlots: [StampSlots]
+        let symbolic: SparseOpaqueSymbolicFactorization
+
+        /// The structure view over the template's CSC arrays. Cheap; build
+        /// per call site.
+        var structure: SparseMatrixStructure {
+            var attributes = SparseAttributes_t()
+            attributes.triangle = SparseLowerTriangle
+            attributes.kind = SparseSymmetric
+            return SparseMatrixStructure(
+                rowCount: Int32(n), columnCount: Int32(n),
+                columnStarts: columnStarts, rowIndices: rowIndices,
+                attributes: attributes, blockSize: 1)
+        }
+
+        init?(freeCount: Int,
+              resistorStamps: [CompiledStamp],
+              spanStamps: [CompiledStamp],
+              manifoldTies: [CompiledStamp],
+              transistorStamps: [CompiledStamp],
+              interLeakStamps: [CompiledStamp]) {
+            guard freeCount > 0 else { return nil }
+            let n = freeCount
+
+            // Collect the lower-triangle slot set: every diagonal (C/dt
+            // guarantees them), plus one entry per distinct stamped pair.
+            // Key = column·n + row (row ≥ column), so a plain sort yields
+            // CSC order.
+            var seen = Set<Int>(minimumCapacity: n * 2)
+            var keys: [Int] = []
+            keys.reserveCapacity(n + resistorStamps.count + spanStamps.count
+                                 + manifoldTies.count + transistorStamps.count
+                                 + interLeakStamps.count)
+            func note(row: Int, col: Int) {
+                let key = col * n + row
+                if seen.insert(key).inserted { keys.append(key) }
+            }
+            for f in 0..<n { note(row: f, col: f) }
+            func notePair(_ s: CompiledStamp) {
+                if s.j >= 0 { note(row: max(s.i, s.j), col: min(s.i, s.j)) }
+            }
+            for s in resistorStamps { notePair(s) }
+            for s in spanStamps { notePair(s) }
+            for s in manifoldTies { notePair(s) }
+            for s in transistorStamps { notePair(s) }
+            for s in interLeakStamps { notePair(s) }
+            keys.sort()
+
+            var slotByKey = [Int: Int32](minimumCapacity: keys.count)
+            for (idx, key) in keys.enumerated() { slotByKey[key] = Int32(idx) }
+
+            let nnz = keys.count
+            let cs = UnsafeMutablePointer<Int>.allocate(capacity: n + 1)
+            let ri = UnsafeMutablePointer<Int32>.allocate(capacity: nnz)
+            var k = 0
+            cs[0] = 0
+            for c in 0..<n {
+                while k < nnz && keys[k] / n == c {
+                    ri[k] = Int32(keys[k] % n)
+                    k += 1
+                }
+                cs[c + 1] = k
+            }
+
+            func slot(_ a: Int, _ b: Int) -> Int32 {
+                slotByKey[min(a, b) * n + max(a, b)]!
+            }
+            func slots(for s: CompiledStamp) -> StampSlots {
+                if s.j >= 0 {
+                    return StampSlots(ii: slot(s.i, s.i), jj: slot(s.j, s.j),
+                                      ij: slot(s.i, s.j))
+                }
+                if s.i >= 0 {
+                    return StampSlots(ii: slot(s.i, s.i), jj: -1, ij: -1)
+                }
+                return StampSlots(ii: -1, jj: -1, ij: -1)
+            }
+
+            var attributes = SparseAttributes_t()
+            attributes.triangle = SparseLowerTriangle
+            attributes.kind = SparseSymmetric
+            let structure = SparseMatrixStructure(
+                rowCount: Int32(n), columnCount: Int32(n),
+                columnStarts: cs, rowIndices: ri,
+                attributes: attributes, blockSize: 1)
+            let symbolic = SparseFactor(SparseFactorizationCholesky, structure)
+            guard symbolic.status == SparseStatusOK else {
+                cs.deallocate()
+                ri.deallocate()
+                return nil
+            }
+
+            self.n = n
+            self.nnz = nnz
+            self.columnStarts = cs
+            self.rowIndices = ri
+            self.diagSlots = (0..<n).map { slot($0, $0) }
+            self.resistorSlots = resistorStamps.map(slots(for:))
+            self.spanSlots = spanStamps.map(slots(for:))
+            self.manifoldTieSlots = manifoldTies.map(slots(for:))
+            self.transistorSlots = transistorStamps.map(slots(for:))
+            self.interLeakSlots = interLeakStamps.map(slots(for:))
+            self.symbolic = symbolic
+        }
+
+        deinit {
+            SparseCleanup(symbolic)
+            columnStarts.deallocate()
+            rowIndices.deallocate()
+        }
+    }
+
     /// `step`'s per-step network tables, hoisted out of the hot loop and
     /// re-keyed from UUIDs to dense Int indices. Compile once per
     /// (network revision, subdivision flag, hard-input toggle set) — owners
@@ -473,6 +637,12 @@ extension SimulationEngine {
         /// step so probe taps stay readable). `hubNode == -1` mirrors
         /// atmosphere, matching `pressures[hub] ?? 1.0`.
         let mirrorPairs: [(sub: UUID, hubNode: Int)]
+
+        /// Sparsity pattern + symbolic Cholesky for the step solve; nil when
+        /// the network has no free nodes or the symbolic factorisation
+        /// failed (the step then falls back to the dense elimination).
+        /// Immutable after compile — safe to hop queues with the rest.
+        let sparse: SparseTemplate?
     }
 
     /// Mutable integrator state for one `CompiledNetwork`. Arrays are
@@ -495,11 +665,14 @@ extension SimulationEngine {
         /// convergence checks computed.
         var lastMaxDelta: Double
         // Solver scratch, reused across steps (the dictionary path
-        // allocated the matrix per step).
+        // allocated the matrix per step). `y` is the dense fallback's
+        // matrix, allocated lazily on first dense step; `values` is the
+        // sparse path's CSC value array (empty when there's no template).
         fileprivate var y: [Double]
         fileprivate var rhs: [Double]
         fileprivate var solution: [Double]
         fileprivate var prev: [Double]
+        fileprivate var values: [Double]
     }
 
     /// Windowed settle test for convergence loops (validators, CLI
@@ -795,7 +968,14 @@ extension SimulationEngine {
             transistorIds: network.transistors.map(\.id),
             softDrives: softDrives,
             interLeakEdges: interLeakEdges,
-            mirrorPairs: mirrorPairs)
+            mirrorPairs: mirrorPairs,
+            sparse: SparseTemplate(
+                freeCount: freeToNode.count,
+                resistorStamps: resistorEdges.map(\.stamp),
+                spanStamps: spanEdges.map(\.stamp),
+                manifoldTies: manifoldTies,
+                transistorStamps: transistorEdges.map(\.stamp),
+                interLeakStamps: interLeakEdges.map(\.stamp)))
     }
 
     /// Seed a `RunState` from the UUID-keyed maps (the reverse of
@@ -825,10 +1005,11 @@ extension SimulationEngine {
             openness: o,
             hadValue: had,
             lastMaxDelta: 0,
-            y: [Double](repeating: 0, count: n * n),
+            y: compiled.sparse == nil ? [Double](repeating: 0, count: n * n) : [],
             rhs: [Double](repeating: 0, count: n),
             solution: [Double](repeating: 0, count: n),
-            prev: [Double](repeating: 0, count: nodeCount))
+            prev: [Double](repeating: 0, count: nodeCount),
+            values: [Double](repeating: 0, count: compiled.sparse?.nnz ?? 0))
     }
 
     /// Convert a `RunState` back to the UUID-keyed maps the rest of the app
@@ -859,12 +1040,201 @@ extension SimulationEngine {
     }
 
     /// One time step on a compiled network — the Int-indexed twin of
-    /// `step(network:params:pressures:inputs:transistorOpenness:)`. Stamps
-    /// land in the same order with the same operands, so the two paths stay
-    /// bit-identical. `softInputValues` comes from
-    /// `softInputValues(network:inputs:)` against the same network.
-    /// Requires `compiled.freeCount > 0`.
+    /// `step(network:params:pressures:inputs:transistorOpenness:)`.
+    /// `softInputValues` comes from `softInputValues(network:inputs:)`
+    /// against the same network. Requires `compiled.freeCount > 0`.
+    ///
+    /// Solves through the sparse Cholesky path when the compile built a
+    /// `SparseTemplate`; falls back to the dense elimination twin
+    /// (`stepDense`) otherwise, or if the numeric factorisation ever
+    /// reports failure (it can't for an SPD stamp; belt and braces).
     static func step(
+        compiled: CompiledNetwork,
+        params: SimulationParameters,
+        state: inout RunState,
+        softInputValues: [Double]
+    ) {
+        if let template = compiled.sparse, state.values.count == template.nnz,
+           stepSparse(compiled: compiled, template: template, params: params,
+                      state: &state, softInputValues: softInputValues) {
+            return
+        }
+        stepDense(compiled: compiled, params: params, state: &state,
+                  softInputValues: softInputValues)
+    }
+
+    /// Sparse twin of `stepDense`: same stamps in the same order, written
+    /// into the template's CSC value slots instead of a dense matrix, then
+    /// a numeric Cholesky refactor on the compile-time symbolic pattern.
+    /// Returns false if the numeric factorisation fails, so the caller can
+    /// redo the step densely (the two passes re-stamp from scratch, so a
+    /// pass-1 writeback before a pass-2 failure only costs the fallback a
+    /// slightly advanced starting point, not correctness).
+    private static func stepSparse(
+        compiled: CompiledNetwork,
+        template: SparseTemplate,
+        params: SimulationParameters,
+        state: inout RunState,
+        softInputValues: [Double]
+    ) -> Bool {
+        let n = compiled.freeCount
+        guard n > 0 else { return true }
+        let nodeCount = compiled.nodeIds.count
+        let dt = max(params.dtSeconds, 1e-6)
+
+        state.prev.withUnsafeMutableBufferPointer { prev in
+            state.pressures.withUnsafeBufferPointer { cur in
+                prev.baseAddress!.update(from: cur.baseAddress!, count: nodeCount)
+            }
+        }
+        for pin in compiled.anchorPins {
+            state.pressures[pin.node] = pin.value
+        }
+
+        for _ in 0..<2 {
+            state.values.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
+            state.rhs.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
+
+            func apply(_ s: CompiledStamp, _ slots: SparseTemplate.StampSlots,
+                       g: Double) {
+                if s.j >= 0 {
+                    state.values[Int(slots.ii)] += g
+                    state.values[Int(slots.jj)] += g
+                    state.values[Int(slots.ij)] -= g
+                } else if s.i >= 0 {
+                    state.values[Int(slots.ii)] += g
+                    state.rhs[s.i] += g * s.anchor
+                }
+            }
+
+            // 1. Capacitance + previous-state RHS.
+            for f in 0..<n {
+                let raw = compiled.capacitanceOrNan[f]
+                let c = raw.isNaN ? params.nodeBaseCapacitance : raw
+                let cOverDt = c / dt
+                state.values[Int(template.diagSlots[f])] += cOverDt
+                state.rhs[f] += cOverDt * state.pressures[compiled.freeToNode[f]]
+            }
+
+            // 2. Resistor edges.
+            for (k, e) in compiled.resistorEdges.enumerated() {
+                let g = 1.0 / (e.lengthMm * params.resistorResistancePerMm)
+                apply(e.stamp, template.resistorSlots[k], g: g)
+            }
+
+            // 2b. Channel spans (subdivided only).
+            if compiled.subdivided {
+                let tieG = max(params.transistorOnConductance * 200, 1000)
+                for (k, e) in compiled.spanEdges.enumerated() {
+                    let g = e.lengthMm <= 0 ? tieG
+                        : min(1.0 / (e.lengthMm * params.channelResistancePerMm), tieG)
+                    apply(e.stamp, template.spanSlots[k], g: g)
+                }
+            }
+
+            // 3. Shared pump manifold.
+            if compiled.manifoldCanonicalFree >= 0 {
+                let stiffG = max(params.transistorOnConductance * 200, 1000)
+                for (k, tie) in compiled.manifoldTies.enumerated() {
+                    apply(tie, template.manifoldTieSlots[k], g: stiffG)
+                }
+                let manifoldP = state.pressures[compiled.manifoldCanonicalNode]
+                let g = params.pumpConductance(forNetPressure: manifoldP)
+                if g > 0 {
+                    let idx = compiled.manifoldCanonicalFree
+                    state.values[Int(template.diagSlots[idx])] += g
+                    state.rhs[idx] += g * params.pumpMaxVacuum
+                }
+            }
+
+            // 4. Transistor edges (+ openness readout).
+            for (t, edge) in compiled.transistorEdges.enumerated() {
+                let gatePressure = edge.gateAnchor.isNaN
+                    ? (edge.gateNode >= 0 ? state.pressures[edge.gateNode] : 1.0)
+                    : edge.gateAnchor
+                let g = params.conductance(forGatePressure: gatePressure)
+                state.openness[t] = openness(forGatePressure: gatePressure, params: params)
+                apply(edge.stamp, template.transistorSlots[t], g: g)
+            }
+
+            // 4b. Soft (bus) input drives.
+            for drive in compiled.softDrives {
+                let raw = drive.softIndex < softInputValues.count
+                    ? softInputValues[drive.softIndex] : .nan
+                if raw.isNaN { continue }
+                let target = raw < 0.5 ? params.pumpMaxVacuum : 1.0
+                let g = params.busDriveConductance
+                state.values[Int(template.diagSlots[drive.free])] += g
+                state.rhs[drive.free] += g * target
+            }
+
+            // 4c. Global leak.
+            if params.leakConductance > 0 {
+                let g = params.leakConductance
+                if compiled.subdivided {
+                    for f in 0..<n {
+                        let share = compiled.leakShare[f]
+                        state.values[Int(template.diagSlots[f])] += g * share
+                        state.rhs[f] += g * share * 1.0  // atmosphere
+                    }
+                } else {
+                    for f in 0..<n {
+                        state.values[Int(template.diagSlots[f])] += g
+                        state.rhs[f] += g * 1.0  // atmosphere
+                    }
+                }
+            }
+
+            // 4d. Channel-to-channel ("internal") leak.
+            if params.internalLeakConductance > 0 {
+                for (k, e) in compiled.interLeakEdges.enumerated() {
+                    apply(e.stamp, template.interLeakSlots[k],
+                          g: e.weight * params.internalLeakConductance)
+                }
+            }
+
+            // 5. Numeric Cholesky on the cached symbolic pattern + solve.
+            var solved = false
+            state.values.withUnsafeMutableBufferPointer { vals in
+                state.rhs.withUnsafeMutableBufferPointer { b in
+                    state.solution.withUnsafeMutableBufferPointer { xb in
+                        let matrix = SparseMatrix_Double(
+                            structure: template.structure,
+                            data: vals.baseAddress!)
+                        let numeric = SparseFactor(template.symbolic, matrix)
+                        defer { SparseCleanup(numeric) }
+                        guard numeric.status == SparseStatusOK else { return }
+                        SparseSolve(numeric,
+                                    DenseVector_Double(count: Int32(n),
+                                                       data: b.baseAddress!),
+                                    DenseVector_Double(count: Int32(n),
+                                                       data: xb.baseAddress!))
+                        solved = true
+                    }
+                }
+            }
+            guard solved else { return false }
+            for f in 0..<n {
+                state.pressures[compiled.freeToNode[f]] = min(1.0, max(0.0, state.solution[f]))
+            }
+        }
+
+        var maxDelta = 0.0
+        for i in 0..<nodeCount where state.hadValue[i] {
+            maxDelta = max(maxDelta, abs(state.pressures[i] - state.prev[i]))
+        }
+        state.lastMaxDelta = maxDelta
+        for i in 0..<nodeCount {
+            state.hadValue[i] = true
+        }
+        return true
+    }
+
+    /// Dense twin of `stepSparse` — the historical compiled step. Stamps
+    /// land in the same order with the same operands as the dictionary
+    /// path, so those two stay bit-identical. Kept as the fallback for
+    /// networks without a sparse template.
+    private static func stepDense(
         compiled: CompiledNetwork,
         params: SimulationParameters,
         state: inout RunState,
@@ -874,6 +1244,11 @@ extension SimulationEngine {
         guard n > 0 else { return }
         let nodeCount = compiled.nodeIds.count
         let dt = max(params.dtSeconds, 1e-6)
+        // The dense matrix is lazily (re)sized: sparse-template runs never
+        // pay for the n² buffer.
+        if state.y.count != n * n {
+            state.y = [Double](repeating: 0, count: n * n)
+        }
 
         // Convergence baseline — the dictionary path's callers diffed the
         // whole pressure map around each step.

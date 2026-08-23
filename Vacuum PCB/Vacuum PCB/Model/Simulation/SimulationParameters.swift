@@ -160,13 +160,21 @@ struct SimulationParameters: Equatable {
         gateHysteresis: 0.03,
         nodeBaseCapacitance: 0.10,
         channelCapacitancePerMm: 0.04,
-        dtSeconds: 0.01,
+        // 0.05 (was 0.01, 2026-08-23): backward Euler is stable at any step
+        // and, validated on the 4-bit register boards (write/hold/read via
+        // the bus, both bit patterns), 0.05 — and even 0.1 — reproduces the
+        // 0.01 endpoints to ≤1e-3 atm at every phase, at 5× fewer steps per
+        // sim-second. That headroom is what lets the Simulate speed slider
+        // reach ×100. Drop back toward 0.01 to time fast gate transients
+        // more finely (settle *endpoints* don't need it).
+        dtSeconds: 0.05,
         // GUI transport default: run 10× wall-clock. Boards settle over tens
         // of sim-seconds, so realtime playback reads as stalled; ×10 lands on
         // the settled state promptly while the slider still reaches back down
-        // to 0.1× for watching transients. Sim *results* are unaffected —
-        // headless paths (CLI, validators, DSL sim-time waits) step the
-        // engine in sim-time and never read this.
+        // to 0.1× for watching transients (and up to ×100 — the sparse
+        // solver + dt 0.05 sustain it on register-class boards). Sim
+        // *results* are unaffected — headless paths (CLI, validators, DSL
+        // sim-time waits) step the engine in sim-time and never read this.
         timeScale: 10.0,
         // Bench baseline (Jul 13 2026 convention): pump measured directly
         // with the working plumbing reads −0.6 atm. (An earlier −0.7 reading

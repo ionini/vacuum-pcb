@@ -49,6 +49,9 @@ func simulate(
     let compiled = SimulationEngine.compile(
         network: network, params: params,
         hardInputStates: SimulationEngine.hardInputStates(network: network, inputs: inputs))
+    if ProcessInfo.processInfo.environment["VPCB_DEBUG_SOLVE"] != nil {
+        FileHandle.standardError.write(Data("freeCount: \(compiled.freeCount)\n".utf8))
+    }
     guard compiled.freeCount > 0 else {
         for _ in 0..<steps {
             SimulationEngine.step(
