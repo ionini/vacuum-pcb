@@ -55,3 +55,9 @@ fastlane/test_output
 
 # Claude Code local state (agent worktrees, settings, etc.)
 .claude/
+
+# Python bytecode (calibration scripts)
+__pycache__/
+
+# Bambu CLI slicing status output
+result.json

@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/ioni/Documents/dev/vacuum_pcb/.codex/hooks/remind-commit-docs.sh'",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
