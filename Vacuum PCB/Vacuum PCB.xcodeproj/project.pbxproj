@@ -222,7 +222,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "# macOS-only: never install an iOS .app bundle into the Mac's /Applications.\nif [ \"$PLATFORM_NAME\" != \"macosx\" ]; then exit 0; fi\n# Opt out for compile-check / CI builds: xcodebuild ... VPCB_SKIP_INSTALL=1\nif [ -n \"$VPCB_SKIP_INSTALL\" ]; then echo \"note: VPCB_SKIP_INSTALL set, skipping /Applications install\"; exit 0; fi\nrm -rf \"/Applications/${WRAPPER_NAME}\"\nditto \"${TARGET_BUILD_DIR}/${WRAPPER_NAME}\" \"/Applications/${WRAPPER_NAME}\"\n";
+			shellScript = "# macOS-only: never install an iOS .app bundle into the Mac's /Applications.\nif [ \"$PLATFORM_NAME\" != \"macosx\" ]; then exit 0; fi\n# Opt out for compile-check / CI builds: xcodebuild ... VPCB_SKIP_INSTALL=1\nif [ -n \"$VPCB_SKIP_INSTALL\" ]; then echo \"note: VPCB_SKIP_INSTALL set, skipping /Applications install\"; exit 0; fi\nrm -rf \"/Applications/${WRAPPER_NAME}\"\nditto \"${TARGET_BUILD_DIR}/${WRAPPER_NAME}\" \"/Applications/${WRAPPER_NAME}\"\n# Script phases run before Xcode's CodeSign step, so the copied binary is unsigned; ad-hoc sign so it launches.\ncodesign --force --deep --sign - \"/Applications/${WRAPPER_NAME}\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
