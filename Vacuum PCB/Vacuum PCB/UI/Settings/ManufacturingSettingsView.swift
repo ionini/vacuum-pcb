@@ -181,11 +181,14 @@ struct ManufacturingSettingsView: View {
                     .font(.caption2).foregroundStyle(.secondary)
             }
 
-            group("Connector gasket") {
+            group("Connector") {
+                row("Neck padding", $draftMfg.connectorPadding)
+                Text("Lengthens every connector's protrusion between the board edge and its pin/screw row. The row — pins, end-cap screws, and the gasket around them — stays at the mating tip, so the extra length is plain neck buying clearance between the mated counterpart and components near this board's edge. Routes already drawn to connector pins grow a straight neck segment when you change this. 0 = legacy geometry.")
+                    .font(.caption2).foregroundStyle(.secondary)
                 row("Gasket width", $draftMfg.connectorGasketWidth)
-                row("Via hole padding", $draftMfg.connectorGasketViaPadding)
+                row("Gasket via hole padding", $draftMfg.connectorGasketViaPadding)
                 stencilHoleReadout(draftMfg.channelDiameter + draftMfg.connectorGasketViaPadding)
-                row("Screw hole padding", $draftMfg.connectorGasketScrewPadding)
+                row("Gasket screw hole padding", $draftMfg.connectorGasketScrewPadding)
                 stencilHoleReadout(draftMfg.screwThroughDiameter + draftMfg.connectorGasketScrewPadding)
                 Text("Each bottom-extend connector's silicone is cut as its own crushed-gasket piece by a per-connector stencil: a stadium-shaped band concentric to the pin/screw row (cast in the same pour, separated when cut). Gasket width is the band's radial silicone past each pin hole's edge — it must stay inside the protrusion footprint to seal against plate on both sides. The paddings mirror the stencil's via/screw paddings but run wider by default: the crushed band stretches, closing pin holes inward (via padding compensates), and any silicone left near a screw shaft gets squeezed onto the threads and steals clamp force from the nut (screw padding keeps it clear).")
                     .font(.caption2).foregroundStyle(.secondary)

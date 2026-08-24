@@ -440,8 +440,11 @@ enum PlateBuilder {
                     pinCount: component.connectorPinCount ?? 1,
                     screwCount: component.connectorScrewCount ?? ComponentKind.connectorMinScrewCount
                 )
+                // Screws share the pin row's local X — centred in the mating
+                // zone at the protrusion tip, past any neck padding.
+                let rowX = ComponentKind.connectorRowLocalX(manufacturing: m)
                 for sy in screwYs {
-                    let endLocal = Point(x: halfExt, y: sy)
+                    let endLocal = Point(x: rowX, y: sy)
                     let endWorld = placement.worldPosition(of: FootprintPin(
                         key: "_endcap", offset: endLocal, relativeLayer: .same
                     ))
@@ -606,14 +609,14 @@ enum PlateBuilder {
                 let pinCentres = fp.pins.map { placement.worldPosition(of: $0) }
                 // End-cap screw centres — same layout as the bottom plate's
                 // end-cap bores so the gasket's clearance holes line up.
-                let halfExt = fp.exclusionRect.size.width / 2
+                let rowX = ComponentKind.connectorRowLocalX(manufacturing: m)
                 let screwYs = ComponentKind.connectorScrewLocalYs(
                     pinCount: component.connectorPinCount ?? 1,
                     screwCount: component.connectorScrewCount ?? ComponentKind.connectorMinScrewCount
                 )
                 let screwCentres = screwYs.map { sy in
                     placement.worldPosition(of: FootprintPin(
-                        key: "_endcap", offset: Point(x: halfExt, y: sy), relativeLayer: .same
+                        key: "_endcap", offset: Point(x: rowX, y: sy), relativeLayer: .same
                     ))
                 }
                 guard let gasket = ConnectorGasket.layout(

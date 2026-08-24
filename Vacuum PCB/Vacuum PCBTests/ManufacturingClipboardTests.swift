@@ -99,6 +99,7 @@ struct ManufacturingClipboardTests {
         incoming.connectorGasketWidth += 0.5
         incoming.connectorGasketViaPadding += 0.5
         incoming.connectorGasketScrewPadding += 0.5
+        incoming.connectorPadding += 2
         incoming.castingMargin += 1
         incoming.moldWallThickness += 1
         incoming.minWallThickness += 0.1

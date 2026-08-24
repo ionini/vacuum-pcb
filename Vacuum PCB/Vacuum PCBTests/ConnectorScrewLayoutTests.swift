@@ -167,6 +167,99 @@ struct ConnectorScrewLayoutTests {
         #expect(abs(p1Top - row.pinYs.first!) < tol)
     }
 
+    // MARK: - Neck padding
+
+    /// Neck padding lengthens the protrusion but keeps the pin/screw row
+    /// centred in the mating zone at the *tip* — pins ride outward with the
+    /// tip — and padding 0 reproduces the legacy geometry exactly.
+    @Test func neckPaddingMovesRowWithTip() {
+        var m = ManufacturingConstants.defaults
+        m.connectorPadding = 0
+        let extent = ComponentKind.connectorOutwardExtent(manufacturing: m)
+        let fp0 = ComponentKind.connectorFootprint(pinCount: 3, role: .bottomExtend, manufacturing: m)
+        #expect(abs(fp0.exclusionRect.size.width - extent) <= tol)
+        #expect(fp0.pins.allSatisfy { abs($0.offset.x - extent / 2) <= tol })
+
+        m.connectorPadding = 4.5
+        let fp = ComponentKind.connectorFootprint(pinCount: 3, role: .bottomExtend, manufacturing: m)
+        #expect(abs(fp.exclusionRect.size.width - (4.5 + extent)) <= tol)
+        #expect(fp.pins.allSatisfy { abs($0.offset.x - (4.5 + extent / 2)) <= tol })
+        // The shared helpers (what CAD cutters, DRC, and the 2-D symbol use
+        // for the screw row) agree with the footprint.
+        #expect(abs(ComponentKind.connectorRowLocalX(manufacturing: m) - (4.5 + extent / 2)) <= tol)
+        #expect(abs(ComponentKind.connectorProtrusionDepth(manufacturing: m) - (4.5 + extent)) <= tol)
+        // Padding is purely outward: the row length is untouched, and the
+        // rect stays anchored at the board edge (x = 0).
+        #expect(abs(fp.exclusionRect.size.height - fp0.exclusionRect.size.height) <= tol)
+        #expect(abs(fp.exclusionRect.origin.x) <= tol)
+        // Pin Ys don't move either.
+        #expect(approx(fp.pins.map(\.offset.y), fp0.pins.map(\.offset.y)))
+    }
+
+    /// Debug-ports mode has no protrusion, so the padding must not touch it.
+    @Test func neckPaddingIgnoredInDebugMode() {
+        var m = ManufacturingConstants.defaults
+        let dbg0 = ComponentKind.connectorFootprint(
+            pinCount: 3, role: .bottomExtend, debugPorts: true, manufacturing: m)
+        m.connectorPadding = 4.5
+        let dbg = ComponentKind.connectorFootprint(
+            pinCount: 3, role: .bottomExtend, debugPorts: true, manufacturing: m)
+        #expect(dbg.pins == dbg0.pins)
+        #expect(dbg.exclusionRect == dbg0.exclusionRect)
+    }
+
+    /// Changing the padding drags existing routes along: a route ending on a
+    /// connector pin grows a straight neck segment out to the moved pin when
+    /// its last leg approaches at an angle, and simply slides its endpoint
+    /// when the last leg is already collinear with the move (so repeated
+    /// padding edits don't pile up waypoints).
+    @Test func paddingChangeMigratesRoutes() {
+        var doc = VPCBDocument(circuit: .blank())
+        let comp = Component(
+            kind: .connector, label: "J1",
+            connectorPinCount: 1, connectorRole: .bottomExtend
+        )
+        doc.circuit.logic.components.append(comp)
+        let placement = Placement(
+            componentId: comp.id, position: Point(x: 50, y: 15),
+            rotation: .r0, layer: .bottom
+        )
+        doc.circuit.physical.placements.append(placement)
+
+        let m0 = doc.circuit.manufacturing
+        let pin0 = placement.worldPosition(of: comp.footprint(m0).pins[0])
+        let layer = Layer(plate: .bottom, depth: 0)
+        // Route A approaches the pin diagonally → expects an inserted neck.
+        doc.circuit.physical.routes.append(Route(netId: UUID(), segments: [
+            Segment(waypoints: [
+                Waypoint(position: Point(x: pin0.x - 10, y: pin0.y - 6)),
+                Waypoint(position: pin0)
+            ], layer: layer)
+        ]))
+        // Route B's final leg lies on the protrusion axis (and the pin is
+        // its FIRST waypoint) → expects the endpoint to slide, no new point.
+        doc.circuit.physical.routes.append(Route(netId: UUID(), segments: [
+            Segment(waypoints: [
+                Waypoint(position: pin0),
+                Waypoint(position: Point(x: pin0.x - 8, y: pin0.y))
+            ], layer: layer)
+        ]))
+
+        var m1 = m0
+        m1.connectorPadding = 3
+        ManufacturingActions.commit(m1, to: &doc)
+        let pin1 = placement.worldPosition(of: comp.footprint(m1).pins[0])
+        #expect(abs(pin1.x - (pin0.x + 3)) <= tol && abs(pin1.y - pin0.y) <= tol)
+
+        let a = doc.circuit.physical.routes[0].segments[0].waypoints
+        #expect(a.count == 3)
+        #expect(a[1].position == pin0)      // old attach point kept…
+        #expect(a[2].position == pin1)      // …with a straight neck appended
+        let b = doc.circuit.physical.routes[1].segments[0].waypoints
+        #expect(b.count == 2)               // collinear → endpoint slid
+        #expect(b[0].position == pin1)
+    }
+
     // MARK: - Debug-ports mode
 
     /// Debug print replaces the protrusion with an inset row of edge bores:

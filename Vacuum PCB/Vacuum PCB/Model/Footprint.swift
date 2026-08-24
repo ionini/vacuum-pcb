@@ -326,6 +326,24 @@ extension ComponentKind {
         return max(grid, steps * grid)
     }
 
+    /// Total outward depth of the connector protrusion: the neck padding
+    /// (plain plate against the board edge) plus the mating zone
+    /// (`connectorOutwardExtent`) at the tip. Padding 0 reproduces the
+    /// legacy protrusion exactly.
+    static func connectorProtrusionDepth(manufacturing m: ManufacturingConstants) -> Double {
+        max(0, m.connectorPadding) + connectorOutwardExtent(manufacturing: m)
+    }
+
+    /// Local X of the connector's pin/screw row. The row stays centred in
+    /// the mating zone at the *tip* of the protrusion, so the neck padding
+    /// pushes it outward with the tip instead of stretching the row away
+    /// from the mating face. Single source of truth for every consumer that
+    /// places row features off-footprint (`PlateBuilder` end-cap screws, the
+    /// gasket stencil, `DRC`, the 2-D symbol).
+    static func connectorRowLocalX(manufacturing m: ManufacturingConstants) -> Double {
+        max(0, m.connectorPadding) + connectorOutwardExtent(manufacturing: m) / 2
+    }
+
     static func connectorFootprint(
         pinCount: Int,
         screwCount: Int = connectorMinScrewCount,
@@ -347,10 +365,12 @@ extension ComponentKind {
         let halfRow = endCapY + headRadius + m.minWallThickness
         let rowLength = 2 * halfRow
         // Protrusion sticks out along local +X (away from the plate
-        // interior). The extent is sized so the screw head face fits
-        // inside the protrusion footprint with at least `minWallThickness`
-        // of plate material on each side — see `connectorOutwardExtent`.
-        let outwardExtent = connectorOutwardExtent(manufacturing: m)
+        // interior). The mating zone at the tip is sized so the screw head
+        // face fits inside it with at least `minWallThickness` of plate
+        // material on each side — see `connectorOutwardExtent`; the neck
+        // padding extends the protrusion between board edge and row.
+        let depth = connectorProtrusionDepth(manufacturing: m)
+        let rowX = connectorRowLocalX(manufacturing: m)
         var pins: [FootprintPin] = []
         // Pin 1 sits next to one end screw, pin N next to the other. The
         // pins are centred on the row anchor with `connectorTubePitch`
@@ -375,16 +395,17 @@ extension ComponentKind {
             let y = row.pinYs[step]
             pins.append(FootprintPin(
                 key: "\(pinIndex)",
-                offset: Point(x: outwardExtent / 2, y: y),
+                offset: Point(x: rowX, y: y),
                 relativeLayer: .same
             ))
         }
         // Bounding / exclusion rect covers the full protrusion area (0 ≤ x
-        // ≤ outwardExtent along local +X, -halfRow ≤ y ≤ halfRow). The
-        // anchor sits at the inner edge (x=0), so the rect's origin.x is 0.
+        // ≤ neck padding + outwardExtent along local +X, -halfRow ≤ y ≤
+        // halfRow). The anchor sits at the inner edge (x=0), so the rect's
+        // origin.x is 0.
         let rect = Rect(
             origin: Point(x: 0, y: -halfRow),
-            size: Size(width: outwardExtent, height: rowLength)
+            size: Size(width: depth, height: rowLength)
         )
         return Footprint(
             kind: .connector,
