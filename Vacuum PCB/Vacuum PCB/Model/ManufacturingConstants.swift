@@ -209,6 +209,17 @@ struct ManufacturingConstants: Codable, Hashable {
     /// clamp 0…6 mm.
     var connectorGasketScrewPadding: Double
 
+    /// Extra length added to each connector's protrusion *neck* — the span
+    /// between the board edge and the pin/screw row. The row (and the gasket
+    /// band around it) stays at the mating tip of the protrusion; the padding
+    /// is plain plate in between, buying clearance between the mated
+    /// counterpart (its board body and clamp hardware) and components placed
+    /// near this board's edge. Routes already drawn to connector pins get a
+    /// straight neck segment appended when this changes (see
+    /// `ManufacturingActions.migrateRouteEndpoints`). Default 0 (legacy
+    /// geometry); clamp ≥ 0.
+    var connectorPadding: Double
+
     /// Spacing between the board outline and the inner wall of the silicone
     /// casting frame (the "cookie cutter" you pour the sheet into). Silicone
     /// poured against a wall climbs a meniscus whose width is set by the
@@ -300,6 +311,7 @@ struct ManufacturingConstants: Codable, Hashable {
         connectorGasketWidth: 2.0,
         connectorGasketViaPadding: 0.4,
         connectorGasketScrewPadding: 1.6,
+        connectorPadding: 0,
         castingMargin: 2.0,
         moldWallThickness: 3.0,
         minWallThickness: 0.5,
@@ -329,6 +341,7 @@ struct ManufacturingConstants: Codable, Hashable {
         case screwThroughDiameter
         case stencilThickness, stencilViaPadding, stencilScrewPadding
         case connectorGasketWidth, connectorGasketViaPadding, connectorGasketScrewPadding
+        case connectorPadding
         case castingMargin, moldWallThickness
         case minWallThickness, preferredWallThickness
         case flatBottomChannels
@@ -353,6 +366,7 @@ struct ManufacturingConstants: Codable, Hashable {
          connectorGasketWidth: Double = 2.0,
          connectorGasketViaPadding: Double = 0.4,
          connectorGasketScrewPadding: Double = 1.6,
+         connectorPadding: Double = 0,
          castingMargin: Double = 2.0, moldWallThickness: Double = 3.0,
          minWallThickness: Double, preferredWallThickness: Double = 0,
          flatBottomChannels: Bool,
@@ -388,6 +402,7 @@ struct ManufacturingConstants: Codable, Hashable {
         self.connectorGasketWidth = connectorGasketWidth
         self.connectorGasketViaPadding = connectorGasketViaPadding
         self.connectorGasketScrewPadding = connectorGasketScrewPadding
+        self.connectorPadding = connectorPadding
         self.castingMargin = castingMargin
         self.moldWallThickness = moldWallThickness
         self.minWallThickness = minWallThickness
@@ -469,6 +484,10 @@ struct ManufacturingConstants: Codable, Hashable {
                                                           forKey: .connectorGasketViaPadding) ?? 0.4
         connectorGasketScrewPadding = try c.decodeIfPresent(Double.self,
                                                             forKey: .connectorGasketScrewPadding) ?? 1.6
+        // Pinned to 0 — the legacy protrusion had no neck, so an older doc
+        // reopening keeps its pins (and any printed plates) exactly in place.
+        connectorPadding = try c.decodeIfPresent(Double.self,
+                                                 forKey: .connectorPadding) ?? 0
         castingMargin = try c.decodeIfPresent(Double.self,
                                               forKey: .castingMargin) ?? 2.0
         moldWallThickness = try c.decodeIfPresent(Double.self,

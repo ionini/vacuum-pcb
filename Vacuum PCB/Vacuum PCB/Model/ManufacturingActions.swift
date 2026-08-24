@@ -66,6 +66,7 @@ enum ManufacturingActions {
         s.connectorGasketWidth = max(0.0, m.connectorGasketWidth)
         s.connectorGasketViaPadding = max(0.0, min(2.0, m.connectorGasketViaPadding))
         s.connectorGasketScrewPadding = max(0.0, min(6.0, m.connectorGasketScrewPadding))
+        s.connectorPadding = max(0.0, m.connectorPadding)
         s.castingMargin = max(0.0, m.castingMargin)
         s.moldWallThickness = max(0.0, m.moldWallThickness)
         s.minWallThickness = max(0.05, m.minWallThickness)
@@ -82,16 +83,24 @@ enum ManufacturingActions {
 
     // MARK: - Route endpoint migration
 
-    /// Walks every transistor placement, compares old vs. new pin world
-    /// positions, and rewrites any route segment's first/last `.point`
-    /// waypoint that's sitting on an old pin position to the new one. Via
-    /// waypoints are left alone — they have twins on the other side of the
-    /// silicone and don't terminate at component pins.
+    /// Walks every placement, compares old vs. new pin world positions, and
+    /// patches any route segment's first/last `.point` waypoint that's
+    /// sitting on an old pin position. Ordinary pins (transistor pads etc.)
+    /// have their endpoint *moved* to the new position; connector pins get a
+    /// straight "neck" segment *appended* from the old attach point to the
+    /// new pin instead — the connector's padding slides the pin outward
+    /// along the protrusion axis, so the drawn route keeps its shape and
+    /// just grows a straight run out to the relocated pin. When the
+    /// existing final leg is already collinear with the move (e.g. a neck
+    /// segment added by a previous padding edit), the endpoint slides along
+    /// it instead, so repeated edits don't pile up waypoints. Via waypoints
+    /// are left alone — they have twins on the other side of the silicone
+    /// and don't terminate at component pins.
     static func migrateRouteEndpoints(
         oldMfg: ManufacturingConstants, newMfg: ManufacturingConstants,
         in document: inout VPCBDocument
     ) {
-        struct PinShift { let from: Point; let to: Point }
+        struct PinShift { let from: Point; let to: Point; let extend: Bool }
         var shifts: [PinShift] = []
         for placement in document.circuit.physical.placements {
             guard let component = document.circuit.logic.components
@@ -105,45 +114,63 @@ enum ManufacturingActions {
                 let oldWorld = placement.worldPosition(of: oldPin)
                 let newWorld = placement.worldPosition(of: newPin)
                 if hypot(oldWorld.x - newWorld.x, oldWorld.y - newWorld.y) > 0.001 {
-                    shifts.append(PinShift(from: oldWorld, to: newWorld))
+                    shifts.append(PinShift(from: oldWorld, to: newWorld,
+                                           extend: component.kind == .connector))
                 }
             }
         }
         guard !shifts.isEmpty else { return }
 
         let snapEps = 0.05
-        func migrated(_ p: Point) -> Point {
-            for s in shifts
-            where abs(p.x - s.from.x) < snapEps && abs(p.y - s.from.y) < snapEps {
-                return s.to
+        func shift(at p: Point) -> PinShift? {
+            shifts.first {
+                abs(p.x - $0.from.x) < snapEps && abs(p.y - $0.from.y) < snapEps
             }
-            return p
+        }
+
+        /// Patches the endpoint at `endIndex` (0 or waypoints.count - 1) in
+        /// place, per the move-vs-extend rules above. `neighborIndex` is the
+        /// adjacent interior waypoint (nil for single-point segments).
+        func patch(_ waypoints: inout [Waypoint], endIndex: Int, neighborIndex: Int?) {
+            let wp = waypoints[endIndex]
+            guard wp.kind != .via, let s = shift(at: wp.position) else { return }
+            if s.extend, let nIdx = neighborIndex {
+                // Collinear when the final leg and the pin shift lie on one
+                // line (normalised cross product ≈ 0) — then sliding the
+                // endpoint IS the straight extension.
+                let n = waypoints[nIdx].position
+                let ax = wp.position.x - n.x, ay = wp.position.y - n.y
+                let bx = s.to.x - n.x, by = s.to.y - n.y
+                let cross = ax * by - ay * bx
+                let scale = hypot(ax, ay) * hypot(bx, by)
+                if scale > 0, abs(cross) / scale > 1e-6 {
+                    let neck = Waypoint(position: s.to, kind: .point)
+                    if endIndex == 0 { waypoints.insert(neck, at: 0) }
+                    else { waypoints.append(neck) }
+                    return
+                }
+            }
+            waypoints[endIndex].position = s.to
         }
 
         for rIdx in document.circuit.physical.routes.indices {
             for sIdx in document.circuit.physical.routes[rIdx].segments.indices {
-                let count = document.circuit.physical.routes[rIdx]
-                    .segments[sIdx].waypoints.count
+                var waypoints = document.circuit.physical.routes[rIdx]
+                    .segments[sIdx].waypoints
+                let count = waypoints.count
                 guard count > 0 else { continue }
-                let firstWP = document.circuit.physical.routes[rIdx]
-                    .segments[sIdx].waypoints[0]
-                if firstWP.kind != .via {
-                    let newPos = migrated(firstWP.position)
-                    if newPos != firstWP.position {
-                        document.circuit.physical.routes[rIdx]
-                            .segments[sIdx].waypoints[0].position = newPos
-                    }
-                }
+                patch(&waypoints, endIndex: 0,
+                      neighborIndex: count > 1 ? 1 : nil)
                 if count > 1 {
-                    let lastWP = document.circuit.physical.routes[rIdx]
-                        .segments[sIdx].waypoints[count - 1]
-                    if lastWP.kind != .via {
-                        let newPos = migrated(lastWP.position)
-                        if newPos != lastWP.position {
-                            document.circuit.physical.routes[rIdx]
-                                .segments[sIdx].waypoints[count - 1].position = newPos
-                        }
-                    }
+                    // Indices re-read after the first patch may have grown
+                    // the array by one at the front.
+                    let last = waypoints.count - 1
+                    patch(&waypoints, endIndex: last, neighborIndex: last - 1)
+                }
+                if waypoints != document.circuit.physical.routes[rIdx]
+                    .segments[sIdx].waypoints {
+                    document.circuit.physical.routes[rIdx]
+                        .segments[sIdx].waypoints = waypoints
                 }
             }
         }

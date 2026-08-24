@@ -133,7 +133,7 @@ struct PlacementBodyView: View {
                     pinCount: component.connectorPinCount ?? 1,
                     screwCount: component.connectorScrewCount ?? ComponentKind.connectorMinScrewCount
                 )
-                let endX = (fp.exclusionRect.origin.x + fp.exclusionRect.size.width / 2)
+                let endX = ComponentKind.connectorRowLocalX(manufacturing: manufacturing)
                     * transform.ptsPerMm
                 let throughR = sheetScrewDiameter / 2 * transform.ptsPerMm
                 for sy in screwYs {
@@ -366,7 +366,7 @@ struct PlacementBodyView: View {
             pinCount: component.connectorPinCount ?? 1,
             screwCount: component.connectorScrewCount ?? ComponentKind.connectorMinScrewCount
         )
-        let endX = (fp.exclusionRect.origin.x + fp.exclusionRect.size.width / 2) * transform.ptsPerMm
+        let endX = ComponentKind.connectorRowLocalX(manufacturing: manufacturing) * transform.ptsPerMm
         let throughR = manufacturing.screwThroughDiameter / 2 * transform.ptsPerMm
         let headR = ScrewGeometry.headDiameter / 2 * transform.ptsPerMm
         let hexCircumR = (ScrewGeometry.hexAcrossFlats / sqrt(3.0)) * transform.ptsPerMm

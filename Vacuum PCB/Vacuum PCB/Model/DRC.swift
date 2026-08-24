@@ -814,14 +814,14 @@ enum DRC {
             else { continue }
             let fp = c.footprint(m, snapshots: flat.librarySnapshots)
             let pinCentres = fp.pins.map { pl.worldPosition(of: $0) }
-            let halfExt = fp.exclusionRect.size.width / 2
+            let rowX = ComponentKind.connectorRowLocalX(manufacturing: m)
             let screwYs = ComponentKind.connectorScrewLocalYs(
                 pinCount: c.connectorPinCount ?? 1,
                 screwCount: c.connectorScrewCount ?? ComponentKind.connectorMinScrewCount
             )
             let screwCentres = screwYs.map { sy in
                 pl.worldPosition(of: FootprintPin(
-                    key: "_endcap", offset: Point(x: halfExt, y: sy), relativeLayer: .same
+                    key: "_endcap", offset: Point(x: rowX, y: sy), relativeLayer: .same
                 ))
             }
             guard let gasket = ConnectorGasket.layout(
@@ -2522,7 +2522,7 @@ enum DRC {
             ).last ?? 0
             let headRadius = ScrewGeometry.headDiameter / 2
             let halfRow = endCapY + headRadius + m.minWallThickness
-            let outward = ComponentKind.connectorOutwardExtent(manufacturing: m)
+            let outward = ComponentKind.connectorProtrusionDepth(manufacturing: m)
             byEdge[anchor.edge, default: []].append(P(
                 edge: anchor.edge,
                 centre: anchor.offsetAlongEdge,
