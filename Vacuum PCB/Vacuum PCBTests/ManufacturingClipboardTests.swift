@@ -83,6 +83,7 @@ struct ManufacturingClipboardTests {
         incoming.gridPitch += 0.5
         incoming.minChannelSpacing += 0.5
         incoming.resistorChannelDiameter += 0.1
+        incoming.smoothResistors.toggle()
         incoming.interLayerWall += 0.25
         incoming.testPointLabelSize += 1
         incoming.plateCornerFillet += 1

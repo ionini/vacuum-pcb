@@ -370,4 +370,96 @@ struct BambuModifierExportTests {
         #expect(r.manifestURL == nil)
         #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("widget_bambu_export.json").path))
     }
+
+    // MARK: - Resistor care
+
+    /// A board with one L resistor on the given plate — the resistor-care
+    /// export's minimal fixture.
+    private func resistorDoc(on plate: Plate) -> CircuitDocument {
+        var doc = CircuitDocument.blank()
+        doc.physical.boardOutline = Rect(origin: .zero, size: Size(width: 80, height: 40))
+        let r = Component(kind: .resistor, label: "R1", resistorSize: .large)
+        doc.logic.components = [r]
+        doc.physical.placements = [
+            Placement(componentId: r.id, position: Point(x: 40, y: 20),
+                      rotation: .r0, layer: plate, depth: 0),
+        ]
+        return doc
+    }
+
+    @Test("Resistor-care file ships with the plate that has resistors, tight to the serpentine")
+    func resistorCareRidesWithItsPlate() {
+        let doc = resistorDoc(on: .top)
+        let m = doc.manufacturing
+        let payload = BambuExport.payload(doc: doc, baseName: "b")
+        let names = payload.files.map(\.name)
+        #expect(names.contains("b_top_resistors.stl"))
+        #expect(!names.contains("b_bottom_resistors.stl"))
+        let top = payload.objects.first { $0.plate == .top }
+        #expect(top?.resistorsFilename == "b_top_resistors.stl")
+        #expect(payload.objects.first { $0.plate == .bottom }?.resistorsFilename == nil)
+
+        guard let care = top?.resistorCareMesh, let model = top?.modelMesh else {
+            Issue.record("top plate missing care/model mesh")
+            return
+        }
+        // A stadium hugging the carved serpentine (its |y| extent + bore, no
+        // margin — routes legally pass inside the footprint's corners),
+        // channelDiameter tall and centred on the layer midline like the
+        // routed bores.
+        let maxY = ResistorGeometry.waypoints(for: .large, m: m)
+            .map { abs($0.y) }.max() ?? 0
+        let stadiumWidth = 2 * maxY + m.resistorChannelDiameter
+        let w = width(care.bounds)
+        #expect(abs(w.x - ManufacturingConstants.resistorFootprintLength) < 1e-6)
+        #expect(abs(w.y - stadiumWidth) < 1e-6)
+        #expect(w.y < ManufacturingConstants.resistorFootprintWidth - 0.5)
+        #expect(abs(w.z - m.channelDiameter) < 1e-6)
+        // Rounded ends, not a box: volume ≈ stadium area × height, clearly
+        // below the bounding box's volume.
+        let stadiumVolume = ((ManufacturingConstants.resistorFootprintLength - stadiumWidth)
+                             * stadiumWidth
+                             + .pi * pow(stadiumWidth / 2, 2))
+                            * m.channelDiameter
+        let boxVolume = w.x * w.y * w.z
+        #expect(abs(care.signedVolume - stadiumVolume) < 0.05 * stadiumVolume)
+        #expect(care.signedVolume < 0.96 * boxVolume)
+        // Same rigid transform as its plate: the box sits inside the posed plate.
+        #expect(overlaps(care.bounds, model.bounds))
+        #expect(care.bounds.min.z > model.bounds.min.z
+                && care.bounds.max.z < model.bounds.max.z)
+
+        // Manifest names it on the top object and nulls it on the bottom.
+        guard let manifest = payload.files.first(where: { $0.name == "b_bambu_export.json" }) else {
+            Issue.record("missing manifest")
+            return
+        }
+        let json = String(decoding: manifest.data, as: UTF8.self)
+        #expect(json.contains("\"resistors\": \"b_top_resistors.stl\""))
+        #expect(json.contains("\"resistors\": null"))
+    }
+
+    @Test("A bottom-plate resistor's care box follows the plate's print flip")
+    func resistorCareFollowsBottomFlip() {
+        let payload = BambuExport.payload(doc: resistorDoc(on: .bottom), baseName: "b")
+        #expect(payload.files.contains { $0.name == "b_bottom_resistors.stl" })
+        #expect(!payload.files.contains { $0.name == "b_top_resistors.stl" })
+        guard let bottom = payload.objects.first(where: { $0.plate == .bottom }),
+              let care = bottom.resistorCareMesh else {
+            Issue.record("bottom plate missing care mesh")
+            return
+        }
+        // Bottom plate is posed flipped for printing; the care box must ride
+        // the identical transform and land inside the posed plate.
+        #expect(overlaps(care.bounds, bottom.modelMesh.bounds))
+        #expect(care.bounds.min.z > bottom.modelMesh.bounds.min.z
+                && care.bounds.max.z < bottom.modelMesh.bounds.max.z)
+    }
+
+    @Test("Boards without resistors ship no resistors file")
+    func noResistorsNoFile() {
+        let payload = BambuExport.payload(doc: representativeDoc(), baseName: "b")
+        #expect(!payload.files.contains { $0.name.hasSuffix("_resistors.stl") })
+        #expect(payload.objects.allSatisfy { $0.resistorsFilename == nil })
+    }
 }

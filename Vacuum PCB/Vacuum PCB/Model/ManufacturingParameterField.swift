@@ -91,6 +91,7 @@ struct ManufacturingParameterField: Identifiable {
         .number("channelDiameter", "Channels", "Channel diameter", \.channelDiameter),
         .number("resistorChannelDiameter", "Channels", "Resistor bore diameter",
                 \.resistorChannelDiameter),
+        .flag("smoothResistors", "Channels", "Smooth resistors", \.smoothResistors),
         .number("portBoreDiameter", "Channels", "Port bore diameter", \.portBoreDiameter),
         .number("portBoreTaperDegrees", "Channels", "Port bore taper",
                 \.portBoreTaperDegrees, unit: "°"),

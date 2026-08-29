@@ -91,14 +91,18 @@ BIN=.build/debug/vacuum-cli
   deliberately keeps that 0.42: an external drive arrives through socket
   + tube, which has no deep-gated membrane), `resistance` 1.5 (the standard resistor at the
   current 0.35 mm bore, board-calibrated Jul 17–18 2026; boards printed
-  at the older ~0.5 mm bore match their bench at ≈ 0.45), `pumpMax` 0.4
-  (the bench pump measured directly: −0.6 atm; the weaker bench pump is
-  0.7), `flow` 0.13 (the pump edge doubles as the *external supply line*
-  — the bench tube; it isn't a route, so `channelR` can't see it; 0.13 is
-  the bare-tube divider measured directly — the Jul 13 2026 inverter-board
-  experiment showed the old 0.09 board-fit's extra restriction was
-  clamp-dependent interface leak, which belongs in `leak`, so lower `flow`
-  only to model a loose build), `channelR` 0.006
+  at the older ~0.5 mm bore match their bench at ≈ 0.45), `pumpMax` 0.307
+  (the NEW stronger bench pump: deadhead −0.693 atm, measured 2026-08-27;
+  the Jul-era pump was 0.4 / −0.6, the weak one 0.7 / −0.3), `flow` 1.32
+  paired with `droop` +0.467 (fitted together 2026-08-27: droop from the
+  550 ml jar drawdown's deep region, flow bisected on the Test-rig 0.35 mm
+  L-coupon anchor at that droop — the pair is degenerate at a single
+  divider point, so never change one without the other; the old pump's
+  pair was 0.13 / −0.14. The pump edge doubles as the *external supply
+  line* — the bench tube; it isn't a route, so `channelR` can't see it.
+  The Jul 13 2026 lesson stands: clamp-dependent interface restriction
+  belongs in `leak`, so lower `flow` only to model a loose build),
+  `channelR` 0.006
   (coupon-measured: 40/80 mm dividers, exact R ∝ length; routed nets
   subdivide into channel nodes: supply
   runs, bus legs and vent runs drop pressure under flow, and probes/test
@@ -145,7 +149,7 @@ the design — read the topology, don't assume.
 ## Gotchas
 
 - A **hard** input toggled to `vac` joins the shared pump manifold and only
-  reaches `pumpMaxVacuum` (default 0.4, the measured bench pump), not full
+  reaches `pumpMaxVacuum` (default 0.307, the measured bench pump), not full
   vacuum — matching the app. If a gate needs deeper vacuum than the rail
   delivers, it won't switch.
 - A transistor opens only when its gate net drops below `gateThreshold`

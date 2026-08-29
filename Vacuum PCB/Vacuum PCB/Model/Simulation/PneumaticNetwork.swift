@@ -307,7 +307,8 @@ struct PneumaticNetwork {
                 let n1 = pinToNet[PinRef(componentId: component.id, pinKey: "1")]
                 let n2 = pinToNet[PinRef(componentId: component.id, pinKey: "2")]
                 if let n1, let n2 {
-                    let length = serpentineLength(for: component.resistorSize ?? .medium)
+                    let length = serpentineLength(for: component.resistorSize ?? .medium,
+                                                  m: doc.manufacturing)
                     resistors.append(ResistorEdge(
                         id: component.id, label: component.label,
                         net1: n1, net2: n2,
@@ -389,13 +390,9 @@ struct PneumaticNetwork {
         )
     }
 
-    private static func serpentineLength(for size: ResistorSize) -> Double {
-        let halfLen = ManufacturingConstants.resistorFootprintLength / 2
-        let halfWid = ManufacturingConstants.resistorFootprintWidth / 2
-        let transitions = ResistorGeometry.transitions(for: size)
-        let pts = ResistorGeometry.path(transitions: transitions,
-                                        halfLen: halfLen, halfWid: halfWid)
-        return polylineLength(pts)
+    private static func serpentineLength(for size: ResistorSize,
+                                         m: ManufacturingConstants) -> Double {
+        polylineLength(ResistorGeometry.waypoints(for: size, m: m))
     }
 
     private static func polylineLength(_ pts: [Point]) -> Double {

@@ -235,10 +235,8 @@ struct Simulate3DGeometry {
 
             switch component.kind {
             case .resistor:
-                let local = ResistorGeometry.path(
-                    transitions: ResistorGeometry.transitions(for: component.resistorSize ?? .medium),
-                    halfLen: ManufacturingConstants.resistorFootprintLength / 2,
-                    halfWid: ManufacturingConstants.resistorFootprintWidth / 2
+                let local = ResistorGeometry.waypoints(
+                    for: component.resistorSize ?? .medium, m: m
                 )
                 guard local.count >= 2 else { continue }
                 let pts = local.map(world)

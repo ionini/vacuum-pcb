@@ -263,6 +263,19 @@ struct ManufacturingConstants: Codable, Hashable {
     /// unaffected. Per-board; files saved before this existed default to on.
     var flatBottomChannels: Bool
 
+    /// Whether resistor serpentines use the print-friendly *smooth* meander
+    /// (parallel legs joined by tangent arcs, every printed wall between
+    /// neighbouring bore surfaces ≥ max(0.5, `minWallThickness`)) instead of
+    /// the legacy square zigzag. The zigzag's inter-leg walls (0.31 mm on an
+    /// L at defaults) are below a 0.2 mm nozzle's reliable single-wall width,
+    /// and its 90° corners reverse the nozzle right at those walls — both
+    /// smear plastic into the bore and clog the resistor (bench, 2026-08-26).
+    /// The smooth path keeps each size as close to its legacy channel length
+    /// (= simulated resistance) as the wall guarantee allows. Files saved
+    /// before this existed default to off so an already-printed board's
+    /// geometry and simulated resistance never change on reopen.
+    var smoothResistors: Bool
+
     /// Radial / cross-sectional growth (mm) of the print envelope — the
     /// modifier volume the Bambu export wraps around every pneumatic feature
     /// (channels, serpentines, vias, valve chambers, port bores, taps). This
@@ -317,6 +330,7 @@ struct ManufacturingConstants: Codable, Hashable {
         minWallThickness: 0.5,
         preferredWallThickness: 0,
         flatBottomChannels: true,
+        smoothResistors: true,
         testPointLabelSize: 3.0,
         modifierMarginXY: 1.0,
         modifierMarginZ: 0.6
@@ -344,7 +358,7 @@ struct ManufacturingConstants: Codable, Hashable {
         case connectorPadding
         case castingMargin, moldWallThickness
         case minWallThickness, preferredWallThickness
-        case flatBottomChannels
+        case flatBottomChannels, smoothResistors
         case testPointLabelSize
         case modifierMarginXY, modifierMarginZ
     }
@@ -369,7 +383,7 @@ struct ManufacturingConstants: Codable, Hashable {
          connectorPadding: Double = 0,
          castingMargin: Double = 2.0, moldWallThickness: Double = 3.0,
          minWallThickness: Double, preferredWallThickness: Double = 0,
-         flatBottomChannels: Bool,
+         flatBottomChannels: Bool, smoothResistors: Bool = true,
          testPointLabelSize: Double = 3.0,
          modifierMarginXY: Double = 1.0, modifierMarginZ: Double = 0.6) {
         self.plateThickness = plateThickness
@@ -408,6 +422,7 @@ struct ManufacturingConstants: Codable, Hashable {
         self.minWallThickness = minWallThickness
         self.preferredWallThickness = preferredWallThickness
         self.flatBottomChannels = flatBottomChannels
+        self.smoothResistors = smoothResistors
         self.testPointLabelSize = testPointLabelSize
         self.modifierMarginXY = modifierMarginXY
         self.modifierMarginZ = modifierMarginZ
@@ -498,6 +513,12 @@ struct ManufacturingConstants: Codable, Hashable {
                                                        forKey: .preferredWallThickness) ?? 0
         flatBottomChannels = try c.decodeIfPresent(Bool.self,
                                                    forKey: .flatBottomChannels) ?? true
+        // Pinned to false (the legacy zigzag): the smooth meander changes the
+        // serpentine's shape *and* its simulated resistance (path length), so
+        // an existing design — possibly already printed and bench-calibrated —
+        // must keep its geometry until the user opts in.
+        smoothResistors = try c.decodeIfPresent(Bool.self,
+                                                forKey: .smoothResistors) ?? false
         testPointLabelSize = try c.decodeIfPresent(Double.self,
                                                    forKey: .testPointLabelSize) ?? 3.0
         // Pinned to the pre-existing BambuExport defaults, so older files keep

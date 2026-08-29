@@ -785,6 +785,11 @@ func reportBambuExport(_ r: BambuExport.WriteResult, dir: URL,
                                          "polygons": mesh.polygons.count,
                                          "size": size(mesh.bounds)]
                 }
+                if let url = o.resistorsURL, let mesh = o.resistorCareMesh {
+                    entry["resistors"] = ["file": url.lastPathComponent,
+                                          "polygons": mesh.polygons.count,
+                                          "size": size(mesh.bounds)]
+                }
                 return entry
             },
             "manifest": r.manifestURL?.lastPathComponent as Any,
@@ -807,11 +812,18 @@ func reportBambuExport(_ r: BambuExport.WriteResult, dir: URL,
         } else {
             print("  \(name) ⚠ no print-critical pneumatic features on this plate — no modifier written")
         }
+        if let url = o.resistorsURL, let mesh = o.resistorCareMesh {
+            let rb = mesh.bounds
+            print(String(format: "  %@ resistors %@  polys=%d  bbox=%.1f×%.1f×%.1f mm  (serpentine-hugging per-resistor care stadiums)",
+                         name, url.lastPathComponent, mesh.polygons.count,
+                         rb.max.x - rb.min.x, rb.max.y - rb.min.y, rb.max.z - rb.min.z))
+        }
     }
     for aux in r.auxiliaryURLs { print("  body   \(aux.lastPathComponent)  (separate object, no modifier)") }
     if let manifest = r.manifestURL { print("  manifest \(manifest.lastPathComponent)") }
     if let first = r.objects.first(where: { $0.modifierURL != nil }), let firstModifier = first.modifierURL {
-        print("Next, once per plate: select \(first.modelURL.lastPathComponent) + \(firstModifier.lastPathComponent) in Bambu Studio, load as ONE object, set the _modifier part to Modifier — then repeat for the other plate's pair. Each plate stays its own object, so the plates can be arranged and printed separately. Never select all four files at once (they'd merge into one inseparable object) and never Split.")
+        let care = first.resistorsURL.map { " + \($0.lastPathComponent)" } ?? ""
+        print("Next, once per plate: select \(first.modelURL.lastPathComponent) + \(firstModifier.lastPathComponent)\(care) in Bambu Studio, load as ONE object, set the _modifier\(care.isEmpty ? " part" : " and _resistors parts") to Modifier — then repeat for the other plate's set. The _resistors part is a serpentine-hugging stadium per resistor: give it slow speeds and max cooling so the bores don't clog, or force it solid and print it as N% sparse infill with 0 wall loops to use the lattice itself as the resistor. Each plate stays its own object, so the plates can be arranged and printed separately. Never select both plates' files at once (they'd merge into one inseparable object) and never Split.")
     } else {
         print("⚠ every modifier is empty — this board has no print-critical pneumatic features to envelope")
     }

@@ -206,16 +206,13 @@ struct PlacementBodyView: View {
         // rect is still enforced by DRC/auto-router, it's just no longer
         // drawn as a fat outline that visually inflates the resistor and
         // makes wiring around it feel cramped.
-        let halfLen = ManufacturingConstants.resistorFootprintLength / 2
-        let halfWid = ManufacturingConstants.resistorFootprintWidth / 2
         // Resistors are pure tubes, so their drawn colour reflects the full
         // layer (plate + depth) the user has flipped them to — not just the
         // plate. That way a resistor flipped to T1 visually matches the T1
         // routes that will land on it.
         let color = LayerPalette.color(for: Layer(plate: placement.layer, depth: placement.depth))
-        let transitions = ResistorGeometry.transitions(for: component.resistorSize ?? .medium)
-        let waypoints = ResistorGeometry.path(
-            transitions: transitions, halfLen: halfLen, halfWid: halfWid
+        let waypoints = ResistorGeometry.waypoints(
+            for: component.resistorSize ?? .medium, m: manufacturing
         )
         guard let first = waypoints.first else { return }
         var path = Path()

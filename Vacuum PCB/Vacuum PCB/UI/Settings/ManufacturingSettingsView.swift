@@ -88,6 +88,10 @@ struct ManufacturingSettingsView: View {
             group("Channels") {
                 row("Channel diameter", $draftMfg.channelDiameter)
                 row("Resistor bore diameter", $draftMfg.resistorChannelDiameter)
+                Toggle("Smooth resistors", isOn: $draftMfg.smoothResistors)
+                    .font(.caption)
+                Text("Replaces the resistor zigzag with a rounded meander: parallel legs joined by tangent arcs, walls between neighbouring bores kept ≥ max(0.5, min wall) so a 0.2 mm nozzle can print them without smearing into the bore. Changes the channel length, so the simulated resistance shifts (L: ~34 → ~29 mm at defaults) — leave off for boards already printed/calibrated with the zigzag.")
+                    .font(.caption2).foregroundStyle(.secondary)
                 row("Port bore diameter", $draftMfg.portBoreDiameter)
                 row("Port bore taper (°)", $draftMfg.portBoreTaperDegrees)
                 row("Min channel spacing (routing)", $draftMfg.minChannelSpacing)
