@@ -13,6 +13,7 @@ struct ManufacturingParameterField: Identifiable {
     enum Value: Equatable {
         case number(Double, unit: String)
         case flag(Bool)
+        case text(String)
 
         var display: String {
             switch self {
@@ -21,6 +22,8 @@ struct ManufacturingParameterField: Identifiable {
                 return unit.isEmpty ? text : "\(text) \(unit)"
             case .flag(let on):
                 return on ? "On" : "Off"
+            case .text(let s):
+                return s
             }
         }
 
@@ -81,6 +84,16 @@ struct ManufacturingParameterField: Identifiable {
             copy: { source, target in target[keyPath: keyPath] = source[keyPath: keyPath] })
     }
 
+    private static func text(
+        _ id: String, _ group: String, _ label: String,
+        _ keyPath: WritableKeyPath<ManufacturingConstants, String>
+    ) -> ManufacturingParameterField {
+        ManufacturingParameterField(
+            id: id, group: group, label: label,
+            read: { .text($0[keyPath: keyPath]) },
+            copy: { source, target in target[keyPath: keyPath] = source[keyPath: keyPath] })
+    }
+
     static let all: [ManufacturingParameterField] = [
         .number("plateThickness", "Plates", "Plate thickness (single-layer)",
                 \.plateThickness),
@@ -109,6 +122,11 @@ struct ManufacturingParameterField: Identifiable {
                 \.modifierMarginXY),
         .number("modifierMarginZ", "Print envelope", "Envelope padding Z (roof/floor)",
                 \.modifierMarginZ),
+
+        .number("resistorInfillDensity", "Resistor infill", "Sparse infill density",
+                \.resistorInfillDensity, unit: "%"),
+        .text("resistorInfillPattern", "Resistor infill", "Sparse infill pattern",
+              \.resistorInfillPattern),
 
         .number("dimpleDiameter", "Transistor gate", "Dome diameter", \.dimpleDiameter),
         .number("dimpleSphereOffset", "Transistor gate", "Dome sphere offset",

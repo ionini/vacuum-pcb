@@ -989,7 +989,7 @@ struct DocumentView: View {
             #endif
         case .openInBambuResistorsOnly(let plate):
             #if canImport(AppKit)
-            openInBambuStudio(withModifier: true, plate: plate, includePrintModifier: false)
+            openInBambuStudioResistors3MF(plate: plate)
             #else
             break
             #endif
@@ -1173,6 +1173,58 @@ struct DocumentView: View {
                 self.isBuilding = false
                 let config = NSWorkspace.OpenConfiguration()
                 NSWorkspace.shared.open(urls, withApplicationAt: bambuURL, configuration: config) { _, error in
+                    if let error {
+                        NSLog("vpcb: NSWorkspace.open(Bambu Studio) failed: \(error)")
+                    }
+                }
+            }
+        }
+    }
+
+    /// Builds the resistors-only native `.3mf` project (off-thread, reusing
+    /// the already-built plates) into the temp dir and opens it in Bambu
+    /// Studio: the plate arrives as one object whose `_resistors` part is
+    /// already a normal part carrying the document's porous-infill recipe
+    /// (0 walls, 0 top/bottom shells, sparse pattern + density from
+    /// Manufacturing settings → Resistor infill). One click, no
+    /// load-as-single-object prompt, nothing to configure per-setting —
+    /// the recipe that used to be retyped in Bambu on every coupon export.
+    /// The global process preset is untouched (the file carries no
+    /// project_settings), so the selected airtight profile keeps governing
+    /// the plate body.
+    private func openInBambuStudioResistors3MF(plate: Plate) {
+        guard let built else { return }
+        guard let bambuURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.bambuStudioBundleID) else {
+            return
+        }
+        // Match the preview's snapshot so the parts line up with the plates.
+        var snapshot = document.circuit
+        if !includeTestPoints { snapshot.physical.testPoints = [] }
+        let base = bambuBaseName
+        isBuilding = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let recipe = BambuExport.ResistorPartRecipe(snapshot.manufacturing)
+            guard let data = BambuExport.resistors3MFData(
+                doc: snapshot, baseName: base, recipe: recipe,
+                plates: [plate], prebuiltModel: built)
+            else {
+                NSLog("vpcb: no resistors on the \(plate.rawValue) plate — nothing to export")
+                DispatchQueue.main.async { self.isBuilding = false }
+                return
+            }
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent(BambuExport.resistors3MFFilename(base))
+            do {
+                try data.write(to: url, options: .atomic)
+            } catch {
+                NSLog("vpcb: failed to write 3MF for Bambu Studio: \(error)")
+                DispatchQueue.main.async { self.isBuilding = false }
+                return
+            }
+            DispatchQueue.main.async {
+                self.isBuilding = false
+                let config = NSWorkspace.OpenConfiguration()
+                NSWorkspace.shared.open([url], withApplicationAt: bambuURL, configuration: config) { _, error in
                     if let error {
                         NSLog("vpcb: NSWorkspace.open(Bambu Studio) failed: \(error)")
                     }
@@ -1429,11 +1481,14 @@ struct ExportMenuButton: View {
                 Button("Bottom Plate") { onOpenBambuWithVoidModifier(.bottom) }
             }
             .disabled(!bambuStudioInstalled)
-            // Model + `_resistors` only — no print-settings modifier to
-            // delete. For the porous-resistor flow: switch the _resistors
-            // part to a Modifier, force it solid, print as sparse infill
-            // with 0 walls.
-            Menu("Open in Bambu Studio (Resistors Only)") {
+            // Native .3mf for the porous-resistor flow: the plate's model +
+            // `_resistors` arrive as ONE object with the `_resistors` part
+            // already a normal part carrying the document's infill recipe
+            // (0 walls / 0 shells / pattern + density from Manufacturing
+            // settings → Resistor infill) — nothing to group or retype in
+            // Bambu. No print-settings modifier: the global airtight preset
+            // keeps governing the plate body.
+            Menu("Open in Bambu Studio (Resistors 3MF)") {
                 Button("Top Plate") { onOpenBambuResistorsOnly(.top) }
                 Button("Bottom Plate") { onOpenBambuResistorsOnly(.bottom) }
             }

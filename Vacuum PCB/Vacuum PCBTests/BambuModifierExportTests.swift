@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import Compression
 import Euclid
 @testable import Vacuum_PCB
 
@@ -461,5 +462,165 @@ struct BambuModifierExportTests {
         let payload = BambuExport.payload(doc: representativeDoc(), baseName: "b")
         #expect(!payload.files.contains { $0.name.hasSuffix("_resistors.stl") })
         #expect(payload.objects.allSatisfy { $0.resistorsFilename == nil })
+    }
+
+    // MARK: - Resistors-only .3mf project
+
+    /// Minimal ZIP reader for our own writer's output (flags 0, sizes inline,
+    /// stored or raw-deflate entries) — enough to verify the archive without
+    /// shelling out.
+    private func unzipAll(_ data: Data) -> [String: Data] {
+        var entries: [String: Data] = [:]
+        var i = data.startIndex
+        func u16(_ o: Int) -> Int { Int(data[i + o]) | Int(data[i + o + 1]) << 8 }
+        func u32(_ o: Int) -> Int {
+            Int(data[i + o]) | Int(data[i + o + 1]) << 8
+            | Int(data[i + o + 2]) << 16 | Int(data[i + o + 3]) << 24
+        }
+        while i + 30 <= data.endIndex, u32(0) == 0x04034b50 {
+            let method = u16(8), compSize = u32(18), uncompSize = u32(22)
+            let nameLen = u16(26), extraLen = u16(28)
+            let name = String(data: data.subdata(in: (i + 30)..<(i + 30 + nameLen)), encoding: .utf8) ?? ""
+            let payloadStart = i + 30 + nameLen + extraLen
+            let payload = data.subdata(in: payloadStart..<(payloadStart + compSize))
+            if method == 0 {
+                entries[name] = payload
+            } else {
+                var dst = Data(count: uncompSize)
+                let written = dst.withUnsafeMutableBytes { d -> Int in
+                    payload.withUnsafeBytes { s -> Int in
+                        guard let dp = d.bindMemory(to: UInt8.self).baseAddress,
+                              let sp = s.bindMemory(to: UInt8.self).baseAddress else { return 0 }
+                        return compression_decode_buffer(dp, uncompSize, sp, payload.count, nil, COMPRESSION_ZLIB)
+                    }
+                }
+                entries[name] = written == uncompSize ? dst : Data()
+            }
+            i = payloadStart + compSize
+        }
+        return entries
+    }
+
+    @Test("Recipe: density formatting and the exact per-part override rows, in Bambu's order")
+    func resistorRecipeOverrides() {
+        #expect(BambuExport.ResistorPartRecipe.densityString(63) == "63%")
+        #expect(BambuExport.ResistorPartRecipe.densityString(63.5) == "63.5%")
+        #expect(BambuExport.ResistorPartRecipe.densityString(72.25) == "72.25%")
+
+        let recipe = BambuExport.ResistorPartRecipe(infillDensity: 63.5, infillPattern: "zigzag")
+        // The exact rows the reference project carries on its `_resistors`
+        // part (hand-built in Bambu Studio, 2026-08-29), alphabetized —
+        // walls/shells pinned at 0, skeleton/skin densities in lockstep.
+        #expect(recipe.overrides.map(\.key) == [
+            "bottom_shell_layers", "skeleton_infill_density", "skin_infill_density",
+            "sparse_infill_density", "sparse_infill_pattern", "top_shell_layers",
+            "wall_loops",
+        ])
+        #expect(recipe.overrides.map(\.value) == [
+            "0", "63.5%", "63.5%", "63.5%", "zigzag", "0", "0",
+        ])
+        #expect(recipe.label == "63.5% zigzag")
+
+        // The document-seeded recipe reads the manufacturing fields.
+        var m = ManufacturingConstants.defaults
+        m.resistorInfillDensity = 70
+        m.resistorInfillPattern = "gyroid"
+        let fromDoc = BambuExport.ResistorPartRecipe(m)
+        #expect(fromDoc.infillDensity == 70)
+        #expect(fromDoc.infillPattern == "gyroid")
+        // New-document default is the bench recipe in force at introduction.
+        let defaults = BambuExport.ResistorPartRecipe(ManufacturingConstants.defaults)
+        #expect(defaults.infillDensity == 63)
+        #expect(defaults.infillPattern == "zigzag")
+    }
+
+    @Test("Resistors 3MF: valid archive, _resistors is a normal part with the recipe pre-applied, model part untouched")
+    func resistors3MFStructure() throws {
+        let doc = resistorDoc(on: .top)
+        let recipe = BambuExport.ResistorPartRecipe(infillDensity: 63.5, infillPattern: "zigzag")
+        let data = try #require(BambuExport.resistors3MFData(
+            doc: doc, baseName: "coupon", recipe: recipe))
+
+        // ZIP magic + all expected entries present and non-empty; only the
+        // top plate has resistors, so exactly one object file ships.
+        #expect(data.prefix(4) == Data([0x50, 0x4b, 0x03, 0x04]))
+        let entries = unzipAll(data)
+        let expected = ["3D/3dmodel.model", "3D/Objects/object_1.model",
+                        "3D/_rels/3dmodel.model.rels", "Metadata/model_settings.config",
+                        "[Content_Types].xml", "_rels/.rels"]
+        for name in expected {
+            #expect(entries[name]?.isEmpty == false, "missing or empty \(name)")
+        }
+        #expect(entries["3D/Objects/object_2.model"] == nil)
+        // Every XML part parses (XMLParser = strict well-formedness check).
+        for (name, content) in entries {
+            #expect(XMLParser(data: content).parse(), "malformed XML in \(name)")
+        }
+
+        // Both parts are NORMAL parts (the resistors part fills the carved
+        // serpentine — a settings-only modifier could not), and only the
+        // `_resistors` part carries the recipe rows.
+        let settings = String(decoding: entries["Metadata/model_settings.config"] ?? Data(), as: UTF8.self)
+        #expect(!settings.contains("subtype=\"modifier_part\""))
+        let parts = settings.components(separatedBy: "<part ").dropFirst()
+        #expect(parts.count == 2)
+        let modelPart = try #require(parts.first { $0.contains("coupon_top_model") })
+        let resistorsPart = try #require(parts.first { $0.contains("coupon_top_resistors") })
+        for key in ["wall_loops", "top_shell_layers", "bottom_shell_layers",
+                    "sparse_infill_density", "sparse_infill_pattern",
+                    "skeleton_infill_density", "skin_infill_density"] {
+            #expect(!modelPart.contains(key), "model part must not override \(key)")
+        }
+        #expect(resistorsPart.hasPrefix("id=\"2\" subtype=\"normal_part\">"))
+        #expect(resistorsPart.contains("<metadata key=\"wall_loops\" value=\"0\"/>"))
+        #expect(resistorsPart.contains("<metadata key=\"top_shell_layers\" value=\"0\"/>"))
+        #expect(resistorsPart.contains("<metadata key=\"bottom_shell_layers\" value=\"0\"/>"))
+        #expect(resistorsPart.contains("<metadata key=\"sparse_infill_density\" value=\"63.5%\"/>"))
+        #expect(resistorsPart.contains("<metadata key=\"skeleton_infill_density\" value=\"63.5%\"/>"))
+        #expect(resistorsPart.contains("<metadata key=\"skin_infill_density\" value=\"63.5%\"/>"))
+        #expect(resistorsPart.contains("<metadata key=\"sparse_infill_pattern\" value=\"zigzag\"/>"))
+        // The part is named for its recipe, so the coupon is self-describing
+        // in Bambu's Objects tree.
+        #expect(resistorsPart.contains("coupon_top_resistors (63.5% zigzag)"))
+
+        // The mesh file holds both parts' geometry.
+        let object1 = String(decoding: entries["3D/Objects/object_1.model"] ?? Data(), as: UTF8.self)
+        #expect(object1.contains("<vertex "))
+        #expect(object1.contains("<triangle "))
+        #expect(object1.components(separatedBy: "<object ").count == 3)  // 2 parts + split artifact
+
+        // Root model references the object file and builds one item.
+        let root = String(decoding: entries["3D/3dmodel.model"] ?? Data(), as: UTF8.self)
+        #expect(root.contains("p:path=\"/3D/Objects/object_1.model\""))
+        #expect(root.contains("printable=\"1\""))
+    }
+
+    @Test("Resistors 3MF ships only plates that have resistors; empty selections produce nil")
+    func resistors3MFPlateSelection() {
+        let recipe = BambuExport.ResistorPartRecipe(infillDensity: 63, infillPattern: "zigzag")
+        let topDoc = resistorDoc(on: .top)
+        let objects = BambuExport.resistorProjectObjects(
+            doc: topDoc, baseName: "c", recipe: recipe)
+        #expect(objects.map(\.name) == ["c_top"])
+        #expect(objects.first?.parts.map(\.isModifier) == [false, false])
+        // The parts share the plate's posed coordinate space.
+        if let o = objects.first, o.parts.count == 2 {
+            #expect(overlaps(o.parts[0].mesh.bounds, o.parts[1].mesh.bounds))
+        }
+        // Requesting only the plate without resistors → nothing to ship.
+        #expect(BambuExport.resistors3MFData(
+            doc: topDoc, baseName: "c", recipe: recipe, plates: [.bottom]) == nil)
+        // No resistors at all → nil.
+        #expect(BambuExport.resistors3MFData(
+            doc: representativeDoc(), baseName: "c", recipe: recipe) == nil)
+    }
+
+    @Test("Resistors 3MF output is deterministic")
+    func resistors3MFDeterministic() throws {
+        let doc = resistorDoc(on: .top)
+        let recipe = BambuExport.ResistorPartRecipe(infillDensity: 65, infillPattern: "gyroid")
+        let a = try #require(BambuExport.resistors3MFData(doc: doc, baseName: "c", recipe: recipe))
+        let b = try #require(BambuExport.resistors3MFData(doc: doc, baseName: "c", recipe: recipe))
+        #expect(a == b)
     }
 }

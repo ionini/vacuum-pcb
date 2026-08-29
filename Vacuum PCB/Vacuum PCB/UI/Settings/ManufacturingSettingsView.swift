@@ -123,6 +123,13 @@ struct ManufacturingSettingsView: View {
                     Text("How far the print envelope (the Bambu modifier volume) grows past every channel, valve, via and port — the wall of material it claims around the pneumatics, e.g. to print solid where it matters and hollow elsewhere. Visible as the purple overlay in the 3D preview (Layers → Print envelope), where a slider drives both values together. Independent of the DRC wall warnings.")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
+
+                group("Resistor infill") {
+                    percentRow("Sparse infill density", $draftMfg.resistorInfillDensity)
+                    textRow("Sparse infill pattern", $draftMfg.resistorInfillPattern)
+                    Text("The per-part slicer recipe the resistors-only Bambu 3MF export stamps on the _resistors part: 0 walls, 0 top/bottom shells, and this sparse infill — the lattice inside each resistor stadium is the flow restrictor, so the density is the resistance knob (bench ladder 2026-08). Pattern is Bambu's token verbatim, e.g. zigzag or gyroid. Travels with the document so a coupon file carries the exact recipe its density↔R map was measured with.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
             }
 
             // DRC scope toggle. A document-level flag (not a manufacturing
@@ -461,6 +468,35 @@ struct ManufacturingSettingsView: View {
                 .frame(width: fieldWidth)
                 .focused($fieldFocused)
             Text("mm").font(.caption2).foregroundStyle(.tertiary)
+        }
+    }
+
+    /// `row`, with a "%" suffix instead of "mm" (the resistor infill density).
+    private func percentRow(_ label: String, _ value: Binding<Double>) -> some View {
+        let fieldWidth: CGFloat = InputPlatform.isTouch ? 96 : 64
+        return HStack(spacing: 8) {
+            Text(label).font(.caption)
+            Spacer(minLength: 4)
+            TextField("", value: value, formatter: Self.mmFormatter)
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.trailing)
+                .frame(width: fieldWidth)
+                .focused($fieldFocused)
+            Text("%").font(.caption2).foregroundStyle(.tertiary)
+        }
+    }
+
+    /// `row` for a free-text value (the resistor infill pattern token).
+    private func textRow(_ label: String, _ value: Binding<String>) -> some View {
+        let fieldWidth: CGFloat = InputPlatform.isTouch ? 128 : 96
+        return HStack(spacing: 8) {
+            Text(label).font(.caption)
+            Spacer(minLength: 4)
+            TextField("", text: value)
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.trailing)
+                .frame(width: fieldWidth)
+                .focused($fieldFocused)
         }
     }
 

@@ -108,6 +108,8 @@ struct ManufacturingClipboardTests {
         incoming.flatBottomChannels.toggle()
         incoming.modifierMarginXY += 0.5
         incoming.modifierMarginZ += 0.2
+        incoming.resistorInfillDensity += 5
+        incoming.resistorInfillPattern += "-x"
 
         // Every field differs, so a full selection must land the source
         // verbatim — this is the check that catches a constant missing from

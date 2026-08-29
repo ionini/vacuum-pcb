@@ -829,6 +829,160 @@ func reportBambuExport(_ r: BambuExport.WriteResult, dir: URL,
     }
 }
 
+/// `export --resistors-3mf`: the resistors-only native Bambu project — per
+/// plate one object holding the plate's model plus the `_resistors` stadiums
+/// as a **normal part already carrying the porous-infill recipe** (0 walls,
+/// 0 top/bottom shells, sparse pattern + density), so Bambu Studio opens it
+/// with nothing to group, retype or configure. A comma list of densities
+/// becomes a coupon ladder: one object per density laid out in a row, each
+/// model embossed with its density tag (the copies are otherwise identical
+/// and indistinguishable the moment they leave the bed).
+func exportResistors3MF(
+    doc: CircuitDocument, path: String,
+    densities: [Double]?, patternOverride: String?, plateSelector: String,
+    autoDensityLabel: Bool, labelText: String?, labelSize: Double, labelEmboss: Double,
+    outPath: String?, json: Bool
+) {
+    let base = BambuExport.sanitizedBaseName(path)
+    var baseRecipe = BambuExport.ResistorPartRecipe(doc.manufacturing)
+    if let p = patternOverride { baseRecipe.infillPattern = p }
+    var plates: Set<Plate> = {
+        switch plateSelector {
+        case "top": return [.top]
+        case "bottom": return [.bottom]
+        default: return [.top, .bottom]   // "both" / "auto" (auto skips empties)
+        }
+    }()
+    func describePlates(_ p: Set<Plate>) -> String {
+        p.count == 2 ? "either plate" : "the \(p.first!.rawValue) plate"
+    }
+
+    // One run per density. An explicit --density is a coupon experiment, so
+    // each run gets a density tag embossed on the model (--no-label to skip);
+    // --label TEXT rides along as a suffix ("63.5 zz v2" style). Without
+    // --density the document's own recipe exports untagged (a board, not a
+    // coupon), --label still available verbatim.
+    let runs: [(recipe: BambuExport.ResistorPartRecipe, tag: String?)] = {
+        guard let list = densities else { return [(baseRecipe, labelText)] }
+        return list.map { d in
+            var r = baseRecipe
+            r.infillDensity = d
+            guard autoDensityLabel else { return (r, labelText) }
+            var t = BambuExport.ResistorPartRecipe.densityString(d)
+            t.removeLast()   // drop the '%', keep the embossed tag short
+            if let suffix = labelText { t += " \(suffix)" }
+            return (r, t)
+        }
+    }()
+
+    let out = PlateBuilder.build(doc)
+
+    // A ladder resolves to exactly ONE plate: the copies lay out in a row,
+    // and a two-plate row per density would be an arrangement puzzle, not an
+    // export. Auto-narrow when only one plate has resistors.
+    if runs.count > 1 {
+        let withResistors = [Plate.top, .bottom].filter {
+            plates.contains($0) && !PlateBuilder.resistorCareShells(doc, plate: $0).isEmpty
+        }
+        switch withResistors.count {
+        case 0: fail("error: no resistors on \(describePlates(plates)) — nothing to stamp the recipe on")
+        case 1: plates = [withResistors[0]]
+        default: fail("error: a density ladder needs ONE plate and this board has resistors on both — pass --plate top or --plate bottom")
+        }
+    }
+
+    var objects: [Bambu3MF.ProjectObject] = []
+    var xCursor: Double?   // row layout for ladder copies; nil = leave in place
+    for run in runs {
+        var runObjects = BambuExport.resistorProjectObjects(
+            doc: doc, baseName: base, recipe: run.recipe,
+            plates: plates, prebuiltModel: out)
+        if runObjects.isEmpty {
+            fail("error: no resistors on \(describePlates(plates)) — nothing to stamp the recipe on")
+        }
+        // Density tag: embossed on the model part (index 0 by construction)
+        // so the print itself says which rung it is.
+        if let tag = run.tag {
+            for oi in runObjects.indices {
+                runObjects[oi].parts[0].mesh = embossLabel(
+                    on: runObjects[oi].parts[0].mesh,
+                    text: tag, size: labelSize, emboss: labelEmboss)
+            }
+        }
+        if runs.count > 1 {
+            // Exactly one object per run here (single plate). Name it by its
+            // rung and shift it right of the previous copy.
+            runObjects[0].name += " (\(run.recipe.label))"
+            let partBounds = runObjects[0].parts.map(\.mesh.bounds)
+            let bounds = partBounds.dropFirst().reduce(partBounds[0]) { $0.union($1) }
+            let dx = (xCursor ?? bounds.min.x) - bounds.min.x
+            if dx != 0 {
+                for pi in runObjects[0].parts.indices {
+                    runObjects[0].parts[pi].mesh =
+                        runObjects[0].parts[pi].mesh.translated(by: Vector(dx, 0, 0))
+                }
+            }
+            xCursor = (xCursor ?? bounds.min.x) + (bounds.max.x - bounds.min.x)
+                + BambuExport.layoutGap
+        }
+        objects += runObjects
+    }
+
+    let data = Bambu3MF.projectData(objects: objects, title: "\(base) resistors")
+    let dest: String = {
+        guard let outPath else {
+            return URL(fileURLWithPath: path).deletingLastPathComponent()
+                .appendingPathComponent(BambuExport.resistors3MFFilename(base)).path
+        }
+        var isDir: ObjCBool = false
+        if FileManager.default.fileExists(atPath: outPath, isDirectory: &isDir), isDir.boolValue {
+            return URL(fileURLWithPath: outPath)
+                .appendingPathComponent(BambuExport.resistors3MFFilename(base)).path
+        }
+        return outPath
+    }()
+    do {
+        try data.write(to: URL(fileURLWithPath: dest), options: .atomic)
+    } catch {
+        fail("error: could not write \(dest): \(error.localizedDescription)")
+    }
+
+    if json {
+        printJSON([
+            "out": dest,
+            "bytes": data.count,
+            "recipe": [
+                "wall_loops": 0, "top_shell_layers": 0, "bottom_shell_layers": 0,
+                "sparse_infill_pattern": baseRecipe.infillPattern,
+            ],
+            "objects": objects.map { o -> [String: Any] in
+                [
+                    "name": o.name,
+                    "parts": o.parts.map { p -> [String: Any] in
+                        [
+                            "name": p.name,
+                            "subtype": p.isModifier ? "modifier_part" : "normal_part",
+                            "polygons": p.mesh.polygons.count,
+                            "overrides": Dictionary(uniqueKeysWithValues: p.overrides.map { ($0.key, $0.value) }),
+                        ]
+                    },
+                ]
+            },
+        ])
+        return
+    }
+    print("wrote \(dest)  (\(data.count) bytes, \(objects.count) object\(objects.count == 1 ? "" : "s"), native Bambu project)")
+    for o in objects {
+        print("  object \(o.name)")
+        for p in o.parts {
+            let over = p.overrides.isEmpty ? ""
+                : "  [\(p.overrides.map { "\($0.key)=\($0.value)" }.joined(separator: " "))]"
+            print("    part \(p.name)  polys=\(p.mesh.polygons.count)\(over)")
+        }
+    }
+    print("Open it in Bambu Studio: the _resistors part is a normal part already carrying the per-part recipe (0 walls, 0 top/bottom shells, sparse infill as printed above) — nothing to group or set. The file carries no global preset, so keep your airtight process profile selected.")
+}
+
 func reportSweep(_ sw: Validators.SweepResult, json: Bool) {
     if json {
         printJSON([
@@ -1287,6 +1441,29 @@ USAGE:
       global (airtight) preset governs the important regions and the modifier
       only downgrades the filler (assign it low sparse infill in Bambu).
 
+  vacuum-cli export <file.vpcb> --resistors-3mf [--density N[,N...]]
+                    [--pattern TOKEN] [--plate top|bottom|both|auto]
+                    [--no-label] [--label TEXT] [--out FILE|DIR] [--json]
+      Resistors-only native Bambu project (<base>_resistors.3mf): per plate
+      one object — the plate's model plus its `_resistors` stadiums as a
+      NORMAL part that already carries the porous-infill recipe (0 wall
+      loops, 0 top/bottom shells, sparse_infill_pattern + density, skeleton/
+      skin densities in lockstep). Open it in Bambu Studio and slice —
+      nothing to group, no part settings to retype. The file embeds no
+      global preset, so the currently selected (airtight) process profile
+      keeps governing the plate body.
+      --density overrides the document's resistorInfillDensity (Manufacturing
+      settings → Resistor infill). A comma list is a coupon LADDER: one
+      object per density in a row on the bed, each named for its rung and
+      embossed with its density tag (--no-label skips the emboss; --label
+      TEXT is appended to each tag, e.g. "63.5 zz v2"). Ladders need a
+      single plate (auto-narrowed when only one plate has resistors).
+      --pattern overrides the document's resistorInfillPattern — Bambu's
+      sparse_infill_pattern token verbatim (zigzag, gyroid, line, ...).
+      --plate auto (default) ships every plate that has resistors.
+      --out takes a target file, or a directory to drop the default
+      filename into (default: beside the input).
+
   vacuum-cli sweep <file.vpcb> [--max-combos N] [--param ...] [--json]
       Drive every 0/1 combination of the inputs, solve each to convergence,
       assert they all settle (catches oscillation / metastability), and print
@@ -1400,6 +1577,13 @@ var holds: [String: Double] = [:]
 var flattenFull = false
 var volumesMode = false
 var bambu = false
+var resistors3MF = false
+// nil = use the document's manufacturing.resistorInfillDensity; more than one
+// value = a ladder (one object per density, laid out in a row).
+var densityList: [Double]?
+var patternOverride: String?
+var plateSelector = "auto"
+var autoDensityLabel = true
 var bodySelector: String?
 var labelText: String?
 var labelSize = 4.0
@@ -1420,6 +1604,26 @@ while i < args.count {
     case "--flatten", "--full": flattenFull = true
     case "--volumes": volumesMode = true
     case "--bambu": bambu = true
+    case "--resistors-3mf": resistors3MF = true
+    case "--density":
+        i += 1
+        guard i < args.count else { fail("error: --density needs PERCENT (or a comma list, e.g. 63,63.5,65)") }
+        let values = args[i].split(separator: ",").map { Double($0.trimmingCharacters(in: .whitespaces)) }
+        guard !values.isEmpty, values.allSatisfy({ ($0 ?? -1) > 0 && ($0 ?? 101) <= 100 }) else {
+            fail("error: --density expects percentages in (0,100], e.g. --density 63.5 or --density 63,65,72")
+        }
+        densityList = values.compactMap { $0 }
+    case "--pattern":
+        i += 1
+        guard i < args.count, !args[i].isEmpty else { fail("error: --pattern needs a Bambu sparse_infill_pattern token (e.g. zigzag, gyroid, line)") }
+        patternOverride = args[i]
+    case "--plate":
+        i += 1
+        guard i < args.count, ["top", "bottom", "both", "auto"].contains(args[i].lowercased()) else {
+            fail("error: --plate expects top, bottom, both or auto")
+        }
+        plateSelector = args[i].lowercased()
+    case "--no-label": autoDensityLabel = false
     case "--no-manifest": writeManifest = false
     case "--modifier-voids": modifierStyle = .voids
     case "--modifier-xy":
@@ -1680,6 +1884,17 @@ do {
         if !r.pass { exit(1) }
 
     case "export":
+        if resistors3MF {
+            exportResistors3MF(doc: doc, path: path,
+                               densities: densityList,
+                               patternOverride: patternOverride,
+                               plateSelector: plateSelector,
+                               autoDensityLabel: autoDensityLabel,
+                               labelText: labelText,
+                               labelSize: labelSize, labelEmboss: labelEmboss,
+                               outPath: outPath, json: json)
+            break
+        }
         if bambu {
             // Per-plate aligned STL pairs (+ optional manifest) for Bambu
             // Studio: each plate's printable model and a print-critical

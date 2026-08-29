@@ -276,6 +276,20 @@ struct ManufacturingConstants: Codable, Hashable {
     /// geometry and simulated resistance never change on reopen.
     var smoothResistors: Bool
 
+    /// Sparse-infill density (percent) stamped on the `_resistors` part in
+    /// the resistors-only Bambu 3MF export. With 0 walls and 0 top/bottom
+    /// shells, the slicer's infill lattice inside the resistor stadium IS the
+    /// flow restrictor, and this density is the resistance knob
+    /// (bench-anchored ladder, lab 2026-08-27…29). Per-document so a coupon
+    /// file carries the exact recipe its density↔R map was measured with.
+    var resistorInfillDensity: Double
+
+    /// Sparse-infill pattern token for the same part, verbatim what Bambu
+    /// Studio stores in `sparse_infill_pattern` (e.g. "zigzag", "gyroid",
+    /// "line"). The bench ladder ran zigzag; gyroid is the stiff-pattern
+    /// pivot candidate — free text so an experiment never waits on an enum.
+    var resistorInfillPattern: String
+
     /// Radial / cross-sectional growth (mm) of the print envelope — the
     /// modifier volume the Bambu export wraps around every pneumatic feature
     /// (channels, serpentines, vias, valve chambers, port bores, taps). This
@@ -332,6 +346,8 @@ struct ManufacturingConstants: Codable, Hashable {
         flatBottomChannels: true,
         smoothResistors: true,
         testPointLabelSize: 3.0,
+        resistorInfillDensity: 63,
+        resistorInfillPattern: "zigzag",
         modifierMarginXY: 1.0,
         modifierMarginZ: 0.6
     )
@@ -360,6 +376,7 @@ struct ManufacturingConstants: Codable, Hashable {
         case minWallThickness, preferredWallThickness
         case flatBottomChannels, smoothResistors
         case testPointLabelSize
+        case resistorInfillDensity, resistorInfillPattern
         case modifierMarginXY, modifierMarginZ
     }
 
@@ -385,6 +402,8 @@ struct ManufacturingConstants: Codable, Hashable {
          minWallThickness: Double, preferredWallThickness: Double = 0,
          flatBottomChannels: Bool, smoothResistors: Bool = true,
          testPointLabelSize: Double = 3.0,
+         resistorInfillDensity: Double = 63,
+         resistorInfillPattern: String = "zigzag",
          modifierMarginXY: Double = 1.0, modifierMarginZ: Double = 0.6) {
         self.plateThickness = plateThickness
         self.channelDiameter = channelDiameter
@@ -424,6 +443,8 @@ struct ManufacturingConstants: Codable, Hashable {
         self.flatBottomChannels = flatBottomChannels
         self.smoothResistors = smoothResistors
         self.testPointLabelSize = testPointLabelSize
+        self.resistorInfillDensity = resistorInfillDensity
+        self.resistorInfillPattern = resistorInfillPattern
         self.modifierMarginXY = modifierMarginXY
         self.modifierMarginZ = modifierMarginZ
     }
@@ -521,6 +542,13 @@ struct ManufacturingConstants: Codable, Hashable {
                                                 forKey: .smoothResistors) ?? false
         testPointLabelSize = try c.decodeIfPresent(Double.self,
                                                    forKey: .testPointLabelSize) ?? 3.0
+        // Pinned to the bench recipe in force when the field was introduced
+        // (63 % zig-zag, lab 2026-08-29), so files from before carry the same
+        // recipe they were being printed with by hand.
+        resistorInfillDensity = try c.decodeIfPresent(Double.self,
+                                                      forKey: .resistorInfillDensity) ?? 63
+        resistorInfillPattern = try c.decodeIfPresent(String.self,
+                                                      forKey: .resistorInfillPattern) ?? "zigzag"
         // Pinned to the pre-existing BambuExport defaults, so older files keep
         // exporting the exact envelope they always did.
         modifierMarginXY = try c.decodeIfPresent(Double.self,

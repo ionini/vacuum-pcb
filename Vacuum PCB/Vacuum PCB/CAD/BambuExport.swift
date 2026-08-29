@@ -355,6 +355,133 @@ enum BambuExport {
         return Payload(files: files, objects: objects)
     }
 
+    // MARK: - Resistors-only .3mf project
+
+    /// The per-part slicer recipe stamped onto the `_resistors` part of the
+    /// resistors-only `.3mf`. This is the bench "v2" porous-resistor recipe
+    /// (lab 2026-08-28/29): the part is a *normal* part (it fills the carved
+    /// serpentine), printed with **no walls and no top/bottom shells** so the
+    /// slicer's sparse-infill lattice inside the stadium is the flow
+    /// restrictor, and the infill density is the resistance knob. The plate
+    /// prints its own perimeters around the stadium (lateral seal), while the
+    /// stadium's end faces meet the carved route voids with open lattice.
+    ///
+    /// Walls/shells are pinned at 0 rather than configurable: v1 coupons that
+    /// picked up hidden skins at buried part boundaries poisoned a whole
+    /// density ladder (lab 2026-08-29) — the explicit zeros are the recipe.
+    struct ResistorPartRecipe: Equatable {
+        /// Sparse infill density, percent (the knob).
+        var infillDensity: Double
+        /// Bambu `sparse_infill_pattern` token, e.g. "zigzag" / "gyroid".
+        var infillPattern: String
+
+        init(infillDensity: Double, infillPattern: String) {
+            self.infillDensity = infillDensity
+            self.infillPattern = infillPattern
+        }
+
+        /// The document's recipe (Manufacturing settings → Resistor infill).
+        init(_ m: ManufacturingConstants) {
+            self.init(infillDensity: m.resistorInfillDensity,
+                      infillPattern: m.resistorInfillPattern)
+        }
+
+        /// "63%" / "63.5%" — up to 3 decimals, trailing zeros shaved, the
+        /// way Bambu Studio itself writes density values.
+        static func densityString(_ v: Double) -> String {
+            var s = String(format: "%.3f", v)
+            if s.contains(".") {
+                while s.hasSuffix("0") { s.removeLast() }
+                if s.hasSuffix(".") { s.removeLast() }
+            }
+            return s + "%"
+        }
+
+        /// The per-part rows, alphabetized, exactly the set Bambu Studio
+        /// writes when the same overrides are clicked in by hand (skeleton /
+        /// skin densities ride along with the sparse density — Bambu keeps
+        /// the three in lockstep when you edit the part's density field).
+        var overrides: Bambu3MF.Overrides {
+            let density = Self.densityString(infillDensity)
+            return [
+                ("bottom_shell_layers", "0"),
+                ("skeleton_infill_density", density),
+                ("skin_infill_density", density),
+                ("sparse_infill_density", density),
+                ("sparse_infill_pattern", infillPattern),
+                ("top_shell_layers", "0"),
+                ("wall_loops", "0"),
+            ]
+        }
+
+        /// Short human tag for part names / reports: "63.5% zigzag".
+        var label: String {
+            "\(Self.densityString(infillDensity)) \(infillPattern)"
+        }
+    }
+
+    static func resistors3MFFilename(_ base: String) -> String {
+        "\(base)_resistors.3mf"
+    }
+
+    /// One `.3mf` object per requested plate that actually has resistors: the
+    /// plate's model as a plain part plus its `_resistors` stadiums as a
+    /// second **normal** part carrying `recipe`'s per-part overrides — open
+    /// it in Bambu Studio and there is nothing left to group, retype or
+    /// configure. Plates without resistors are skipped (this export exists
+    /// for the resistor recipe; print bare plates through the normal flow).
+    /// Meshes arrive posed for the bed by `printLayout`, identically to the
+    /// STL export.
+    static func resistorProjectObjects(
+        doc: CircuitDocument,
+        baseName: String,
+        recipe: ResistorPartRecipe,
+        plates: Set<Plate> = [.top, .bottom],
+        prebuiltModel: PlateBuilder.Output? = nil
+    ) -> [Bambu3MF.ProjectObject] {
+        let out = prebuiltModel ?? PlateBuilder.build(doc)
+        // No print-settings modifier in this flow (the global preset stays
+        // the airtight one); only the care stadiums are built.
+        let bodies = printLayout(out, doc: doc,
+                                 margins: .init(doc.manufacturing),
+                                 modifierPlates: [], carePlates: plates)
+        var objects: [Bambu3MF.ProjectObject] = []
+        for body in bodies {
+            guard let plate = body.plate, plates.contains(plate),
+                  let care = body.resistorCare else { continue }
+            objects.append(Bambu3MF.ProjectObject(
+                name: "\(baseName)_\(plate.rawValue)",
+                parts: [
+                    Bambu3MF.ProjectPart(
+                        name: "\(baseName)_\(plate.rawValue)_model",
+                        mesh: body.model),
+                    Bambu3MF.ProjectPart(
+                        name: "\(baseName)_\(plate.rawValue)_resistors (\(recipe.label))",
+                        mesh: care,
+                        overrides: recipe.overrides),
+                ]))
+        }
+        return objects
+    }
+
+    /// The complete resistors-only `.3mf` archive, or nil when no requested
+    /// plate has resistors (nothing for the recipe to land on).
+    static func resistors3MFData(
+        doc: CircuitDocument,
+        baseName: String,
+        recipe: ResistorPartRecipe,
+        plates: Set<Plate> = [.top, .bottom],
+        prebuiltModel: PlateBuilder.Output? = nil
+    ) -> Data? {
+        let objects = resistorProjectObjects(
+            doc: doc, baseName: baseName, recipe: recipe,
+            plates: plates, prebuiltModel: prebuiltModel)
+        guard !objects.isEmpty else { return nil }
+        return Bambu3MF.projectData(
+            objects: objects,
+            title: "\(baseName) resistors (\(recipe.label))")
+    }
+
     // MARK: - Write to disk (CLI)
 
     struct WriteResult {

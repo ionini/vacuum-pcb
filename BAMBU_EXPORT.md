@@ -203,6 +203,42 @@ Preview/Physical/Simulate toolbar → **Export…**:
 - Assembly-mode documents (the whole Export menu is disabled there, as for the
   normal STL export).
 
+## Resistors-only native `.3mf` (porous-infill recipe pre-applied)
+
+For the infill-resistor workflow (lab 2026-08-27…29: the resistor stadium is
+printed as N % sparse infill with 0 walls / 0 top/bottom shells, so the
+slicer's lattice IS the flow restrictor and density is the resistance knob),
+the export can skip STL pairs entirely and write a **native Bambu Studio
+project** with everything pre-configured:
+
+- **GUI:** Export → *Open in Bambu Studio (Resistors 3MF)* → Top/Bottom
+  Plate. One object opens per plate: the plate model plus the `_resistors`
+  stadiums as a **normal part** (it fills the carved serpentine — not a
+  settings-only modifier) that already carries the per-part overrides. No
+  "load as single object" prompt, no per-setting clicking.
+- **CLI:**
+  `vacuum-cli export board.vpcb --resistors-3mf [--density N[,N…]] [--pattern TOKEN] [--plate top|bottom|both|auto] [--label TEXT] [--no-label] [--out FILE|DIR]`
+  A comma list of densities is a **coupon ladder**: one object per density in
+  a row, each named for its rung and embossed with its density tag
+  (`63.5 zz v2` style via `--label "zz v2"`).
+
+The recipe rows written on the `_resistors` part (mirroring a hand-built
+Bambu 02.07 project byte-for-byte in structure):
+`wall_loops=0`, `top_shell_layers=0`, `bottom_shell_layers=0`,
+`sparse_infill_pattern=<pattern>`, and `sparse/skeleton/skin_infill_density`
+in lockstep at the chosen percentage. Density + pattern live in the document
+(Manufacturing settings → **Resistor infill**; defaults 63 % zigzag) so a
+coupon file carries the exact recipe its density↔R map was measured with;
+`--density/--pattern` override per run.
+
+The file embeds **no** `project_settings.config`, so Bambu keeps whatever
+global process preset is selected — keep the airtight profile active; it
+governs the plate body while the per-part rows govern the stadium.
+Validated headlessly (2026-08-29): Bambu Studio 02.x CLI slices the exported
+project (`return_code 0`), honors the per-object settings (10 % vs 90 %
+coupons differ by the expected ~23 mm³ of sparse-infill extrusion inside the
+stadium Z-band) and adds no walls at either density.
+
 ## Assumptions about feature geometry
 
 - Channels are round bores swept along the routed waypoint polyline at the
