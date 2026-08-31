@@ -176,27 +176,25 @@ struct SimulationParameters: Equatable {
         // *results* are unaffected — headless paths (CLI, validators, DSL
         // sim-time waits) step the engine in sim-time and never read this.
         timeScale: 10.0,
-        // Bench baseline (Jul 13 2026 convention): pump measured directly
-        // with the working plumbing reads −0.6 atm. (An earlier −0.7 reading
-        // likely came from a more direct hookup.) The weaker bench pump only
-        // manages −0.3 (pumpMaxVacuum 0.7).
-        pumpMaxVacuum: 0.4,
+        // Bench baseline (2026-08-27): the NEW (stronger) pump deadheads at
+        // −0.693 atm on the divider rig (a 550 ml jar drawdown bottomed at
+        // −0.698…−0.701 across runs). Older pumps for reference: the Jul 2026
+        // pump read −0.6 (pumpMaxVacuum 0.4), the weak one −0.3 (0.7).
+        pumpMaxVacuum: 0.307,
         // The pump edge's conductance doubles as the *external supply line*
-        // (it isn't a route, so `channelResistancePerMm` can't see it). 0.13
-        // is the supply path measured *directly* — the bare-tube divider —
-        // and now stands as the default. The earlier 0.09 board-fit sat ~2×
-        // more restrictive than that direct measurement (the old "supply
-        // gap"); the Jul 13 2026 inverter-board experiment resolved it: the
-        // extra restriction was clamp-dependent *interface leak*, not the
-        // supply path. Evidence — the inlet tee and the on-board rail read
-        // equal (no board-side entry restriction), and pressing the plates
-        // harder lifted the whole rail ~0.1 atm back toward the bare-tube
-        // level. So the supply is modelled at its true (bare-tube) stiffness
-        // and the seal quality lives in `leakConductance`, where it belongs.
-        // A looser/worse-clamped build is modelled by lowering this toward
-        // 0.09 and/or raising `leakConductance`; crank toward 30 for an
-        // ideal manifold right at the barb.
-        pumpFlowCapacity: 0.13,
+        // (it isn't a route, so `channelResistancePerMm` can't see it).
+        // 1.32 is the NEW pump fitted 2026-08-27 on the "Test rig" divider
+        // (pump → sensor tee → 0.35 mm L-resistor coupon → atm, CH3 −0.655):
+        // bisected so the untouched R/mm 1.5 anchor reproduces the bench at
+        // the *measured* droop below — flow and droop are degenerate at a
+        // single divider point, so this value is only meaningful paired with
+        // that droop. The old pump's bare-tube figure was 0.13. The Jul 13
+        // 2026 lesson stands: supply is modelled at its true stiffness and
+        // seal quality lives in `leakConductance` (the old 0.09 board-fit's
+        // extra restriction was clamp-dependent interface leak). A
+        // looser-clamped build lowers this and/or raises `leakConductance`;
+        // crank toward 30 for an ideal manifold right at the barb.
+        pumpFlowCapacity: 1.32,
         // The external-drive interface figure: 0.42 is the bus-readback
         // ladder fit, and the restriction it measured lives in the socket
         // + tube + fitting the bench drive arrives through. It matched
@@ -207,7 +205,14 @@ struct SimulationParameters: Equatable {
         // acceptance battery (D-latch bus board, 4-bit register, inverter
         // fixture) is green with the pair split.
         busDriveConductance: 0.42,
-        pumpDroopExponent: -0.14,
+        // Measured 2026-08-27 from the new pump's 550 ml jar drawdown
+        // (1 kHz CSV, deep region −0.51…−0.67): Q ∝ diff^1.467 ⇒ +0.467,
+        // concave — the pump fades toward deadhead. Replaying the fitted
+        // curve tracks the bench trace within 0.004 atm over 15 s. The
+        // curve is not a perfect power law (mid-depth bands alone fit
+        // ≈ +0.14), so this deep-region value is the right one for boards,
+        // whose rails live near deadhead; the old pump's fit was −0.14.
+        pumpDroopExponent: 0.467,
         // Fitted (Jul 13 2026) to the pre-registered pinning reading on the
         // well-clamped single-cell inverter board: INV1 (the inter-stage
         // node) held at logic-1 measured −0.32 atm, which this value

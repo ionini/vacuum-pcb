@@ -83,6 +83,7 @@ struct ManufacturingClipboardTests {
         incoming.gridPitch += 0.5
         incoming.minChannelSpacing += 0.5
         incoming.resistorChannelDiameter += 0.1
+        incoming.smoothResistors.toggle()
         incoming.interLayerWall += 0.25
         incoming.testPointLabelSize += 1
         incoming.plateCornerFillet += 1
@@ -107,6 +108,8 @@ struct ManufacturingClipboardTests {
         incoming.flatBottomChannels.toggle()
         incoming.modifierMarginXY += 0.5
         incoming.modifierMarginZ += 0.2
+        incoming.resistorInfillDensity += 5
+        incoming.resistorInfillPattern += "-x"
 
         // Every field differs, so a full selection must land the source
         // verbatim — this is the check that catches a constant missing from

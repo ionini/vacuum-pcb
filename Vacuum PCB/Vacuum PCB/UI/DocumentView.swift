@@ -128,6 +128,10 @@ struct DocumentView: View {
         // sliced/printed in separate jobs).
         case openInBambuWithModifier(Plate)
         case openInBambuWithVoidModifier(Plate)
+        // Model + `_resistors` only — no print-settings modifier. For the
+        // porous-resistor workflow, where the envelope modifier would just
+        // be deleted in Bambu every time.
+        case openInBambuResistorsOnly(Plate)
         case openInFlowSimulator
     }
 
@@ -896,6 +900,7 @@ struct DocumentView: View {
             onOpenBambu: { triggerExport(.openInBambuStudio) },
             onOpenBambuWithModifier: { triggerExport(.openInBambuWithModifier($0)) },
             onOpenBambuWithVoidModifier: { triggerExport(.openInBambuWithVoidModifier($0)) },
+            onOpenBambuResistorsOnly: { triggerExport(.openInBambuResistorsOnly($0)) },
             onOpenFlow: { triggerExport(.openInFlowSimulator) }
         )
     }
@@ -982,6 +987,12 @@ struct DocumentView: View {
             #else
             break
             #endif
+        case .openInBambuResistorsOnly(let plate):
+            #if canImport(AppKit)
+            openInBambuStudioResistors3MF(plate: plate)
+            #else
+            break
+            #endif
         case .openInFlowSimulator:
             #if canImport(AppKit)
             openInFlowSimulator()
@@ -1059,14 +1070,16 @@ struct DocumentView: View {
 
     private func openInBambuStudio(withModifier: Bool = false,
                                    style: BambuExport.ModifierStyle = .pneumatics,
-                                   plate: Plate = .top) {
+                                   plate: Plate = .top,
+                                   includePrintModifier: Bool = true) {
         guard let built else { return }
         guard let bambuURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.bambuStudioBundleID) else {
             return
         }
         if withModifier {
             openInBambuStudioWithModifier(bambuURL: bambuURL, built: built, style: style,
-                                          plate: plate)
+                                          plate: plate,
+                                          includePrintModifier: includePrintModifier)
             return
         }
         // makeWatertight stitches the hairline cracks Euclid's BSP CSG leaves
@@ -1109,7 +1122,8 @@ struct DocumentView: View {
     /// jobs. No manifest is written for this path.
     private func openInBambuStudioWithModifier(bambuURL: URL, built: PlateBuilder.Output,
                                                style: BambuExport.ModifierStyle = .pneumatics,
-                                               plate: Plate) {
+                                               plate: Plate,
+                                               includePrintModifier: Bool = true) {
         // Match the preview's snapshot so the modifier lines up with the plates.
         var snapshot = document.circuit
         if !includeTestPoints { snapshot.physical.testPoints = [] }
@@ -1118,11 +1132,14 @@ struct DocumentView: View {
         DispatchQueue.global(qos: .userInitiated).async {
             // modifierPlates: only this plate's modifier is built — the voids
             // style is real CSG, so the other plate's would be wasted work.
+            // The resistors-only flow builds no print modifier at all: the
+            // pair that opens is model + `_resistors`.
             let payload = BambuExport.payload(doc: snapshot, baseName: base,
                                               margins: .init(snapshot.manufacturing),
                                               style: style,
                                               includeManifest: false, prebuiltModel: built,
-                                              modifierPlates: [plate])
+                                              modifierPlates: includePrintModifier ? [plate] : [],
+                                              carePlates: [plate])
             let dir = FileManager.default.temporaryDirectory
             var urls: [URL] = []
             do {
@@ -1137,7 +1154,11 @@ struct DocumentView: View {
                     DispatchQueue.main.async { self.isBuilding = false }
                     return
                 }
-                let wanted = [object.modelFilename, object.modifierFilename].compactMap { $0 }
+                // The resistor-care file (when the plate has resistors) rides
+                // along so it lands in the same multipart object — the user
+                // switches it to a Modifier next to the print-critical one.
+                let wanted = [object.modelFilename, object.modifierFilename,
+                              object.resistorsFilename].compactMap { $0 }
                 for file in payload.files where wanted.contains(file.name) {
                     let url = dir.appendingPathComponent(file.name)
                     try file.data.write(to: url, options: .atomic)
@@ -1152,6 +1173,58 @@ struct DocumentView: View {
                 self.isBuilding = false
                 let config = NSWorkspace.OpenConfiguration()
                 NSWorkspace.shared.open(urls, withApplicationAt: bambuURL, configuration: config) { _, error in
+                    if let error {
+                        NSLog("vpcb: NSWorkspace.open(Bambu Studio) failed: \(error)")
+                    }
+                }
+            }
+        }
+    }
+
+    /// Builds the resistors-only native `.3mf` project (off-thread, reusing
+    /// the already-built plates) into the temp dir and opens it in Bambu
+    /// Studio: the plate arrives as one object whose `_resistors` part is
+    /// already a normal part carrying the document's porous-infill recipe
+    /// (0 walls, 0 top/bottom shells, sparse pattern + density from
+    /// Manufacturing settings → Resistor infill). One click, no
+    /// load-as-single-object prompt, nothing to configure per-setting —
+    /// the recipe that used to be retyped in Bambu on every coupon export.
+    /// The global process preset is untouched (the file carries no
+    /// project_settings), so the selected airtight profile keeps governing
+    /// the plate body.
+    private func openInBambuStudioResistors3MF(plate: Plate) {
+        guard let built else { return }
+        guard let bambuURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.bambuStudioBundleID) else {
+            return
+        }
+        // Match the preview's snapshot so the parts line up with the plates.
+        var snapshot = document.circuit
+        if !includeTestPoints { snapshot.physical.testPoints = [] }
+        let base = bambuBaseName
+        isBuilding = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let recipe = BambuExport.ResistorPartRecipe(snapshot.manufacturing)
+            guard let data = BambuExport.resistors3MFData(
+                doc: snapshot, baseName: base, recipe: recipe,
+                plates: [plate], prebuiltModel: built)
+            else {
+                NSLog("vpcb: no resistors on the \(plate.rawValue) plate — nothing to export")
+                DispatchQueue.main.async { self.isBuilding = false }
+                return
+            }
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent(BambuExport.resistors3MFFilename(base))
+            do {
+                try data.write(to: url, options: .atomic)
+            } catch {
+                NSLog("vpcb: failed to write 3MF for Bambu Studio: \(error)")
+                DispatchQueue.main.async { self.isBuilding = false }
+                return
+            }
+            DispatchQueue.main.async {
+                self.isBuilding = false
+                let config = NSWorkspace.OpenConfiguration()
+                NSWorkspace.shared.open([url], withApplicationAt: bambuURL, configuration: config) { _, error in
                     if let error {
                         NSLog("vpcb: NSWorkspace.open(Bambu Studio) failed: \(error)")
                     }
@@ -1380,6 +1453,7 @@ struct ExportMenuButton: View {
     let onOpenBambu: () -> Void
     let onOpenBambuWithModifier: (Plate) -> Void
     let onOpenBambuWithVoidModifier: (Plate) -> Void
+    let onOpenBambuResistorsOnly: (Plate) -> Void
     let onOpenFlow: () -> Void
 
     var body: some View {
@@ -1405,6 +1479,18 @@ struct ExportMenuButton: View {
             Menu("Open in Bambu Studio (Void Modifier)") {
                 Button("Top Plate") { onOpenBambuWithVoidModifier(.top) }
                 Button("Bottom Plate") { onOpenBambuWithVoidModifier(.bottom) }
+            }
+            .disabled(!bambuStudioInstalled)
+            // Native .3mf for the porous-resistor flow: the plate's model +
+            // `_resistors` arrive as ONE object with the `_resistors` part
+            // already a normal part carrying the document's infill recipe
+            // (0 walls / 0 shells / pattern + density from Manufacturing
+            // settings → Resistor infill) — nothing to group or retype in
+            // Bambu. No print-settings modifier: the global airtight preset
+            // keeps governing the plate body.
+            Menu("Open in Bambu Studio (Resistors 3MF)") {
+                Button("Top Plate") { onOpenBambuResistorsOnly(.top) }
+                Button("Bottom Plate") { onOpenBambuResistorsOnly(.bottom) }
             }
             .disabled(!bambuStudioInstalled)
             Button("Open in Flow Simulator", action: onOpenFlow)

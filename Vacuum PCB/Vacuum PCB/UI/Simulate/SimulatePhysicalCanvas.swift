@@ -334,11 +334,8 @@ struct SimulatePhysicalCanvas: View {
                                    width: 2 * inner, height: 2 * inner)
             ctx.fill(Path(ellipseIn: innerRect), with: .color(stroke.opacity(0.9)))
         case .resistor:
-            let halfLen = ManufacturingConstants.resistorFootprintLength / 2
-            let halfWid = ManufacturingConstants.resistorFootprintWidth / 2
-            let pts = ResistorGeometry.path(
-                transitions: ResistorGeometry.transitions(for: component.resistorSize ?? .medium),
-                halfLen: halfLen, halfWid: halfWid
+            let pts = ResistorGeometry.waypoints(
+                for: component.resistorSize ?? .medium, m: m
             )
             let mapped = pts.map { p -> CGPoint in
                 let local = rotated(p, angle: placement.rotation.radians)
