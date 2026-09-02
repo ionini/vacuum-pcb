@@ -114,18 +114,25 @@ struct Scene3DView {
     /// the channels don't. Applied to the live materials on change, so the
     /// slider never forces a geometry rebuild.
     var bodyOpacity: Double = 0.55
-    /// Every physical-volume cavity mesh, keyed by `Volume.id`. Each becomes a
-    /// hidden — but hit-testable — node so a click in the scene resolves to a
-    /// volume; the highlighted subset is un-hidden and tinted.
+    /// Every physical-volume cavity mesh, keyed by *highlight id*: one entry per
+    /// volume section (`"T3#0"`, `"T3#1"`, …) plus one for a volume's resistor
+    /// serpentines (`"T3#res"`), see `Volume.sectionID`. Each becomes a hidden
+    /// — but hit-testable — node so a click in the scene resolves to a section
+    /// (and through it a volume); the highlighted subset is un-hidden and tinted.
     var volumeMeshes: [String: Mesh] = [:]
-    /// Volumes to glow, in priority order — the palette colour index is the
+    /// Cavities to glow, in priority order — the palette colour index is the
     /// position here, so a collision's two cavities get contrasting colours.
+    /// Either a whole-volume id (`"T3"`: every node of that volume lights) or a
+    /// single section id (`"T3#1"`: just that resistor-free stretch).
     var highlightedIDs: [String] = []
     /// Bumped by the owner whenever `top…/volumeMeshes` change. Lets a cheap
     /// highlight / visibility refresh skip the per-node geometry rebuild.
     var geometryRevision: Int = 0
-    /// Invoked on a scene click with the resolved volume id, or nil when the
-    /// click missed every cavity (so the owner can clear the selection).
+    /// Invoked on a scene click with the resolved highlight id, or nil when the
+    /// click missed every cavity (so the owner can clear the selection). A
+    /// primary click (left / tap) reports the whole volume id (`"T3"`); a
+    /// secondary one (right-click / long-press) reports the clicked section
+    /// (`"T3#1"`) — the cavity only as far as its resistors.
     var onPickVolume: (String?) -> Void = { _ in }
     /// Outlives this view (lives in `DocumentView`) so orbit / zoom can be
     /// replayed after a tab switch tears the SCNView down. `nil` falls back to
@@ -165,31 +172,73 @@ struct Scene3DView {
         /// pose on teardown.
         var cameraStore: Scene3DCameraStore?
         /// Refreshed from `Scene3DView` each update; invoked on a scene click
-        /// with the resolved volume id (or nil when the click missed).
+        /// with the resolved highlight id (or nil when the click missed).
         var onPickVolume: (String?) -> Void = { _ in }
+        /// Current element visibility, refreshed each update. Picking consults
+        /// it so a cavity whose plate's channels are hidden can't be hit — the
+        /// pick nodes are always-invisible geometry, so without this a hidden
+        /// bottom channel sitting in front of a visible top one would still
+        /// swallow the click.
+        var visibility: PreviewVisibility = .both
 
-        /// Click / tap handler: hit-test the scene — including the hidden cavity
-        /// nodes — and report the front-most volume under the cursor. SceneKit's
+        /// Primary click / tap: select the whole volume under the cursor.
+        @objc func handlePick(_ gr: PlatformGestureRecognizer) {
+            pick(gr, wholeVolume: true)
+        }
+
+        /// Secondary click (right-click on Mac, long-press on iPad): select just
+        /// the clicked section — the cavity up to its resistors.
+        @objc func handleSecondaryPick(_ gr: PlatformGestureRecognizer) {
+            #if canImport(UIKit)
+            // A long-press fires .began (then .changed / .ended); act once.
+            guard gr.state == .began else { return }
+            #endif
+            pick(gr, wholeVolume: false)
+        }
+
+        /// Hit-test the scene — including the hidden cavity nodes — and report
+        /// the front-most *pickable* cavity under the cursor. SceneKit's
         /// `hitTest` maps the 2-D point through the live camera, so this honours
         /// the current orbit / zoom / pan for free. `ignoreHiddenNodes: false`
         /// lets the invisible pick nodes register; `.all` returns every hit
-        /// near→far so we can skip the plate/feature solids in front and land on
-        /// the first volume.
-        @objc func handlePick(_ gr: PlatformGestureRecognizer) {
+        /// near→far so we can skip the plate/feature solids in front — and the
+        /// cavities of a plate whose channels are switched off — and land on
+        /// the first visible-layer cavity.
+        private func pick(_ gr: PlatformGestureRecognizer, wholeVolume: Bool) {
             guard let view = gr.view as? SCNView else { return }
             let p = gr.location(in: view)
             let hits = view.hitTest(p, options: [
                 .searchMode: SCNHitTestSearchMode.all.rawValue,
                 .ignoreHiddenNodes: false,
             ])
-            let id = hits.lazy.compactMap { Scene3DView.volumeID(of: $0.node) }.first
-            onPickVolume(id)
+            let hid = hits.lazy
+                .compactMap { Scene3DView.highlightID(of: $0.node) }
+                .first { self.isPickable($0) }
+            guard let hid else { onPickVolume(nil); return }
+            let volumeID = Volume.volumeID(fromHighlightID: hid)
+            // A right-click on a resistor serpentine has no "side" to pick;
+            // fall back to the whole volume it joins.
+            if wholeVolume || Volume.sectionKey(fromHighlightID: hid) == Volume.resistorsSectionKey {
+                onPickVolume(volumeID)
+            } else {
+                onPickVolume(hid)
+            }
+        }
+
+        /// A cavity can be clicked only while its plate's channels are shown.
+        private func isPickable(_ hid: String) -> Bool {
+            switch Volume.plate(ofVolumeID: Volume.volumeID(fromHighlightID: hid)) {
+            case .top?:    return visibility.contains(.topChannels)
+            case .bottom?: return visibility.contains(.bottomChannels)
+            case nil:      return true
+            }
         }
     }
 
-    /// Extracts a `Volume.id` from a pick node's name (`"vol:<id>"`), or nil for
-    /// any other node (plates, features, lights).
-    static func volumeID(of node: SCNNode) -> String? {
+    /// Extracts a highlight id (`Volume.sectionID` / `resistorsID`) from a pick
+    /// node's name (`"vol:<id>"`), or nil for any other node (plates, features,
+    /// lights).
+    static func highlightID(of node: SCNNode) -> String? {
         guard let name = node.name, name.hasPrefix("vol:") else { return nil }
         return String(name.dropFirst(4))
     }
@@ -252,14 +301,22 @@ struct Scene3DView {
 
         // Click / tap to select the volume under the cursor. A single click (no
         // drag) selects; a drag still orbits via `allowsCameraControl`, since the
-        // recognizer fails the moment the pointer moves.
+        // recognizer fails the moment the pointer moves. The secondary gesture
+        // (right-click / long-press) selects only the clicked section — the
+        // cavity up to its resistors.
         c.onPickVolume = onPickVolume
+        c.visibility = visibility
         #if canImport(AppKit)
         let pick = NSClickGestureRecognizer(target: c, action: #selector(Coordinator.handlePick(_:)))
+        let secondary = NSClickGestureRecognizer(target: c, action: #selector(Coordinator.handleSecondaryPick(_:)))
+        secondary.buttonMask = 0x2
         #elseif canImport(UIKit)
         let pick = UITapGestureRecognizer(target: c, action: #selector(Coordinator.handlePick(_:)))
+        let secondary = UILongPressGestureRecognizer(target: c, action: #selector(Coordinator.handleSecondaryPick(_:)))
+        secondary.minimumPressDuration = 0.4
         #endif
         view.addGestureRecognizer(pick)
+        view.addGestureRecognizer(secondary)
 
         // Replay the orbit / zoom from a previous visit to the Preview tab, if
         // any. `applyFraming` above already recentred `modelRoot` for the
@@ -314,6 +371,7 @@ struct Scene3DView {
         applyHighlight(coordinator: c)
         applyVisibility(coordinator: c)
         c.onPickVolume = onPickVolume
+        c.visibility = visibility
         if c.lastOutline != boardOutline {
             applyFraming(coordinator: c, animated: true)
         }
@@ -339,11 +397,11 @@ struct Scene3DView {
             : plateGeometry(for: moldFrame, color: .systemOrange)
     }
 
-    /// Rebuild the per-volume cavity nodes from `volumeMeshes`. Each starts
+    /// Rebuild the per-section cavity nodes from `volumeMeshes`. Each starts
     /// hidden (so it doesn't render) but is kept in the scene and tagged
-    /// `"vol:<id>"` so a click can resolve back to it via `hitTest`. Only called
-    /// when the geometry revision changes — highlight / visibility toggles reuse
-    /// these nodes.
+    /// `"vol:<highlight id>"` so a click can resolve back to it via `hitTest`.
+    /// Only called when the geometry revision changes — highlight / visibility
+    /// toggles reuse these nodes.
     private func applyVolumeNodes(coordinator c: Coordinator) {
         c.pickRoot.childNodes.forEach { $0.removeFromParentNode() }
         c.volumeNodes.removeAll(keepingCapacity: true)
@@ -357,11 +415,13 @@ struct Scene3DView {
     }
 
     /// Glow the highlighted cavities (un-hide + tint by palette index) and hide
-    /// the rest. Cheap — just toggles `isHidden` and swaps a material on existing
-    /// nodes — so it runs on every refresh.
+    /// the rest. A node lights when the highlight set names its own section id
+    /// or its whole volume's id. Cheap — just toggles `isHidden` and swaps a
+    /// material on existing nodes — so it runs on every refresh.
     private func applyHighlight(coordinator c: Coordinator) {
         for (id, node) in c.volumeNodes {
-            if let idx = highlightedIDs.firstIndex(of: id) {
+            let volumeID = Volume.volumeID(fromHighlightID: id)
+            if let idx = highlightedIDs.firstIndex(where: { $0 == id || $0 == volumeID }) {
                 node.isHidden = false
                 node.geometry?.materials = [Self.highlightMaterial(color: Self.palette[idx % Self.palette.count])]
             } else {
@@ -462,7 +522,8 @@ struct Scene3DView {
 
     /// Show / hide each element by its `PreviewVisibility` bit. The per-volume
     /// pick nodes are independent of this (their visibility tracks the highlight
-    /// set), so a hidden layer never disables click-to-select.
+    /// set); what a hidden layer does switch off is *picking* its cavities — see
+    /// `Coordinator.isPickable`.
     private func applyVisibility(coordinator c: Coordinator) {
         c.topNode.isHidden            = !visibility.contains(.topPlate)
         c.bottomNode.isHidden         = !visibility.contains(.bottomPlate)

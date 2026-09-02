@@ -126,6 +126,20 @@ struct VolumeFeature: Hashable {
     var pinPos: Point
 }
 
+/// One resistor-free stretch of a volume: the geometry reachable from a point
+/// of the cavity *without* passing through a resistor serpentine. A volume
+/// with no resistors has exactly one section; a resistor-merged cavity has
+/// one per net-side. This is what the 3D preview's secondary click ("highlight
+/// up to the resistors") lights, while the primary click lights the whole
+/// volume. Resistors belong to no section — they are the boundaries.
+struct VolumeSection: Hashable {
+    var holes: [VolumeHole]
+    var segments: [VolumeSegment]
+    var vias: [VolumeVia]
+    var features: [VolumeFeature]
+    var testPoints: [VolumeTestPoint]
+}
+
 /// One sealed air cavity in a single plate.
 struct Volume: Identifiable, Hashable {
     /// Stable, human-facing id assigned in display order: `T1`…`Tn` for the top
@@ -144,6 +158,58 @@ struct Volume: Identifiable, Hashable {
     var vias: [VolumeVia]
     var features: [VolumeFeature]
     var testPoints: [VolumeTestPoint]
+    /// The cavity split at its resistors (see `VolumeSection`). Partitions
+    /// `holes` / `segments` / `vias` / `features` / `testPoints`; `resistors`
+    /// belong to none of them.
+    var sections: [VolumeSection] = []
+
+    // MARK: Highlight / pick ids
+
+    /// Separator between a volume id and a section key in a highlight id.
+    static let sectionSeparator: Character = "#"
+    /// Section key of the resistors-only pick node.
+    static let resistorsSectionKey = "res"
+
+    /// Highlight id of one section of this volume, e.g. `"T3#1"`. Every scene
+    /// pick node carries one of these; a plain volume id (`"T3"`) in the
+    /// highlight set lights all of them.
+    func sectionID(_ index: Int) -> String { "\(id)\(Self.sectionSeparator)\(index)" }
+    /// Highlight id of this volume's resistor serpentines, e.g. `"T3#res"`.
+    var resistorsID: String { "\(id)\(Self.sectionSeparator)\(Self.resistorsSectionKey)" }
+
+    /// The volume part of a highlight id: `"T3#1"` → `"T3"`, `"T3"` → `"T3"`.
+    static func volumeID(fromHighlightID hid: String) -> String {
+        if let cut = hid.firstIndex(of: sectionSeparator) { return String(hid[..<cut]) }
+        return hid
+    }
+    /// The section part of a highlight id, or nil for a whole-volume id.
+    static func sectionKey(fromHighlightID hid: String) -> String? {
+        guard let cut = hid.firstIndex(of: sectionSeparator) else { return nil }
+        return String(hid[hid.index(after: cut)...])
+    }
+    /// The plate a volume id belongs to, read off its `T`/`B` prefix.
+    static func plate(ofVolumeID vid: String) -> Plate? {
+        switch vid.first {
+        case "T": return .top
+        case "B": return .bottom
+        default:  return nil
+        }
+    }
+
+    /// A render-only `Volume` holding just one section's geometry (no
+    /// resistors) — what `PlateBuilder.volumeMesh` turns into that section's
+    /// pick/highlight node.
+    func sectionVolume(_ index: Int) -> Volume {
+        let sec = sections[index]
+        return Volume(id: sectionID(index), plate: plate, netLabel: netLabel, nets: nets,
+                      holes: sec.holes, segments: sec.segments, resistors: [], vias: sec.vias,
+                      features: sec.features, testPoints: sec.testPoints)
+    }
+    /// A render-only `Volume` holding just the resistor serpentines.
+    var resistorsVolume: Volume {
+        Volume(id: resistorsID, plate: plate, netLabel: netLabel, nets: nets,
+               holes: [], segments: [], resistors: resistors, vias: [], features: [], testPoints: [])
+    }
 }
 
 /// Decompose a (flattened) document into per-plate physical volumes.
@@ -367,6 +433,11 @@ func physicalVolumes(_ doc: CircuitDocument) -> [Volume] {
         }
     }
 
+    // Snapshot connectivity *before* the resistor merge: every node's root at
+    // this point identifies the resistor-free section it belongs to, which is
+    // what the 3D preview's "highlight up to the resistors" pick lights.
+    let sectionRoot: [Int] = (0..<nodes.count).map { find($0) }
+
     // Resistors are open serpentine channels joining their two (same-plate)
     // pins, so they merge the two cavities those pins sit in: on the bench a
     // vacuum on one side bleeds through to the other, so a "perfect vacuum"
@@ -411,18 +482,47 @@ func physicalVolumes(_ doc: CircuitDocument) -> [Volume] {
     var tpsByRoot: [Int: [VolumeTestPoint]] = [:]
     for pt in pendingTestPoints { tpsByRoot[find(pt.node), default: []].append(pt.tp) }
 
+    // Per-volume sections: partition each root's members by their
+    // pre-resistor root. Keyed by final root, then by section root; section
+    // order is fixed by sorting on the section's first hole so ids are stable
+    // across rebuilds of an unchanged board.
+    var sectionsByRoot: [Int: [Int: VolumeSection]] = [:]
+    func withSection(_ node: Int, _ body: (inout VolumeSection) -> Void) {
+        let root = find(node), sr = sectionRoot[node]
+        var plateSecs = sectionsByRoot[root] ?? [:]
+        var sec = plateSecs[sr] ?? VolumeSection(holes: [], segments: [], vias: [], features: [], testPoints: [])
+        body(&sec)
+        plateSecs[sr] = sec
+        sectionsByRoot[root] = plateSecs
+    }
+    for ph in pendingHoles { withSection(ph.node) { $0.holes.append(ph.hole) } }
+    for ps in pendingSegs { withSection(ps.node) { $0.segments.append(ps.seg) } }
+    for pv in pendingVias { withSection(pv.node) { $0.vias.append(pv.via) } }
+    for pf in pendingFeatures { withSection(pf.node) { $0.features.append(pf.feature) } }
+    for pt in pendingTestPoints { withSection(pt.node) { $0.testPoints.append(pt.tp) } }
+
     // Built without ids; ids are assigned after the final sort below.
     struct RawVolume {
         var plate: Plate; var netLabel: String; var nets: Set<UUID>; var holes: [VolumeHole]
         var segments: [VolumeSegment]; var resistors: [VolumeResistor]; var vias: [VolumeVia]
         var features: [VolumeFeature]; var testPoints: [VolumeTestPoint]
+        var sections: [VolumeSection]
     }
     var raw: [RawVolume] = []
     for (root, holes) in holesByRoot {
         let plate = holes.first!.layer.plate
-        let sortedHoles = holes.sorted {
+        let holeOrder: (VolumeHole, VolumeHole) -> Bool = {
             ($0.layer.depth, $0.pos.x, $0.pos.y) < ($1.layer.depth, $1.pos.x, $1.pos.y)
         }
+        let sortedHoles = holes.sorted(by: holeOrder)
+        let sections = (sectionsByRoot[root] ?? [:]).values
+            .map { sec -> VolumeSection in
+                var s = sec; s.holes.sort(by: holeOrder); return s
+            }
+            .sorted { a, b in
+                guard let ha = a.holes.first, let hb = b.holes.first else { return a.holes.count > b.holes.count }
+                return holeOrder(ha, hb)
+            }
         // A resistor-merged cavity spans several nets; name it compactly.
         let labels = (netsByRoot[root] ?? []).sorted()
         let label: String
@@ -437,7 +537,8 @@ func physicalVolumes(_ doc: CircuitDocument) -> [Volume] {
                              resistors: resByRoot[root] ?? [],
                              vias: viasByRoot[root] ?? [],
                              features: featuresByRoot[root] ?? [],
-                             testPoints: tpsByRoot[root] ?? []))
+                             testPoints: tpsByRoot[root] ?? [],
+                             sections: sections))
     }
 
     // Top plate first, then by net label, then by where the cavity sits.
@@ -454,6 +555,6 @@ func physicalVolumes(_ doc: CircuitDocument) -> [Volume] {
         if r.plate == .top { topN += 1; id = "T\(topN)" } else { bottomN += 1; id = "B\(bottomN)" }
         return Volume(id: id, plate: r.plate, netLabel: r.netLabel, nets: r.nets, holes: r.holes,
                       segments: r.segments, resistors: r.resistors, vias: r.vias,
-                      features: r.features, testPoints: r.testPoints)
+                      features: r.features, testPoints: r.testPoints, sections: r.sections)
     }
 }

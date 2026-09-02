@@ -646,7 +646,9 @@ struct DocumentView: View {
     }
 
     /// Click-to-select from the 3D scene: toggle the clicked cavity (matching the
-    /// Volumes inspector's single-select), or clear when the click missed.
+    /// Volumes inspector's single-select), or clear when the click missed. `id`
+    /// is a whole-volume id for a primary click, or a section id (`"T3#1"` — the
+    /// cavity up to its resistors) for a right-click / long-press.
     private func pickVolume(_ id: String?) {
         guard let id else { highlightedVolumeIDs = []; return }
         highlightedVolumeIDs = (highlightedVolumeIDs == [id]) ? [] : [id]
@@ -840,7 +842,7 @@ struct DocumentView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     VolumeListView(
                         volumes: volumes,
-                        highlighted: Set(highlightedVolumeIDs),
+                        highlighted: Set(highlightedVolumeIDs.map(Volume.volumeID(fromHighlightID:))),
                         onSelect: { id in
                             highlightedVolumeIDs = (highlightedVolumeIDs == [id]) ? [] : [id]
                         })
@@ -1275,12 +1277,27 @@ struct DocumentView: View {
             // Whole printed board, subparts flattened — matches what prints, so
             // the volume cavities line up with the geometry above.
             let vols = physicalVolumes(snapshot.flattenedForSimulation().document)
-            // Cavity meshes for the scene's per-volume pick / highlight nodes.
-            // Cheap (polygon concatenation, no CSG), so building all of them here
-            // — off the main thread, alongside the volume decomposition — is fine.
+            // Cavity meshes for the scene's pick / highlight nodes: one per
+            // resistor-free section of each volume plus one for its resistor
+            // serpentines, so a secondary click can light a cavity only up to
+            // its resistors while a primary click lights every node of the
+            // volume. Cheap (polygon concatenation, no CSG), so building all of
+            // them here — off the main thread, alongside the volume
+            // decomposition — is fine.
             let m = snapshot.manufacturing
-            let vmeshes = Dictionary(uniqueKeysWithValues:
-                vols.map { ($0.id, PlateBuilder.volumeMesh(for: $0, m)) })
+            var vmeshes: [String: Mesh] = [:]
+            for vol in vols {
+                if vol.sections.isEmpty {
+                    vmeshes[vol.id] = PlateBuilder.volumeMesh(for: vol, m)
+                    continue
+                }
+                for i in vol.sections.indices {
+                    vmeshes[vol.sectionID(i)] = PlateBuilder.volumeMesh(for: vol.sectionVolume(i), m)
+                }
+                if !vol.resistors.isEmpty {
+                    vmeshes[vol.resistorsID] = PlateBuilder.volumeMesh(for: vol.resistorsVolume, m)
+                }
+            }
             DispatchQueue.main.async {
                 guard token == buildToken else { return }
                 self.built = result
@@ -1297,9 +1314,11 @@ struct DocumentView: View {
                     self.envelopeStale = true
                 }
                 self.envelopeRevision &+= 1
-                // Drop any highlighted ids the rebuild no longer has.
+                // Drop any highlighted ids the rebuild no longer has (a section
+                // id is checked by its volume part; a stale section index just
+                // lights nothing until the next click).
                 let live = Set(vols.map(\.id))
-                self.highlightedVolumeIDs.removeAll { !live.contains($0) }
+                self.highlightedVolumeIDs.removeAll { !live.contains(Volume.volumeID(fromHighlightID: $0)) }
                 self.isBuilding = false
                 self.previewDirty = false
                 if let action = self.pendingExportAction {
