@@ -119,7 +119,9 @@ struct Scene3DView {
     /// serpentines (`"T3#res"`), see `Volume.sectionID`. Each becomes a hidden
     /// — but hit-testable — node so a click in the scene resolves to a section
     /// (and through it a volume); the highlighted subset is un-hidden and tinted.
-    var volumeMeshes: [String: Mesh] = [:]
+    /// Each mesh is split into body and via parts so the vias — where a cavity
+    /// terminates into a through-hole — light in an accent of the volume colour.
+    var volumeMeshes: [String: PlateBuilder.VolumeHighlightMesh] = [:]
     /// Cavities to glow, in priority order — the palette colour index is the
     /// position here, so a collision's two cavities get contrasting colours.
     /// Either a whole-volume id (`"T3"`: every node of that volume lights) or a
@@ -406,9 +408,17 @@ struct Scene3DView {
         c.pickRoot.childNodes.forEach { $0.removeFromParentNode() }
         c.volumeNodes.removeAll(keepingCapacity: true)
         for (id, mesh) in volumeMeshes where !mesh.isEmpty {
-            let node = SCNNode(geometry: SCNGeometry(mesh))
+            let node = SCNNode(geometry: mesh.body.isEmpty ? nil : SCNGeometry(mesh.body))
             node.name = "vol:" + id
             node.isHidden = true
+            // Vias ride along as a child carrying the same pick name (so a click
+            // on a via still resolves to its cavity) but their own material —
+            // the accent tint applied in `applyHighlight`.
+            if !mesh.vias.isEmpty {
+                let vias = SCNNode(geometry: SCNGeometry(mesh.vias))
+                vias.name = node.name
+                node.addChildNode(vias)
+            }
             c.pickRoot.addChildNode(node)
             c.volumeNodes[id] = node
         }
@@ -423,7 +433,11 @@ struct Scene3DView {
             let volumeID = Volume.volumeID(fromHighlightID: id)
             if let idx = highlightedIDs.firstIndex(where: { $0 == id || $0 == volumeID }) {
                 node.isHidden = false
-                node.geometry?.materials = [Self.highlightMaterial(color: Self.palette[idx % Self.palette.count])]
+                let color = Self.palette[idx % Self.palette.count]
+                node.geometry?.materials = [Self.highlightMaterial(color: color)]
+                for via in node.childNodes {
+                    via.geometry?.materials = [Self.viaMaterial(color: color)]
+                }
             } else {
                 node.isHidden = true
             }
@@ -448,6 +462,35 @@ struct Scene3DView {
         material.isDoubleSided = false
         material.lightingModel = .blinn
         return material
+    }
+
+    /// Material for a highlighted cavity's vias: the same hue pushed toward
+    /// white and glowing harder, so a via reads as "part of this cavity" yet
+    /// pops out of the tinted channel run — the eye finds where the cavity
+    /// terminates in a through-hole without hunting.
+    private static func viaMaterial(color: PlatformColor) -> SCNMaterial {
+        let accent = lightened(color, by: 0.55)
+        let material = SCNMaterial()
+        material.diffuse.contents = accent
+        material.emission.contents = accent.withAlphaComponent(0.65)
+        material.isDoubleSided = false
+        material.lightingModel = .blinn
+        return material
+    }
+
+    /// `color` mixed toward white by `fraction` (0 = unchanged, 1 = white), in
+    /// sRGB so the result is stable across AppKit / UIKit colour spaces.
+    private static func lightened(_ color: PlatformColor, by fraction: CGFloat) -> PlatformColor {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 1
+        #if canImport(AppKit)
+        (color.usingColorSpace(.sRGB) ?? color).getRed(&r, green: &g, blue: &b, alpha: &a)
+        #else
+        color.getRed(&r, green: &g, blue: &b, alpha: &a)
+        #endif
+        return PlatformColor(red: r + (1 - r) * fraction,
+                             green: g + (1 - g) * fraction,
+                             blue: b + (1 - b) * fraction,
+                             alpha: a)
     }
 
     private func plateGeometry(for mesh: Mesh, color: PlatformColor) -> SCNGeometry {

@@ -46,7 +46,7 @@ struct DocumentView: View {
     /// Cavity mesh per `Volume.id`, rebuilt off-thread on each `rebuild()` and
     /// handed to `Scene3DView`, which turns each into a hidden, hit-testable node
     /// (click-to-select) and glows the highlighted subset.
-    @State private var volumeMeshes: [String: Mesh] = [:]
+    @State private var volumeMeshes: [String: PlateBuilder.VolumeHighlightMesh] = [:]
     @State private var isBuilding = false
     @State private var showExporter = false
     /// Bambu Studio export: a folder document (per-plate model + modifier STL
@@ -1285,17 +1285,17 @@ struct DocumentView: View {
             // them here — off the main thread, alongside the volume
             // decomposition — is fine.
             let m = snapshot.manufacturing
-            var vmeshes: [String: Mesh] = [:]
+            var vmeshes: [String: PlateBuilder.VolumeHighlightMesh] = [:]
             for vol in vols {
                 if vol.sections.isEmpty {
-                    vmeshes[vol.id] = PlateBuilder.volumeMesh(for: vol, m)
+                    vmeshes[vol.id] = PlateBuilder.volumeHighlightMesh(for: vol, m)
                     continue
                 }
                 for i in vol.sections.indices {
-                    vmeshes[vol.sectionID(i)] = PlateBuilder.volumeMesh(for: vol.sectionVolume(i), m)
+                    vmeshes[vol.sectionID(i)] = PlateBuilder.volumeHighlightMesh(for: vol.sectionVolume(i), m)
                 }
                 if !vol.resistors.isEmpty {
-                    vmeshes[vol.resistorsID] = PlateBuilder.volumeMesh(for: vol.resistorsVolume, m)
+                    vmeshes[vol.resistorsID] = PlateBuilder.volumeHighlightMesh(for: vol.resistorsVolume, m)
                 }
             }
             DispatchQueue.main.async {

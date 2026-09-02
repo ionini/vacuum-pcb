@@ -1182,16 +1182,37 @@ enum PlateBuilder {
         return Mesh.union(parts)
     }
 
+    /// A volume's highlight mesh split into the parts the 3D preview tints
+    /// differently: the channel network / component cavities / probe beads
+    /// (`body`) and its vias (`vias` — same-plate depth bores and the mouth
+    /// bead of every cross-silicone through-hole), so the eye can find where a
+    /// lit cavity terminates in a via at a glance.
+    struct VolumeHighlightMesh {
+        var body: Mesh
+        var vias: Mesh
+        var isEmpty: Bool { body.isEmpty && vias.isEmpty }
+        /// Both parts as one mesh (for consumers that don't tint vias apart).
+        var combined: Mesh { Mesh(body.polygons + vias.polygons) }
+    }
+
+    /// A loose, render-only mesh of one physical volume's channel network plus
+    /// a marker bead at each probe hole — for tinted highlighting in the 3D
+    /// preview. `volumeHighlightMesh` with the via parts folded back in.
+    static func volumeMesh(for volume: Volume, _ m: ManufacturingConstants) -> Mesh {
+        volumeHighlightMesh(for: volume, m).combined
+    }
+
     /// A loose, render-only mesh of one physical volume's channel network plus
     /// a marker bead at each probe hole — for tinted highlighting in the 3D
     /// preview. Reuses the real channel primitive, slightly inflated so it sits
     /// proud of the carved channel (no z-fighting). Polygons are concatenated,
     /// not CSG-unioned: the overlap is invisible for an opaque highlight and far
     /// cheaper than a boolean union across the whole cavity.
-    static func volumeMesh(for volume: Volume, _ m: ManufacturingConstants) -> Mesh {
+    static func volumeHighlightMesh(for volume: Volume, _ m: ManufacturingConstants) -> VolumeHighlightMesh {
         let channelR = m.channelDiameter / 2 + 0.15
         let resistorR = m.resistorChannelDiameter / 2 + 0.1
         var polys: [Polygon] = []
+        var viaPolys: [Polygon] = []
 
         // Routed channels.
         for seg in volume.segments where seg.positions.count >= 2 {
@@ -1219,10 +1240,11 @@ enum PlateBuilder {
         }
 
         // Same-plate vias — vertical bores joining channel depths (T0↔T1).
+        // Via-tinted, like the bridge beads below.
         for v in volume.vias where v.layers.count >= 2 {
             let zs = v.layers.map { m.midZ(for: $0) }
             if let lo = zs.min(), let hi = zs.max(), hi > lo {
-                polys += viaCutterMesh(at: v.pos, radius: channelR, zLo: lo, zHi: hi).polygons
+                viaPolys += viaCutterMesh(at: v.pos, radius: channelR, zLo: lo, zHi: hi).polygons
             }
         }
 
@@ -1278,12 +1300,22 @@ enum PlateBuilder {
 
         // A bead at every hole so probe points stay visible even for a cavity
         // with little or no routed channel (e.g. a short abutment-only stub).
+        // A cross-silicone via's bead — where this plate's cavity terminates
+        // and hands over to the other plate — goes to the via part, a touch
+        // larger, so it stands out from the ordinary pin beads.
         for hole in volume.holes {
-            polys += Mesh.sphere(radius: channelR + 0.1, slices: 16)
-                .translated(by: Vector(hole.pos.x, hole.pos.y, m.midZ(for: hole.layer)))
-                .polygons
+            let z = m.midZ(for: hole.layer)
+            if hole.isBridge {
+                viaPolys += Mesh.sphere(radius: channelR + 0.25, slices: 16)
+                    .translated(by: Vector(hole.pos.x, hole.pos.y, z))
+                    .polygons
+            } else {
+                polys += Mesh.sphere(radius: channelR + 0.1, slices: 16)
+                    .translated(by: Vector(hole.pos.x, hole.pos.y, z))
+                    .polygons
+            }
         }
-        return Mesh(polys)
+        return VolumeHighlightMesh(body: Mesh(polys), vias: Mesh(viaPolys))
     }
 
     // MARK: - Bambu Studio print-critical modifier envelope
