@@ -215,7 +215,14 @@ project** with everything pre-configured:
   Plate. One object opens per plate: the plate model plus the `_resistors`
   stadiums as a **normal part** (it fills the carved serpentine — not a
   settings-only modifier) that already carries the per-part overrides. No
-  "load as single object" prompt, no per-setting clicking.
+  "load as single object" prompt, no per-setting clicking. A plate with no
+  resistors (typically the bottom) raises an "Export failed" alert instead
+  of silently doing nothing — use *Single Part* below for it.
+- **GUI, adding to an open project:** Export → *Open in Bambu Studio (Single
+  Part)* → Top Plate / Bottom Plate / Stencil / Mold Frame. One bare body as
+  a plain STL, nothing riding along. Opening a second `.3mf` into an already
+  open Bambu project does **not** import its settings, so start the project
+  with a recipe export and complete it from here.
 - **CLI:**
   `vacuum-cli export board.vpcb --resistors-3mf [--density N[,N…]] [--pattern TOKEN] [--plate top|bottom|both|auto] [--label TEXT] [--no-label] [--out FILE|DIR]`
   A comma list of densities is a **coupon ladder**: one object per density in
