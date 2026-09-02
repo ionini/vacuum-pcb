@@ -469,10 +469,12 @@ struct Scene3DView {
     /// pops out of the tinted channel run — the eye finds where the cavity
     /// terminates in a through-hole without hunting.
     private static func viaMaterial(color: PlatformColor) -> SCNMaterial {
-        let accent = lightened(color, by: 0.55)
+        // Pushed well toward white and near-fully emissive: the via has to
+        // read as a bright cap on the tinted run, not a lighter shade of it.
+        let accent = lightened(color, by: 0.75)
         let material = SCNMaterial()
         material.diffuse.contents = accent
-        material.emission.contents = accent.withAlphaComponent(0.65)
+        material.emission.contents = accent.withAlphaComponent(0.9)
         material.isDoubleSided = false
         material.lightingModel = .blinn
         return material
