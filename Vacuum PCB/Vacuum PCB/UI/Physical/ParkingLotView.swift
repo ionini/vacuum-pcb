@@ -170,6 +170,9 @@ struct ParkingLotView: View {
         case .led:
             Circle().fill(Color.yellow.opacity(0.45))
                 .overlay(Circle().stroke(.yellow, lineWidth: 1))
+        case .touchPad:
+            Circle().fill(Color.orange.opacity(0.45))
+                .overlay(Circle().stroke(.orange, lineWidth: 1))
         case .connector:
             RoundedRectangle(cornerRadius: 3).fill(Color.indigo.opacity(0.35))
                 .overlay(RoundedRectangle(cornerRadius: 3).stroke(.indigo, lineWidth: 1))

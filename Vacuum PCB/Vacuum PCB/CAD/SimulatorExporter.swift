@@ -144,6 +144,12 @@ enum SimulatorExporter {
                 // fluid volume the simulator integrates.
                 break
 
+            case .touchPad:
+                // Like testing points, the finger-covered bore doesn't reach
+                // the external simulator export (it has no inlet body
+                // convention for a switchable vent).
+                break
+
             case .led:
                 // LEDs are passive indicators — the fluid network just gains
                 // a drop bore at the pin so the channel reaches the dimple.

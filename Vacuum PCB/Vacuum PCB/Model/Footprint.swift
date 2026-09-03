@@ -132,6 +132,28 @@ extension ComponentKind {
                 )
             )
 
+        case .touchPad:
+            // Vertical tapered bore straight out of the plate — the testing
+            // point's geometry (`PlateBuilder.testPointBoreSolid`), so the
+            // footprint only needs to clear the bore mouth. Pin "p" is the
+            // bore's channel end, on the placement's layer/depth; rotation is
+            // irrelevant (round hole).
+            let half = 1.5
+            return Footprint(
+                kind: .touchPad,
+                pins: [
+                    FootprintPin(key: "p", offset: .zero, relativeLayer: .same),
+                ],
+                exclusionRect: Rect(
+                    origin: Point(x: -half, y: -half),
+                    size: Size(width: 2 * half, height: 2 * half)
+                ),
+                boundingRect: Rect(
+                    origin: Point(x: -half, y: -half),
+                    size: Size(width: 2 * half, height: 2 * half)
+                )
+            )
+
         case .subpart:
             // Subpart footprint is library-dependent; callers should go
             // through `Component.footprint(_:)` so the part filename is in
@@ -489,6 +511,7 @@ extension ComponentKind {
         case .screw:        return []
         case .led:          return ["p"]
         case .connector:    return []
+        case .touchPad:     return ["p"]
         }
     }
 }
@@ -634,7 +657,9 @@ extension Placement {
         let plate = resolvedPlate(of: pin)
         let useDepth: Int
         switch component.kind {
-        case .resistor, .port, .vacuumSource, .atmVent:
+        case .resistor, .port, .vacuumSource, .atmVent, .touchPad:
+            // A touch pad's bore starts from whichever channel layer its pin
+            // sits on (F cycles it, like a testing point's depth).
             useDepth = depth
         case .transistor, .subpart, .screw, .led, .connector:
             useDepth = 0

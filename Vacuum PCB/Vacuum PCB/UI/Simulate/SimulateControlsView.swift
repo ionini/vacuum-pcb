@@ -225,8 +225,42 @@ struct SimulateControlsView: View {
     private func inputRow(input: PneumaticNetwork.Input) -> some View {
         if input.soft {
             softInputRow(input)
+        } else if input.isTouchPad {
+            touchPadRow(input)
         } else {
             hardInputRow(input)
+        }
+    }
+
+    /// A touch pad: the bore is either *open* (vents the net to atmosphere —
+    /// the board at rest) or *covered* by a fingertip (drives nothing; the
+    /// net floats and its pull-down resistor takes over). Stored as `1.0` /
+    /// `NaN` — see `PneumaticNetwork.Input.isTouchPad`.
+    private func touchPadRow(_ input: PneumaticNetwork.Input) -> some View {
+        let covered = PneumaticNetwork.Input.touchPadIsCovered(state.inputPressures[input.id])
+        return HStack(spacing: 8) {
+            Image(systemName: "hand.tap")
+                .foregroundStyle(.secondary)
+                .frame(width: 14)
+            Text(input.label)
+                .font(.system(size: 12, weight: .medium).monospaced())
+                .frame(width: 56, alignment: .leading)
+            Picker("", selection: Binding(
+                get: { covered },
+                set: {
+                    state.inputPressures[input.id] = $0
+                        ? PneumaticNetwork.Input.touchPadCoveredValue
+                        : PneumaticNetwork.Input.touchPadOpenValue
+                }
+            )) {
+                Text("Open").tag(false)
+                Text("Covered").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 130)
+            Spacer()
+            NetPressureDot(state: state, netId: input.netId)
         }
     }
 

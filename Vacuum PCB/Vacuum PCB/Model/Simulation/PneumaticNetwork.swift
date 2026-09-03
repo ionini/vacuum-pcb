@@ -173,15 +173,29 @@ struct PneumaticNetwork {
         /// an external drive enters at the connector/port bore and pays the
         /// channel run from there inward.
         let nodeId: UUID
+        /// True for a `.touchPad` — a hard input whose two states are *open*
+        /// (value ≥ 0.5, anchors the net to atmosphere like a vent) and
+        /// *covered* (`NaN`: a fingertip seals the bore, so the pad drives
+        /// nothing and the net floats). Only pads honour `NaN` on a hard
+        /// input; for any other hard input `NaN` falls through to vacuum as
+        /// it always has. See `SimulationEngine.HardInputState`.
+        let isTouchPad: Bool
 
         init(id: UUID, label: String, netId: UUID, soft: Bool = false,
-             nodeId: UUID? = nil) {
+             nodeId: UUID? = nil, isTouchPad: Bool = false) {
             self.id = id
             self.label = label
             self.netId = netId
             self.soft = soft
             self.nodeId = nodeId ?? netId
+            self.isTouchPad = isTouchPad
         }
+
+        /// Stored value for a touch pad: `1.0` open (default, vents to atm),
+        /// `NaN` covered (floating).
+        static let touchPadOpenValue = 1.0
+        static let touchPadCoveredValue = Double.nan
+        static func touchPadIsCovered(_ raw: Double?) -> Bool { raw?.isNaN ?? false }
     }
 
     /// All nets that participate in the simulation, with a stable order so
@@ -289,6 +303,14 @@ struct PneumaticNetwork {
                     probes.append(Probe(id: component.id, label: component.label,
                                         kind: .led, netId: net,
                                         nodeId: node(component.id, "p", net: net)))
+                }
+            case .touchPad:
+                // Finger-covered vent: a hard input that either anchors its
+                // net to atmosphere (open) or drives nothing (covered).
+                if let net = netForSinglePin(component) {
+                    inputs.append(Input(id: component.id, label: component.label, netId: net,
+                                        nodeId: node(component.id, "p", net: net),
+                                        isTouchPad: true))
                 }
             case .transistor:
                 let g = pinToNet[PinRef(componentId: component.id, pinKey: "gate")]

@@ -60,6 +60,9 @@ BIN=.build/debug/vacuum-cli
   changing — that's convergence.
 - `--set L=V`   Drive the input labelled `L`. `V` is `vac` / `atm` or a number
   in `0…1`. Repeatable, one per input.
+  A touch pad (`ComponentKind.touchPad`, finger-covered vent) takes `open`
+  (default, hard atm anchor) or `covered` (drives nothing; its net floats and
+  the pull-down resistor decides — also `nan`/`float`). `inspect` tags pads.
 - `--probe L`   Only report probe `L`. Repeatable.
 - `--all-nets`  Also print every net's pressure (use to see where a result
   breaks down).

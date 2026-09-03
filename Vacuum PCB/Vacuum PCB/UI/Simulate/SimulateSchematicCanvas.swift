@@ -233,7 +233,7 @@ private struct SchematicCanvasLayer: View {
     /// simulator's symbols match the schematic's.
     private func symbolPath(_ kind: ComponentKind, in rect: CGRect) -> Path {
         switch kind {
-        case .transistor, .screw, .led:
+        case .transistor, .screw, .led, .touchPad:
             return Path(ellipseIn: rect)
         case .resistor, .subpart:
             return Path(roundedRect: rect, cornerRadius: 6)
@@ -275,7 +275,7 @@ private struct SchematicCanvasLayer: View {
             return (a + b) / 2
         case .vacuumSource: return 0
         case .atmVent:      return 1
-        case .port, .led:
+        case .port, .led, .touchPad:
             return netPressure(pin: PinRef(componentId: component.id, pinKey: "p"),
                                pressures: pressures, remap: remap)
         case .subpart:
@@ -315,6 +315,8 @@ private struct SchematicCanvasLayer: View {
             return Text(component.portDirection == .input ? "IN \(formatted)" : "OUT \(formatted)")
         case .led:
             return Text("LED \(formatted)")
+        case .touchPad:
+            return Text("PAD \(formatted)")
         case .vacuumSource:
             return Text("VAC")
         case .atmVent:
