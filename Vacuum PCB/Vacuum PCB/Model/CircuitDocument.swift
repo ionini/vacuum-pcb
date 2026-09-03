@@ -39,7 +39,11 @@ struct CircuitDocument: Codable, Hashable {
     /// geometry participates in the content/effective hashes (it changes the
     /// printed plate) but the cosmetic `name` is stripped so renames don't
     /// churn library snapshots.
-    static let currentSchemaVersion = 10
+    /// v11: adds `ComponentKind.touchPad` — a finger-covered input that
+    /// prints as a testing-point bore. No new fields; a doc without a pad
+    /// round-trips byte-identical (v10 → v11 is a no-op), but a doc *with*
+    /// one fails to decode in pre-v11 builds (unknown kind raw value).
+    static let currentSchemaVersion = 11
 
     var schemaVersion: Int
     var manufacturing: ManufacturingConstants

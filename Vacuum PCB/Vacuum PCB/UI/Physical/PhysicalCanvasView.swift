@@ -2433,6 +2433,7 @@ struct PhysicalCanvasView: View {
         case .subpart:      return "subpart"
         case .screw:        return "screw"
         case .led:          return "LED"
+        case .touchPad:     return "touch pad"
         case .connector:    return "connector"
         }
     }
@@ -2447,6 +2448,7 @@ struct PhysicalCanvasView: View {
         case .subpart:      return "rectangle.dashed"
         case .screw:        return "circle.grid.cross"
         case .led:          return "lightbulb"
+        case .touchPad:     return "hand.tap"
         case .connector:    return "rectangle.connected.to.line.below"
         }
     }

@@ -224,6 +224,30 @@ enum PlateBuilder {
                 appendCutter(bore, plate: placement.layer,
                              top: &topCutters, bottom: &bottomCutters)
 
+            case .touchPad:
+                // Finger-covered input: geometrically a testing point — the
+                // same vertical tapered bore from the pin's channel midline
+                // out to the plate's outer face, plus the label embossed
+                // beside the hole. The pin is at the placement origin.
+                let padLayer = Layer(plate: placement.layer, depth: placement.depth)
+                let bore = verticalTapBoreMesh(
+                    at: placement.position, layer: padLayer, m: m,
+                    topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ,
+                    topThickness: topThickness, bottomThickness: bottomThickness
+                )
+                appendCutter(bore, plate: placement.layer,
+                             top: &topCutters, bottom: &bottomCutters)
+                let surfaceZ = placement.layer == .top
+                    ? topInnerZ + topThickness
+                    : bottomInnerZ - bottomThickness
+                if let label = testPointLabelMesh(name: component.label, at: placement.position,
+                                                  plate: placement.layer, surfaceZ: surfaceZ, m: m) {
+                    switch placement.layer {
+                    case .top:    topAdditions.append(label)
+                    case .bottom: bottomAdditions.append(label)
+                    }
+                }
+
             case .subpart:
                 // Subpart internals aren't flattened into the printed STL
                 // in v1 — the user sees them in the physical canvas only.
@@ -1583,6 +1607,16 @@ enum PlateBuilder {
                 var mi = m; mi.portBoreDiameter += 2 * mXY
                 shells.append(portBoreMesh(placement: placement, outline: outline, m: mi,
                                            topMidZ: topMidZ, bottomMidZ: bottomMidZ))
+            case .touchPad:
+                // Same envelope as a testing point (step 4 below): a grown
+                // vertical tap from the pin's channel layer to the outer face.
+                guard wants(placement.layer) else { break }
+                let padLayer = Layer(plate: placement.layer, depth: placement.depth)
+                let outerZ = placement.layer == .top
+                    ? topInnerZ + m.plateThickness(forLayerCount: doc.physical.topLayers)
+                    : bottomInnerZ - m.plateThickness(forLayerCount: doc.physical.bottomLayers)
+                shells.append(Mesh(verticalPolys(at: placement.position, zA: m.midZ(for: padLayer),
+                                                 zB: outerZ, baseRadius: channelR)))
             case .led:
                 if wants(placement.layer) {
                     var mi = m; mi.ledDimpleDiameter += 2 * mXY
@@ -2159,8 +2193,22 @@ enum PlateBuilder {
         topInnerZ: Double, bottomInnerZ: Double,
         topThickness: Double, bottomThickness: Double
     ) -> Mesh {
-        let midZ = m.midZ(for: Layer(plate: tp.plate, depth: tp.depth))
-        let outerFaceZ = tp.plate == .top
+        verticalTapBoreMesh(at: world, layer: Layer(plate: tp.plate, depth: tp.depth), m: m,
+                            topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ,
+                            topThickness: topThickness, bottomThickness: bottomThickness)
+    }
+
+    /// The testing-point bore for an arbitrary (XY, channel layer): channel
+    /// midline of `layer` straight out to that plate's outer face. Shared by
+    /// testing points and touch pads (`ComponentKind.touchPad`), which print
+    /// the very same hole.
+    static func verticalTapBoreMesh(
+        at world: Point, layer: Layer, m: ManufacturingConstants,
+        topInnerZ: Double, bottomInnerZ: Double,
+        topThickness: Double, bottomThickness: Double
+    ) -> Mesh {
+        let midZ = m.midZ(for: layer)
+        let outerFaceZ = layer.plate == .top
             ? topInnerZ + topThickness
             : bottomInnerZ - bottomThickness
         // A screw volcano dome at the same XY adds `screwProtrusion` of
@@ -2170,7 +2218,7 @@ enum PlateBuilder {
         let outerOvershoot = m.screwProtrusion > 0
             ? m.screwProtrusion + 0.5
             : 0.1
-        return testPointBoreSolid(at: world, plate: tp.plate,
+        return testPointBoreSolid(at: world, plate: layer.plate,
                                   innerZ: midZ, outerZ: outerFaceZ, m: m,
                                   outerOvershoot: outerOvershoot)
     }

@@ -771,6 +771,9 @@ enum PhysicalActions {
     ) -> (plate: Plate, depth: Int) {
         let dimpleKinds: Set<ComponentKind> = [.transistor, .led]
         if dimpleKinds.contains(component.kind) { return (.bottom, 0) }
+        // A touch pad is pressed from above: start it on the top plate
+        // (the user can still F / flip it if the net lives below).
+        if component.kind == .touchPad { return (.top, 0) }
 
         let fp = component.footprint(circuit.manufacturing, snapshots: circuit.librarySnapshots)
 

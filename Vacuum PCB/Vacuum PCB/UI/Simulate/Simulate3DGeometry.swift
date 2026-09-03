@@ -296,6 +296,19 @@ struct Simulate3DGeometry {
                                                 layers: [oppLayer]))
                 }
 
+            case .touchPad:
+                // Same solid as a testing point's tap, tinted by the pin's net.
+                let padOuterZ = placement.layer == .top
+                    ? topInnerZ + m.plateThickness(forLayerCount: flat.physical.topLayers)
+                    : bottomInnerZ - m.plateThickness(forLayerCount: flat.physical.bottomLayers)
+                g.units.append(Unit(mesh: PlateBuilder.testPointBoreSolid(
+                                        at: placement.position, plate: placement.layer,
+                                        innerZ: m.midZ(for: placementLayer),
+                                        outerZ: padOuterZ, m: m),
+                                    source: .net(net("p")),
+                                    layers: [placementLayer],
+                                    component: component.id))
+
             case .led:
                 g.units.append(Unit(mesh: PlateBuilder.ledDimpleMesh(
                                         at: placement.position, layer: placement.layer, m: m,

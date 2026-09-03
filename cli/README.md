@@ -52,7 +52,7 @@ BIN=.build/debug/vacuum-cli
 | Option | Meaning |
 |--------|---------|
 | `--steps N` | Fixed solver steps (default 500). Raise until readings stop changing — that's convergence. |
-| `--set LABEL=VALUE` | Drive an input. `VALUE` is `vac`/`atm` or a number in `0…1`. Repeatable. |
+| `--set LABEL=VALUE` | Drive an input. `VALUE` is `vac`/`atm` or a number in `0…1`. A **touch pad** (finger-covered vent, prints as a testing-point bore) takes `open` (default: hard atm anchor) / `covered` (drives nothing — the net floats and its pull-down resistor decides; also `nan`/`float`). Repeatable. |
 | `--probe LABEL` | Only report this probe. Repeatable. |
 | `--all-nets` | Also print every net's pressure. |
 | `--phase "SETS[@CAP]"` | Run a **stateful sequence**, carrying latch/register state across phases. `SETS` is comma-separated `LABEL=VALUE` (sticky — unnamed inputs hold). Each phase runs until it settles or hits `CAP` steps (default 100000), then prints its probes. Repeatable; runs in order. Overrides `--set`. Give *hold* phases an explicit finite `@CAP` — see below. |

@@ -42,6 +42,7 @@ func continuityFeature(_ comp: Component, pinKey: String) -> String {
         case nil:     return "port edge bore"
         }
     case .led:       return "LED indicator dimple"
+    case .touchPad:  return "touch pad bore"
     case .connector: return (comp.connectorDebugPorts ?? false)
         ? "connector debug port edge bore"
         : "connector tube (edge)"
@@ -302,6 +303,14 @@ func physicalVolumes(_ doc: CircuitDocument) -> [Volume] {
                     pendingFeatures.append((node: n, feature: VolumeFeature(
                         center: place.position, rotation: place.rotation, plate: place.layer,
                         component: comp.id, kind: .ledDimple, net: net.id, radius: m.ledDimpleDiameter / 2, pinPos: pin.pos)))
+                case .touchPad:
+                    // Prints as a testing-point bore, so it joins the cavity the
+                    // same way: a vertical tap out to the plate face (which also
+                    // makes the cavity `isExternal` for the sealed-cavity pass).
+                    pendingTestPoints.append((node: n, tp: VolumeTestPoint(
+                        pos: pin.pos, plate: pin.layer.plate,
+                        midZ: m.midZ(for: pin.layer),
+                        outerZ: pin.layer.plate == .top ? topOuterZ : bottomOuterZ)))
                 default: break
                 }
             }

@@ -279,7 +279,9 @@ func reportSequence(network: PneumaticNetwork, results: [PhaseResult], probeFilt
 func parseDrive(_ raw: String) -> Double? {
     switch raw.lowercased() {
     case "vac", "vacuum", "0", "low": return 0.0
-    case "atm", "atmosphere", "1", "high": return 1.0
+    case "atm", "atmosphere", "1", "high", "open", "uncovered": return 1.0
+    // Touch pad covered by a fingertip (drives nothing) / bus pin floating.
+    case "covered", "cover", "float", "floating", "nan": return .nan
     default: return Double(raw)
     }
 }
@@ -458,7 +460,7 @@ func reportInspect(_ network: PneumaticNetwork, json: Bool) {
     if json {
         let root: [String: Any] = [
             "nets": network.nets.count,
-            "inputs": network.inputs.map { ["label": $0.label, "soft": $0.soft] },
+            "inputs": network.inputs.map { ["label": $0.label, "soft": $0.soft, "touchPad": $0.isTouchPad] },
             "probes": network.probes.map { ["label": $0.label, "kind": "\($0.kind)"] },
             "transistors": network.transistors.map { ["label": $0.label] },
             "resistors": network.resistors.count,
@@ -469,7 +471,10 @@ func reportInspect(_ network: PneumaticNetwork, json: Bool) {
     }
     print("nets:        \(network.nets.count)")
     print("inputs (\(network.inputs.count)):")
-    for i in network.inputs { print("  \(i.label.isEmpty ? "<unnamed>" : i.label)\(i.soft ? "  (soft/bus)" : "")") }
+    for i in network.inputs {
+        let tag = i.soft ? "  (soft/bus)" : (i.isTouchPad ? "  (touch pad: open/covered)" : "")
+        print("  \(i.label.isEmpty ? "<unnamed>" : i.label)\(tag)")
+    }
     print("probes (\(network.probes.count)):")
     for p in network.probes { print("  \(p.label.isEmpty ? "<unnamed>" : p.label)  [\(p.kind)]") }
     print("transistors: \(network.transistors.count)")
@@ -1485,8 +1490,10 @@ USAGE:
 
 SIMULATE OPTIONS:
   --steps N            Number of fixed solver steps (default 500).
-  --set LABEL=VALUE     Drive an input. VALUE is vac/atm or a number 0…1.
-                        Repeatable.
+  --set LABEL=VALUE     Drive an input. VALUE is vac/atm or a number 0…1;
+                        a touch pad takes open/covered (covered = the
+                        fingertip seals the bore; also nan/float, which
+                        floats a bus pin). Repeatable.
   --probe LABEL         Only report this probe. Repeatable.
   --all-nets            Also print every net's pressure.
   --phase "SETS[@CAP]"  Run a *stateful* sequence, carrying latch/register

@@ -43,8 +43,10 @@ enum SimulationEngine {
         }
         // Only *hard* inputs clamp their node. Soft (bus) inputs are stamped
         // as finite-conductance edges further below so they never pin a net.
+        // (A covered touch pad is `.none`: it neither anchors nor joins the
+        // manifold — the net floats.)
         for input in network.inputs where !input.soft {
-            if (inputs[input.id] ?? 1.0) >= 0.5 {
+            if hardInputState(input, raw: inputs[input.id]) == .atm {
                 anchored[subdivided ? input.nodeId : input.netId] = 1.0
             }
         }
@@ -58,7 +60,8 @@ enum SimulationEngine {
         for pump in network.pumps {
             manifoldNets.insert(subdivided ? pump.nodeId : pump.netId)
         }
-        for input in network.inputs where !input.soft && (inputs[input.id] ?? 1.0) < 0.5 {
+        for input in network.inputs where !input.soft
+            && hardInputState(input, raw: inputs[input.id]) == .vac {
             manifoldNets.insert(subdivided ? input.nodeId : input.netId)
         }
 
@@ -574,10 +577,11 @@ extension SimulationEngine {
         /// nodes (`params.channelResistancePerMm > 0` and a non-empty graph).
         let subdivided: Bool
         /// Anchor state per hard input in `network.inputs` order (soft
-        /// inputs excluded): true = toggled to atmosphere (anchors its
-        /// node), false = vacuum (joins the pump manifold). Compare against
-        /// `hardInputStates(network:inputs:)` to detect a stale compile.
-        let hardInputStates: [Bool]
+        /// inputs excluded): `.atm` anchors its node, `.vac` joins the pump
+        /// manifold, `.none` (a covered touch pad) leaves the node free.
+        /// Compare against `hardInputStates(network:inputs:)` to detect a
+        /// stale compile.
+        let hardInputStates: [HardInputState]
 
         // Node tables.
         /// Every solver node in stamping order — `network.nets`, then (when
@@ -751,14 +755,34 @@ extension SimulationEngine {
         params.channelResistancePerMm > 0 && !network.channelGraph.isEmpty
     }
 
-    /// Anchor state per hard input (`network.inputs` order, soft skipped):
-    /// true = atmosphere. Part of the compile cache key — hard toggles move
-    /// nodes between the anchored set and the pump manifold.
-    static func hardInputStates(network: PneumaticNetwork, inputs: [UUID: Double]) -> [Bool] {
-        var out: [Bool] = []
+    /// How a *hard* input acts on its node this step.
+    enum HardInputState: Equatable {
+        /// Anchored to atmosphere (value ≥ 0.5; also an absent entry).
+        case atm
+        /// Joins the pump manifold (value < 0.5).
+        case vac
+        /// Drives nothing — a covered touch pad (`NaN`). The node stays free
+        /// and whatever else hangs on the net decides its pressure.
+        case none
+    }
+
+    /// Resolve a hard input's stored value. `NaN` means *covered* only for
+    /// a touch pad; on any other hard input it keeps falling through the
+    /// `< 0.5` comparison to vacuum, as it always has.
+    static func hardInputState(_ input: PneumaticNetwork.Input, raw: Double?) -> HardInputState {
+        let v = raw ?? 1.0
+        if input.isTouchPad && v.isNaN { return .none }
+        return v >= 0.5 ? .atm : .vac
+    }
+
+    /// Anchor state per hard input (`network.inputs` order, soft skipped).
+    /// Part of the compile cache key — hard toggles move nodes between the
+    /// anchored set, the pump manifold and the free set.
+    static func hardInputStates(network: PneumaticNetwork, inputs: [UUID: Double]) -> [HardInputState] {
+        var out: [HardInputState] = []
         out.reserveCapacity(network.inputs.count)
         for input in network.inputs where !input.soft {
-            out.append((inputs[input.id] ?? 1.0) >= 0.5)
+            out.append(hardInputState(input, raw: inputs[input.id]))
         }
         return out
     }
@@ -784,7 +808,7 @@ extension SimulationEngine {
     static func compile(
         network: PneumaticNetwork,
         params: SimulationParameters,
-        hardInputStates hardStates: [Bool]
+        hardInputStates hardStates: [HardInputState]
     ) -> CompiledNetwork {
         let graph = network.channelGraph
         let subdivided = isSubdivided(network: network, params: params)
@@ -800,7 +824,7 @@ extension SimulationEngine {
         for input in network.inputs where !input.soft {
             precondition(hardIdx < hardStates.count,
                          "hardInputStates built from a different network")
-            if hardStates[hardIdx] {
+            if hardStates[hardIdx] == .atm {
                 anchored[subdivided ? input.nodeId : input.netId] = 1.0
             }
             hardIdx += 1
@@ -812,7 +836,7 @@ extension SimulationEngine {
         }
         hardIdx = 0
         for input in network.inputs where !input.soft {
-            if !hardStates[hardIdx] {
+            if hardStates[hardIdx] == .vac {
                 manifoldNets.insert(subdivided ? input.nodeId : input.netId)
             }
             hardIdx += 1

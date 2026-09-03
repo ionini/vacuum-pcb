@@ -56,6 +56,7 @@ struct ComponentPaletteView: View {
         .init(label: "ATM", subtitle: "Vent",       kind: .atmVent),
         .init(label: "IN",  subtitle: "Input",      kind: .port, dir: .input),
         .init(label: "OUT", subtitle: "Output",     kind: .port, dir: .output),
+        .init(label: "T",   subtitle: "Touch pad",  kind: .touchPad),
         .init(label: "J",   subtitle: "Connector",  kind: .connector),
     ]
 

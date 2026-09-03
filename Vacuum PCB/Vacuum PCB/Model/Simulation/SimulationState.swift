@@ -469,8 +469,13 @@ final class SimulationState {
             // at deadhead like the pumps above instead of starting from atm.
             // Soft (bus) inputs aren't rails — they start at atmosphere with
             // every other net and settle via the integrator.
-            let v = inputPressures[input.id] ?? 1.0
-            out[input.netId] = v < 0.5 ? params.pumpMaxVacuum : 1.0
+            // A covered touch pad drives nothing: leave its net at the
+            // atmosphere seed and let the integrator find the level.
+            switch SimulationEngine.hardInputState(input, raw: inputPressures[input.id]) {
+            case .vac:  out[input.netId] = params.pumpMaxVacuum
+            case .atm:  out[input.netId] = 1.0
+            case .none: break
+            }
         }
         return out
     }

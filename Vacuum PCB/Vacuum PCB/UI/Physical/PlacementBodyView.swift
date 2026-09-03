@@ -46,6 +46,8 @@ struct PlacementBodyView: View {
                         drawScrew(in: &ctx)
                     case .led:
                         drawLED(in: &ctx)
+                    case .touchPad:
+                        drawTouchPad(in: &ctx)
                     case .connector:
                         drawConnector(in: &ctx)
                     }
@@ -64,6 +66,18 @@ struct PlacementBodyView: View {
             }
         }
         .allowsHitTesting(false)
+    }
+
+    /// Touch pad: the testing-point bead seen top-down — a ring at the bore's
+    /// channel-end radius with a centre dot, tinted orange like
+    /// `TestPointGlyph` so the two read as the same printed hole.
+    private func drawTouchPad(in ctx: inout GraphicsContext) {
+        let tint = isSelected ? Color.accentColor : Color.orange
+        let r = max(4.0, manufacturing.portBoreDiameter / 2 * transform.ptsPerMm)
+        let rect = CGRect(x: -r, y: -r, width: 2 * r, height: 2 * r)
+        ctx.fill(Path(ellipseIn: rect), with: .color(Color.white.opacity(0.9)))
+        ctx.stroke(Path(ellipseIn: rect), with: .color(tint), lineWidth: 2)
+        ctx.fill(Path(ellipseIn: CGRect(x: -1.5, y: -1.5, width: 3, height: 3)), with: .color(tint))
     }
 
     /// Screw clearance hole as the *stencil* punches it — the through-bore
