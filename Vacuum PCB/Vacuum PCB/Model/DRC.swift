@@ -508,14 +508,20 @@ enum DRC {
                 sel.placements.formUnion(net.pins.map(\.componentId))
             }
             return sel.isEmpty ? nil : sel
-        case let .testPointClearance(testPointId, _, _, _, _, _, _):
+        case let .testPointClearance(testPointId, testPointName, _, _, _, _, _):
             // Select the offending tap so the user can drag it (a testing
             // point along its rail, a touch pad anywhere) or press F to clear
             // the wall. The id is a component's when the tap is a touch pad.
+            // A tap hoisted out of a sub-part has neither in this document —
+            // its name carries the instance chain ("U1.T1"), so select the
+            // instance the user can move or open.
             if document.logic.components.contains(where: { $0.id == testPointId && $0.kind == .touchPad }) {
                 return .placement(testPointId)
             }
-            return .testPoint(testPointId)
+            if document.physical.testPoints.contains(where: { $0.id == testPointId }) {
+                return .testPoint(testPointId)
+            }
+            return flattenedSidesSelection([(nil, testPointName)], in: document)
         case let .sealedCavity(refs, _, _):
             // The fragment's holes name the components it strands (hoisted
             // refs like "U2.Q3.a" select the sub-part instance; a bare ref is
@@ -1828,7 +1834,11 @@ enum DRC {
         guard threshold > 0 else { return [] }
         let boreR = m.portBoreDiameter / 2
         let channelR = m.channelDiameter / 2
-        let labels = Dictionary(uniqueKeysWithValues: doc.logic.nets.map { ($0.id, $0.label) })
+        let ownLabels = Dictionary(uniqueKeysWithValues: doc.logic.nets.map { ($0.id, $0.label) })
+        // Hoisted sub-part nets aren't in `logic.nets`; the flatten's label
+        // map ("U1.n3") is the only name they have.
+        func label(of netId: UUID) -> String { labelOverrides?[netId] ?? ownLabels[netId] ?? "?" }
+        let edges = collectRouteEdges(in: doc, labelOverrides: labelOverrides)
 
         // Per-plate outer-face Z, matching `PlateBuilder.build`.
         let topInnerZ = m.siliconeThickness / 2
@@ -1855,10 +1865,26 @@ enum DRC {
                                  zLo: min(midZ, outerZ), zHi: max(midZ, outerZ)))
         }
         let pinToNet = PneumaticNetwork.pinToNetMap(doc)
+        /// Net attribution for a pad the netlist can't place: one hoisted out
+        /// of a sub-part by the flatten (re-minted component id, and the
+        /// sub-part's `Net`s are never hoisted, so `pinToNet` is empty for
+        /// it). Same physical criterion as `collectBores.plumbedNet` — the
+        /// closest channel on the pad's plate within a channel radius is the
+        /// one its bore fuses into. Without this every sub-part touch pad
+        /// silently skipped the check (found 2026-09-10 on Test Rig 4bit).
+        func plumbedNet(at p: Point, plate: Plate) -> UUID? {
+            var best: (d: Double, netId: UUID)?
+            for e in edges where e.layer.plate == plate {
+                let d = pointSegmentDistance(p, e.a, e.b)
+                if d < channelR, best == nil || d < best!.d { best = (d, e.netId) }
+            }
+            return best?.netId
+        }
         for placement in doc.physical.placements {
             guard let comp = doc.logic.components.first(where: { $0.id == placement.componentId }),
                   comp.kind == .touchPad,
                   let netId = pinToNet[PinRef(componentId: comp.id, pinKey: "p")]
+                    ?? plumbedNet(at: placement.position, plate: placement.layer)
             else { continue }
             let layer = Layer(plate: placement.layer,
                               depth: min(placement.depth,
@@ -1870,8 +1896,6 @@ enum DRC {
                                  zLo: min(midZ, outerZ), zHi: max(midZ, outerZ)))
         }
         guard !bores.isEmpty else { return [] }
-
-        let edges = collectRouteEdges(in: doc, labelOverrides: labelOverrides)
         var issues: [Issue] = []
 
         // 1. Against foreign-net channels (Z-band aware).
@@ -1890,7 +1914,7 @@ enum DRC {
             }
             if let w = worst {
                 issues.append(Issue(
-                    netId: bore.netId, netLabel: labels[bore.netId] ?? "?",
+                    netId: bore.netId, netLabel: label(of: bore.netId),
                     kind: .testPointClearance(
                         testPointId: bore.id, testPointName: bore.name,
                         neighbor: .channel, otherLabel: w.otherLabel,
@@ -1911,7 +1935,7 @@ enum DRC {
                 let wall = hypot(a.pos.x - b.pos.x, a.pos.y - b.pos.y) - 2 * boreR
                 guard wall < threshold else { continue }
                 issues.append(Issue(
-                    netId: a.netId, netLabel: labels[a.netId] ?? "?",
+                    netId: a.netId, netLabel: label(of: a.netId),
                     kind: .testPointClearance(
                         testPointId: a.id, testPointName: a.name,
                         neighbor: .testPoint, otherLabel: b.name,

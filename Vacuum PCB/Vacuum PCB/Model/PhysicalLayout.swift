@@ -234,6 +234,9 @@ struct TestPoint: Codable, Hashable, Identifiable {
     /// and the DRC / probe labels).
     var netId: UUID
     /// Which segment of `netId`'s route the bead rides — the XY rail.
+    /// `-1` marks a point hoisted out of a sub-part by
+    /// `CircuitDocument.flattened()`: its rail lives in the library file, so
+    /// `position` is the baked world XY and `testPointWorld` returns it as is.
     var segmentIndex: Int
     /// Arc-length (mm) of the bead along that segment's waypoint polyline.
     var offset: Double
@@ -354,7 +357,8 @@ struct PhysicalLayout: Codable, Hashable {
     /// pruned). Consumers use this rather than the cached `position` so a
     /// dragged/edited route carries its test points along automatically.
     func testPointWorld(_ tp: TestPoint) -> Point? {
-        testPointSegment(tp)?.point(atOffset: tp.offset)
+        if tp.segmentIndex < 0 { return tp.position }   // hoisted by flatten (see `TestPoint.segmentIndex`)
+        return testPointSegment(tp)?.point(atOffset: tp.offset)
     }
 
     /// The `Layer` a test point bores from (its fixed plate + `F`-cycled depth).
