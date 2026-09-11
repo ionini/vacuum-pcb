@@ -192,6 +192,7 @@ extension CircuitDocument {
             self.logic.components.first(where: { $0.id == p.componentId })?.kind != .subpart
         }
         var routes = primitives.physical.routes
+        var testPoints = primitives.physical.testPoints
         // Depth-1 connector address map: (parent's subpart component id,
         // connector component id inside the subpart's library snapshot) →
         // the freshly-minted UUID assigned when expanding that connector
@@ -325,11 +326,31 @@ extension CircuitDocument {
             for (origId, newId) in newNetIds where netUnification[origId] == nil {
                 labels[newId] = childLabels[origId] ?? "?"
             }
+
+            // Internal testing points. They print as holes in THIS board's
+            // plates (and DRC must see them against the parent's channels),
+            // so hoist them like placements. Their rail (route + segment
+            // index) is only meaningful inside the library file — after
+            // unification the parent's own routes come first for that net
+            // id — so bake the world XY and mark the rail detached
+            // (`segmentIndex = -1`, honoured by `testPointWorld`).
+            for tp in childFlat.physical.testPoints {
+                guard let netId = newNetIds[tp.netId],
+                      let local = childFlat.physical.testPointWorld(tp)
+                else { continue }
+                testPoints.append(TestPoint(
+                    name: "\(comp.label).\(tp.name)", netId: netId,
+                    segmentIndex: -1, offset: 0,
+                    plate: tp.plate, depth: tp.depth,
+                    position: toWorld(local)
+                ))
+            }
         }
 
         primitives.logic.components = components
         primitives.physical.placements = placements
         primitives.physical.routes = routes
+        primitives.physical.testPoints = testPoints
 
         // Apply matings: for each pin pair (i in 1...N) of the two mated
         // connectors, merge their nets so the simulator and DRC see a
