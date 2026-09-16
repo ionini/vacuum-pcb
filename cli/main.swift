@@ -243,7 +243,7 @@ func parsePhase(_ raw: String, defaultMaxSteps: Int) -> Phase {
     return Phase(sets: sets, maxSteps: maxSteps)
 }
 
-func reportSequence(network: PneumaticNetwork, results: [PhaseResult], probeFilter: [String], json: Bool) {
+func reportSequence(network: PneumaticNetwork, results: [PhaseResult], probeFilter: [String], showAllNets: Bool = false, json: Bool) {
     let filter = Set(probeFilter.map { $0.lowercased() })
     let probes = network.probes.filter { filter.isEmpty || filter.contains($0.label.lowercased()) }
 
@@ -268,6 +268,14 @@ func reportSequence(network: PneumaticNetwork, results: [PhaseResult], probeFilt
         for probe in probes {
             let p = r.pressures[probe.nodeId] ?? 1.0
             print("    \(probe.label.isEmpty ? "<unnamed>" : probe.label)  [\(probe.kind)]  P=\(fmt(p))  \(bar(p))")
+        }
+        if showAllNets {
+            print("    nets (\(network.nets.count)):")
+            for net in network.nets.sorted(by: { $0.label < $1.label }) {
+                let p = r.pressures[net.id] ?? 1.0
+                let name = net.label.isEmpty ? net.id.uuidString.prefix(8).description : net.label
+                print("      \(name)  P=\(fmt(p))  \(bar(p))")
+            }
         }
     }
 }
@@ -1756,7 +1764,7 @@ do {
             let defaultCap = max(steps, 100_000)
             let phases = phaseArgs.map { parsePhase($0, defaultMaxSteps: defaultCap) }
             let results = simulateSequence(network: network, params: params, phases: phases, epsilon: epsilon)
-            reportSequence(network: network, results: results, probeFilter: probeFilter, json: json)
+            reportSequence(network: network, results: results, probeFilter: probeFilter, showAllNets: showAllNets, json: json)
             break
         }
         let (inputMap, unmatched) = resolveInputs(network: network, sets: sets)
