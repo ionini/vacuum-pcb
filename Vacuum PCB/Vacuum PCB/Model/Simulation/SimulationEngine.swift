@@ -104,9 +104,10 @@ enum SimulationEngine {
 
             // 1. Capacitance + previous-state RHS.
             for (idx, netId) in freeIds.enumerated() {
-                let c = subdivided
-                    ? (graph.capacitanceByNode[netId] ?? params.nodeBaseCapacitance)
-                    : (network.capacitanceByNet[netId] ?? params.nodeBaseCapacitance)
+                let shape = subdivided
+                    ? graph.capacitanceShapeByNode[netId]
+                    : network.capacitanceShapeByNet[netId]
+                let c = shape?.value(params) ?? params.nodeBaseCapacitance
                 let cOverDt = c / dt
                 y[idx * n + idx] += cOverDt
                 rhs[idx] += cOverDt * (pressures[netId] ?? 1.0)
@@ -604,10 +605,12 @@ extension SimulationEngine {
         var freeCount: Int { freeToNode.count }
 
         // Per-free-slot data.
-        /// free slot → node capacitance; `.nan` means "use
-        /// `params.nodeBaseCapacitance` at step time" so live param edits
-        /// keep working without a recompile.
-        let capacitanceOrNan: [Double]
+        /// free slot → the node's capacitance *geometry*; the live
+        /// `SimulationParameters` scale it at step time
+        /// (`CapacitanceShape.value(_:)`) so editing either capacitance knob
+        /// keeps working without a recompile. Nodes the network has no shape
+        /// for fall back to a bare one-pin baseline.
+        let capacitanceShapes: [PneumaticNetwork.CapacitanceShape]
         /// free slot → the node's share of its net's total leak
         /// (subdivided compiles only; empty otherwise).
         let leakShare: [Double]
@@ -869,13 +872,16 @@ extension SimulationEngine {
             }
         }
 
-        var capacitanceOrNan: [Double] = []
+        var capacitanceShapes: [PneumaticNetwork.CapacitanceShape] = []
         var leakShare: [Double] = []
-        capacitanceOrNan.reserveCapacity(freeToNode.count)
+        capacitanceShapes.reserveCapacity(freeToNode.count)
         for node in freeToNode {
             let id = nodeIds[node]
-            let c = subdivided ? graph.capacitanceByNode[id] : network.capacitanceByNet[id]
-            capacitanceOrNan.append(c ?? .nan)
+            let shape = subdivided ? graph.capacitanceShapeByNode[id]
+                                   : network.capacitanceShapeByNet[id]
+            // No shape (degenerate networks): one pin's baseline, i.e. the
+            // dictionary path's `?? params.nodeBaseCapacitance`.
+            capacitanceShapes.append(shape ?? .init(pinUnits: 1))
         }
         if subdivided {
             leakShare.reserveCapacity(freeToNode.count)
@@ -981,7 +987,7 @@ extension SimulationEngine {
             anchorPins: anchorPins,
             extraAnchorPins: extraAnchorPins,
             freeToNode: freeToNode,
-            capacitanceOrNan: capacitanceOrNan,
+            capacitanceShapes: capacitanceShapes,
             leakShare: leakShare,
             resistorEdges: resistorEdges,
             spanEdges: spanEdges,
@@ -1133,8 +1139,7 @@ extension SimulationEngine {
 
             // 1. Capacitance + previous-state RHS.
             for f in 0..<n {
-                let raw = compiled.capacitanceOrNan[f]
-                let c = raw.isNaN ? params.nodeBaseCapacitance : raw
+                let c = compiled.capacitanceShapes[f].value(params)
                 let cOverDt = c / dt
                 state.values[Int(template.diagSlots[f])] += cOverDt
                 state.rhs[f] += cOverDt * state.pressures[compiled.freeToNode[f]]
@@ -1307,8 +1312,7 @@ extension SimulationEngine {
 
             // 1. Capacitance + previous-state RHS.
             for f in 0..<n {
-                let raw = compiled.capacitanceOrNan[f]
-                let c = raw.isNaN ? params.nodeBaseCapacitance : raw
+                let c = compiled.capacitanceShapes[f].value(params)
                 let cOverDt = c / dt
                 state.y[f * n + f] += cOverDt
                 state.rhs[f] += cOverDt * state.pressures[compiled.freeToNode[f]]

@@ -198,11 +198,43 @@ struct PneumaticNetwork {
         static func touchPadIsCovered(_ raw: Double?) -> Bool { raw?.isNaN ?? false }
     }
 
+    /// The geometry behind one solver node's capacitance, kept separate
+    /// from the parameters that scale it so that editing either capacitance
+    /// knob (slider, `--param capacitance=…`) takes effect on the next step
+    /// with no network rebuild or recompile.
+    ///
+    /// `value(_:)` reproduces the historical arithmetic exactly:
+    ///   * per-net nodes: `max(0.1, pins × base) + length × perMm`
+    ///     (`baselineFloor = 0.1`, `totalFloor = 0`)
+    ///   * channel-graph nodes: `max(0.02, pins × base + length × perMm)`
+    ///     (`baselineFloor = 0`, `totalFloor = 0.02`)
+    struct CapacitanceShape: Equatable {
+        /// Fluid-pin count on this node; scaled by `nodeBaseCapacitance`.
+        var pinUnits: Double = 0
+        /// Routed channel length owned by this node, in mm; scaled by
+        /// `channelCapacitancePerMm`.
+        var lengthMm: Double = 0
+        /// Floor on the pin baseline, applied before channel volume is added.
+        var baselineFloor: Double = 0
+        /// Floor on the scaled total.
+        var totalFloor: Double = 0
+
+        func value(_ params: SimulationParameters) -> Double {
+            let baseline = max(baselineFloor, pinUnits * params.nodeBaseCapacitance)
+            return max(totalFloor, baseline + lengthMm * params.channelCapacitancePerMm)
+        }
+    }
+
     /// All nets that participate in the simulation, with a stable order so
     /// solver indexing is deterministic across rebuilds.
     let nets: [Net]
-    /// Volume-derived capacitance per net id.
-    let capacitanceByNet: [UUID: Double]
+    /// Volume-derived capacitance *geometry* per net id. Unscaled on
+    /// purpose: the live `SimulationParameters` turn it into a capacitance
+    /// at step time (`CapacitanceShape.value(_:)`), the same way a
+    /// resistor edge stores `pathLengthMm` and the step applies
+    /// `resistorResistancePerMm`. Baking the numbers in here is what made
+    /// `nodeBaseCapacitance` / `channelCapacitancePerMm` dead knobs.
+    let capacitanceShapeByNet: [UUID: CapacitanceShape]
     let hardBoundaries: [HardBoundary]
     let pumps: [Pump]
     let inputs: [Input]
@@ -396,11 +428,11 @@ struct PneumaticNetwork {
                                 isTestPoint: true))
         }
 
-        let capacitanceByNet = nodeCapacitances(doc: doc)
+        let capacitanceShapeByNet = capacitanceShapes(doc: doc)
 
         return PneumaticNetwork(
             nets: doc.logic.nets,
-            capacitanceByNet: capacitanceByNet,
+            capacitanceShapeByNet: capacitanceShapeByNet,
             hardBoundaries: hardBoundaries,
             pumps: pumps,
             inputs: inputs,
@@ -428,16 +460,16 @@ struct PneumaticNetwork {
         return total
     }
 
-    /// Per-net capacitance: a small per-pin baseline plus the volume of any
-    /// route segments tagged to that net. Pin cavity volumes (dimples, drop
+    /// Per-net capacitance geometry: a per-pin baseline count plus the
+    /// routed length tagged to that net. Pin cavity volumes (dimples, drop
     /// bores) are folded into the baseline rather than tracked exactly — v1
     /// only needs the integration to be stable across the open/closed
     /// conductance ratio, not to be quantitatively right.
-    private static func nodeCapacitances(doc: CircuitDocument) -> [UUID: Double] {
-        var out: [UUID: Double] = [:]
+    private static func capacitanceShapes(doc: CircuitDocument) -> [UUID: CapacitanceShape] {
+        var out: [UUID: CapacitanceShape] = [:]
         for net in doc.logic.nets {
-            let pinCount = Double(net.pins.count)
-            out[net.id] = max(0.1, pinCount * SimulationParameters.defaults.nodeBaseCapacitance)
+            out[net.id] = CapacitanceShape(pinUnits: Double(net.pins.count),
+                                           baselineFloor: 0.1)
         }
         for route in doc.physical.routes {
             var length = 0.0
@@ -448,7 +480,7 @@ struct PneumaticNetwork {
                     length += (dx * dx + dy * dy).squareRoot()
                 }
             }
-            out[route.netId, default: 0] += length * SimulationParameters.defaults.channelCapacitancePerMm
+            out[route.netId, default: CapacitanceShape()].lengthMm += length
         }
         return out
     }
