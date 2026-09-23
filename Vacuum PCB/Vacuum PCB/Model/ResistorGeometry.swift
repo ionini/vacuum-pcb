@@ -21,7 +21,51 @@ import Foundation
 ///   U-turns at max density). No corners anywhere, and the leg pitch is
 ///   chosen so every printed wall between neighbouring bore surfaces is at
 ///   least the requested `minWall`.
+///
+/// Both paths start and end with a straight **lead** on the resistor axis
+/// (`lead` mm). Under the smooth style, L (and XL, which prints the same
+/// saturated comb) additionally get **flared ends**: the CAD pipeline
+/// (`PlateBuilder.resistorEndFlareMeshes`) carves a cone over each lead that
+/// opens from the resistor bore at the lead's inner end to the transport
+/// `channelDiameter` at the pin. The route's own end sphere at the pin has
+/// exactly that radius, so it always covers the mouth in full — the joint
+/// prints the same whether the route arrives along the resistor axis or
+/// from the side. For those sizes the lead *is* the document's
+/// `resistorFlareLength`, so the flare lives inside the footprint and its
+/// throat always sits on the straight run: a longer flare shrinks the
+/// meander region (the comb re-packs, lowering the simulated length), a
+/// shorter one grows it. At the 1 mm default nothing moves relative to the
+/// unflared geometry, and the lead was already mostly swallowed by the
+/// route's end sphere, so the resistance is unchanged too.
 enum ResistorGeometry {
+    /// Straight run on the resistor axis at each end, before the meander /
+    /// zigzag begins (mm). Capped per footprint by `leadLength(halfLen:)`.
+    static let lead: Double = 1.0
+
+    /// The lead actually used for a footprint of half-length `halfLen`: never
+    /// more than 40% of each half so tiny footprints keep a meander.
+    static func leadLength(_ lead: Double = lead, halfLen: Double) -> Double {
+        min(max(0, lead), halfLen * 0.4)
+    }
+
+    // MARK: - End flares
+
+    /// Whether `size` gets flared ends under the document's constants: smooth
+    /// style, L or XL only (the resistors the boards actually use; S/M keep
+    /// plain bore mouths).
+    static func flaresEnds(_ size: ResistorSize, m: ManufacturingConstants) -> Bool {
+        m.smoothResistors && (size == .large || size == .extraLarge)
+    }
+
+    /// Length of each end flare measured inward from the pin along the
+    /// resistor axis: the document's `resistorFlareLength`, clamped like any
+    /// lead. Flared sizes use the same value as their lead, so the throat
+    /// sits on the straight run and never on the meander.
+    static func flareLength(m: ManufacturingConstants,
+                            halfLen: Double = ManufacturingConstants.resistorFootprintLength / 2) -> Double {
+        leadLength(m.resistorFlareLength, halfLen: halfLen)
+    }
+
     /// How many vertical jumps the legacy polyline makes between +y and −y
     /// plateaus inside the footprint. S = 0 (a straight wire), denser values
     /// give more flow restriction.
@@ -48,10 +92,14 @@ enum ResistorGeometry {
         // The wall floor is 0.5 mm — two clean 0.2 mm-nozzle perimeters —
         // even if the user relaxes the DRC bar below that: walls thinner than
         // this are what clogged the zigzag in the first place.
+        // Flared sizes keep their lead equal to the flare so the cone's
+        // throat stays on the straight run (see the end-flare notes above).
+        let lead = flaresEnds(size, m: m) ? m.resistorFlareLength : lead
         return smoothPath(size: size,
                           bore: m.resistorChannelDiameter,
                           minWall: max(0.5, m.minWallThickness),
-                          halfLen: halfLen, halfWid: halfWid)
+                          halfLen: halfLen, halfWid: halfWid,
+                          lead: lead)
     }
 
     /// Polyline in component-local coordinates: pin1 at (−halfLen, 0), pin2 at
@@ -64,7 +112,7 @@ enum ResistorGeometry {
         transitions: Int,
         halfLen: Double,
         halfWid: Double,
-        lead: Double = 1.0
+        lead: Double = lead
     ) -> [Point] {
         let pin1 = Point(x: -halfLen, y: 0)
         let pin2 = Point(x: halfLen, y: 0)
@@ -73,7 +121,7 @@ enum ResistorGeometry {
         }
         // Cap the lead so it never eats more than 40% of each half-length,
         // even for tiny footprints.
-        let l = min(max(0, lead), halfLen * 0.4)
+        let l = leadLength(lead, halfLen: halfLen)
         let plateauY = halfWid * 0.5
         let zigzagStartX = -halfLen + l
         let zigzagEndX   =  halfLen - l
@@ -127,14 +175,14 @@ enum ResistorGeometry {
         minWall: Double,
         halfLen: Double,
         halfWid: Double,
-        lead: Double = 1.0
+        lead: Double = lead
     ) -> [Point] {
         let pin1 = Point(x: -halfLen, y: 0)
         let pin2 = Point(x: halfLen, y: 0)
         let straight = [pin1, pin2]
         guard size != .small else { return straight }
 
-        let l = min(max(0, lead), halfLen * 0.4)
+        let l = leadLength(lead, halfLen: halfLen)
         let xL = -halfLen + l
         let xR = halfLen - l
         let region = xR - xL

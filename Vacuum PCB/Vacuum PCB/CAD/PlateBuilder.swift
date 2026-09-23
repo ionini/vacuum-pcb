@@ -1257,10 +1257,17 @@ enum PlateBuilder {
                 Point(x: r.position.x + $0.x * c - $0.y * s, y: r.position.y + $0.x * s + $0.y * c)
             }
             guard world.count >= 2 else { continue }
+            let rMidZ = m.midZ(for: r.layer)
             polys += channelMesh(waypoints: world, radius: resistorR,
-                                 midZ: m.midZ(for: r.layer),
+                                 midZ: rMidZ,
                                  flatBottom: m.flatBottomChannels,
                                  flipFloor: r.layer.plate == .bottom).polygons
+            // Flared mouths (smooth L/XL) — same cones the plate carves.
+            for flare in resistorEndFlareMeshes(center: r.position, rotation: r.rotation,
+                                                size: r.size, m: m, midZ: rMidZ,
+                                                inflate: 0.1) {
+                polys += flare.polygons
+            }
         }
 
         // Same-plate vias — vertical bores joining channel depths (T0↔T1).
@@ -2117,10 +2124,79 @@ enum PlateBuilder {
         // printed channel match. Resistors are pure tubes — they can live on
         // any channel-layer depth, so the serpentine's midZ comes from the
         // placement's depth (defaults to 0 for legacy files).
-        let local = ResistorGeometry.waypoints(for: component.resistorSize ?? .medium, m: m)
+        let size = component.resistorSize ?? .medium
+        let local = ResistorGeometry.waypoints(for: size, m: m)
         let world = local.map { transformLocalToWorld($0, placement: placement) }
         let midZ = m.midZ(for: Layer(plate: placement.layer, depth: placement.depth))
-        return channelMesh(waypoints: world, radius: m.resistorChannelDiameter / 2, midZ: midZ)
+        let channel = channelMesh(waypoints: world, radius: m.resistorChannelDiameter / 2, midZ: midZ)
+        let flares = resistorEndFlareMeshes(
+            center: placement.position, rotation: placement.rotation,
+            size: size, m: m, midZ: midZ)
+        return flares.isEmpty ? channel : Mesh.union([channel] + flares)
+    }
+
+    /// The flared mouths of a smooth L/XL resistor (see `ResistorGeometry`'s
+    /// end-flare notes): one cone per pin, lathed along the resistor axis,
+    /// opening from the resistor bore at the inner end of the lead to the
+    /// transport `channelDiameter` at the pin. The route ending at that pin
+    /// carries an end sphere of the same radius, so whichever way the route
+    /// arrives — along the axis or from the side — it covers the mouth
+    /// completely and the printed joint is identical.
+    ///
+    /// Both caps are nudged off the surfaces they would otherwise share:
+    /// * the mouth overshoots the pin by `mouthOvershoot`, so its cap is not
+    ///   coplanar with the end cap of a route cylinder arriving straight in
+    ///   (coincident caps are the BSP-union degeneracy `channelMesh` documents:
+    ///   duplicate internal faces, non-manifold edges, slicer rejects). The
+    ///   overshot cap still sits inside the route's end sphere (`radius +
+    ///   0.005` at the pin);
+    /// * the throat is `throatUndercut` narrower than the bore, so its cap lies
+    ///   strictly inside the lead's cylinder instead of tracing its surface.
+    ///   The cone reaches the true bore radius a few hundredths of a mm before
+    ///   the nominal throat — invisible in print, and always on the straight
+    ///   lead, never on the meander.
+    ///
+    /// Returns `[]` for sizes / styles that are not flared, or when the
+    /// transport bore is not wider than the resistor bore (nothing to flare
+    /// up to). `inflate` grows both radii for render-only highlight copies.
+    static func resistorEndFlareMeshes(
+        center: Point, rotation: Rotation, size: ResistorSize,
+        m: ManufacturingConstants, midZ: Double, inflate: Double = 0
+    ) -> [Mesh] {
+        guard ResistorGeometry.flaresEnds(size, m: m) else { return [] }
+        let halfLen = ManufacturingConstants.resistorFootprintLength / 2
+        let flareLength = ResistorGeometry.flareLength(m: m, halfLen: halfLen)
+        guard flareLength > 0.05 else { return [] }
+        let boreR = m.resistorChannelDiameter / 2
+        let mouthR = m.channelDiameter / 2
+        let mouthOvershoot = 0.02
+        let throatUndercut = 0.02
+        let throatR = max(boreR * 0.5, boreR - throatUndercut)
+        guard mouthR > boreR + 0.01 else { return [] }
+
+        let r = rotation.radians
+        let c = cos(r), sn = sin(r)
+        func world(_ x: Double) -> Point {
+            Point(x: center.x + x * c, y: center.y + x * sn)
+        }
+        var meshes: [Mesh] = []
+        for sign in [-1.0, 1.0] {
+            let throat = world(sign * (halfLen - flareLength))
+            let mouth  = world(sign * (halfLen + mouthOvershoot))
+            let dx = mouth.x - throat.x, dy = mouth.y - throat.y
+            let length = (dx * dx + dy * dy).squareRoot()
+            let theta = atan2(dy, dx)
+            // `taperedBoreSolid` lathes along +Y from the narrow end at the
+            // origin; roll(π/2 − θ) lays +Y along θ — the same mapping
+            // `channelMesh` uses for its segment cylinders.
+            let cone = taperedBoreSolid(routeEndR: throatR + inflate,
+                                        edgeR: mouthR + inflate,
+                                        length: length)
+                .rotated(by: Euclid.Rotation.roll(.radians(.pi / 2 - theta)))
+                .translated(by: Vector(throat.x, throat.y, midZ))
+            meshes.append(cone)
+        }
+        return meshes
     }
 
     // MARK: - Edge ports

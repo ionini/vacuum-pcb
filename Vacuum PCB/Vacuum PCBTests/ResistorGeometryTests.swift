@@ -50,6 +50,80 @@ struct ResistorGeometryTests {
         }
     }
 
+    // MARK: - End flares
+
+    @Test("End flares apply to smooth L/XL only")
+    func flareRule() {
+        let smooth = mfg(smooth: true), legacy = mfg(smooth: false)
+        for size in ResistorSize.allCases {
+            #expect(!ResistorGeometry.flaresEnds(size, m: legacy))
+        }
+        #expect(!ResistorGeometry.flaresEnds(.small, m: smooth))
+        #expect(!ResistorGeometry.flaresEnds(.medium, m: smooth))
+        #expect(ResistorGeometry.flaresEnds(.large, m: smooth))
+        #expect(ResistorGeometry.flaresEnds(.extraLarge, m: smooth))
+    }
+
+    @Test("The flare throat sits on the straight lead, before the meander starts")
+    func flareStaysOnLead() {
+        for flareParam in [0.0, 0.5, 1.0, 2.0, 5.0] {
+            var m = mfg(smooth: true)
+            m.resistorFlareLength = flareParam
+            let flare = ResistorGeometry.flareLength(m: m, halfLen: halfLen)
+            // Clamped like any lead: never more than 40% of the half-footprint.
+            #expect(abs(flare - min(flareParam, halfLen * 0.4)) < 1e-12)
+            for size in [ResistorSize.large, .extraLarge] {
+                let pts = ResistorGeometry.waypoints(for: size, m: m)
+                #expect(pts.count >= 4)
+                // With no lead the comb's entry handoff coincides with the pin
+                // and is deduplicated away — nothing to flare, nothing to check.
+                guard flare > 0 else { continue }
+                // First / last interior waypoints are the comb's entry and exit
+                // handoffs on y = 0; the flare must end at or before them so
+                // the cone only ever overlaps the straight lead.
+                let entry = pts[1], exit = pts[pts.count - 2]
+                #expect(abs(entry.y) < 1e-9 && entry.x >= -halfLen + flare - 1e-9)
+                #expect(abs(exit.y) < 1e-9 && exit.x <= halfLen - flare + 1e-9)
+            }
+        }
+    }
+
+    @Test("The flare length parameter moves only the flared sizes' lead, and the default leaves them unchanged")
+    func flareLengthParameter() {
+        let base = mfg(smooth: true)
+        #expect(base.resistorFlareLength == 1.0)
+        // Default parameter == the built-in lead: identical to the pre-flare comb.
+        let viaDefaultLead = ResistorGeometry.smoothPath(
+            size: .large, bore: base.resistorChannelDiameter,
+            minWall: max(0.5, base.minWallThickness), halfLen: halfLen, halfWid: halfWid)
+        let viaParam = ResistorGeometry.waypoints(for: .large, m: base)
+        #expect(viaDefaultLead.count == viaParam.count)
+        for (a, b) in zip(viaDefaultLead, viaParam) {
+            #expect(abs(a.x - b.x) < 1e-12 && abs(a.y - b.y) < 1e-12)
+        }
+
+        var long = base
+        long.resistorFlareLength = 2.0
+        // L: a longer flare eats the meander region → shorter channel (less R).
+        let lenBase = ResistorGeometry.length(of: ResistorGeometry.waypoints(for: .large, m: base))
+        let lenLong = ResistorGeometry.length(of: ResistorGeometry.waypoints(for: .large, m: long))
+        #expect(lenLong < lenBase)
+        #expect(lenLong > 20)   // still a meander, not a straight tube
+        // The comb's entry moved with it.
+        #expect(ResistorGeometry.waypoints(for: .large, m: long)[1].x >= -halfLen + 2.0 - 1e-9)
+        // Unflared sizes ignore the parameter entirely.
+        for size in [ResistorSize.small, .medium] {
+            let a = ResistorGeometry.waypoints(for: size, m: base)
+            let b = ResistorGeometry.waypoints(for: size, m: long)
+            #expect(a.count == b.count)
+            for (p, q) in zip(a, b) { #expect(abs(p.x - q.x) < 1e-12 && abs(p.y - q.y) < 1e-12) }
+        }
+        var legacy = long
+        legacy.smoothResistors = false
+        let zig = ResistorGeometry.waypoints(for: .large, m: legacy)
+        #expect(abs(zig[1].x - (-halfLen + ResistorGeometry.lead)) < 1e-12)
+    }
+
     // MARK: - Smooth meander guarantees
 
     @Test("Smooth legs keep a printable wall between neighbouring bores at any size")
