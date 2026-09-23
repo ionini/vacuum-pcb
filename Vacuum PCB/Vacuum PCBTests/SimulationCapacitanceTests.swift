@@ -50,12 +50,16 @@ struct SimulationCapacitanceTests {
     /// C-proportional stand-in for the time constant.
     private func transient(
         doc: CircuitDocument, netId: UUID, params: SimulationParameters,
-        maxSteps: Int = 400_000
+        maxSteps: Int = 2_000_000
     ) throws -> (endpoint: Double, stepsToHalf: Int) {
         let network = Validators.buildNetwork(doc)
+        // 1e-10 over the 100-step settle window: three orders tighter than
+        // the 1e-6 endpoint comparison below, and reachable within the cap
+        // even for the 10×-capacitance runs (a routed net's channel tail is
+        // the slow part).
         let settled = Validators.simulateToSettle(network: network, params: params,
                                                   inputs: [:], maxSteps: maxSteps,
-                                                  epsilon: 1e-11)
+                                                  epsilon: 1e-10)
         #expect(settled.converged)
         let endpoint = try #require(settled.pressures[netId])
         #expect(endpoint < 0.99)   // the transient has to actually move
