@@ -62,12 +62,21 @@ struct ChannelGraph {
     /// Solver node for each device pin when subdivision is on. Missing key =
     /// attach at the pin's net hub (the original net id).
     let nodeByPin: [PinRef: UUID]
-    /// Distributed capacitance per solver node when subdivision is on. Covers
-    /// every node: sub-nodes, subdivided hubs, and untouched single-node nets.
-    let capacitanceByNode: [UUID: Double]
+    /// Distributed capacitance *geometry* per solver node when subdivision
+    /// is on (see `PneumaticNetwork.CapacitanceShape` — the live parameters
+    /// scale it at step time). Covers every node: sub-nodes, subdivided
+    /// hubs, and untouched single-node nets.
+    let capacitanceShapeByNode: [UUID: PneumaticNetwork.CapacitanceShape]
     /// Fraction of its net's global leak each node carries (proportional to
     /// its share of the net's volume), so subdividing a net doesn't multiply
     /// the net's total leak to atmosphere. 1.0 for single-node nets.
+    ///
+    /// Deliberately resolved here with `SimulationParameters.defaults`
+    /// rather than the live parameters: it is a *normalised* share, so it is
+    /// invariant under any uniform rescale of the two capacitance knobs, and
+    /// only their ratio (pin dead volume vs. channel volume per mm) would
+    /// move it. Keeping it build-time avoids having to carry the anchored
+    /// nodes' volumes — which are part of the denominator — into the step.
     let leakShareByNode: [UUID: Double]
     /// Hub (original net id) per sub-node. When subdivision is off the engine
     /// mirrors hub pressures onto sub-nodes so node-addressed readers (probes)
@@ -75,7 +84,7 @@ struct ChannelGraph {
     let hubBySubNode: [UUID: UUID]
 
     static let empty = ChannelGraph(subNodes: [], spans: [], nodeByPin: [:],
-                                    capacitanceByNode: [:], leakShareByNode: [:],
+                                    capacitanceShapeByNode: [:], leakShareByNode: [:],
                                     hubBySubNode: [:])
 
     var isEmpty: Bool { subNodes.isEmpty && spans.isEmpty }
@@ -98,6 +107,8 @@ struct ChannelGraph {
     static func build(doc: CircuitDocument, netIdRemap: [UUID: UUID]) -> ChannelGraph {
         let eps = 0.05                                   // ratsnest vertex tolerance
         let pinSnapTol = doc.manufacturing.dimpleDiameter / 2 + 0.5
+        // Only the leak-share denominator needs numbers at build time (see
+        // `leakShareByNode`); the capacitances themselves ship as geometry.
         let capPerMm = SimulationParameters.defaults.channelCapacitancePerMm
         let pinBaseCap = SimulationParameters.defaults.nodeBaseCapacitance
         let capFloor = 0.02
@@ -105,7 +116,7 @@ struct ChannelGraph {
         var subNodes: [Net] = []
         var spans: [Span] = []
         var nodeByPin: [PinRef: UUID] = [:]
-        var capacitanceByNode: [UUID: Double] = [:]
+        var capacitanceShapeByNode: [UUID: PneumaticNetwork.CapacitanceShape] = [:]
         var leakShareByNode: [UUID: Double] = [:]
         var hubBySubNode: [UUID: UUID] = [:]
 
@@ -121,8 +132,8 @@ struct ChannelGraph {
             let routes = doc.physical.routes.filter { $0.netId == net.id }
             if routes.isEmpty {
                 // Single-node net: keep the legacy lumped capacitance.
-                let cap = max(0.1, Double(net.pins.count) * pinBaseCap)
-                capacitanceByNode[net.id] = cap
+                capacitanceShapeByNode[net.id] = .init(pinUnits: Double(net.pins.count),
+                                                       baselineFloor: 0.1)
                 leakShareByNode[net.id] = 1.0
                 continue
             }
@@ -192,8 +203,8 @@ struct ChannelGraph {
                 }
             }
             guard !vertices.isEmpty else {
-                let cap = max(0.1, Double(net.pins.count) * pinBaseCap)
-                capacitanceByNode[net.id] = cap
+                capacitanceShapeByNode[net.id] = .init(pinUnits: Double(net.pins.count),
+                                                       baselineFloor: 0.1)
                 leakShareByNode[net.id] = 1.0
                 continue
             }
@@ -263,17 +274,17 @@ struct ChannelGraph {
             // ── 3. Resolve pin attachments (before contraction, so their
             //      vertices are protected from being merged away) ────────────
             var pinVertexByRef: [PinRef: Int] = [:]
-            var hubExtraCap = 0.0
+            var hubExtraPinUnits = 0.0
             for pin in placedPins {
                 if let v = existingVertex(pin.layer, pin.position, within: eps) {
                     pinVertexByRef[pin.ref] = v
                 } else {
-                    hubExtraCap += pinBaseCap  // unrouted / off-route pin → hub
+                    hubExtraPinUnits += 1  // unrouted / off-route pin → hub
                 }
             }
             // Pins with no placement/footprint never entered placedPins; their
             // base volume still belongs to the net — park it on the hub.
-            hubExtraCap += Double(max(0, net.pins.count - placedPins.count)) * pinBaseCap
+            hubExtraPinUnits += Double(max(0, net.pins.count - placedPins.count))
 
             // ── 4. Bridge disconnected islands to the hub ───────────────────
             var parent = Array(0..<vertices.count)
@@ -356,38 +367,44 @@ struct ChannelGraph {
                     hubBySubNode[id] = net.id
                 }
             }
-            var caps = [Double](repeating: 0, count: vertices.count)
+            // Per-vertex capacitance geometry: pin baselines and owned
+            // channel length (half of each incident span), kept unscaled.
+            var pinUnits = [Double](repeating: 0, count: vertices.count)
+            var lengths = [Double](repeating: 0, count: vertices.count)
             for (si, s) in rawSpans.enumerated()
             where spanAlive[si] && s.i != s.j && vertexAlive[s.i] && vertexAlive[s.j] {
                 spans.append(Span(node1: nodeId[s.i]!, node2: nodeId[s.j]!,
                                   lengthMm: s.length, polyline: s.points))
-                caps[s.i] += s.length * capPerMm / 2
-                caps[s.j] += s.length * capPerMm / 2
+                lengths[s.i] += s.length / 2
+                lengths[s.j] += s.length / 2
             }
 
             // ── 7. Publish attachments + distribute capacitance ─────────────
             for (ref, v) in pinVertexByRef {
                 nodeByPin[ref] = nodeId[v]!
-                caps[v] += pinBaseCap
+                pinUnits[v] += 1
             }
             for (tpId, v) in tapVertexByTestPoint {
                 nodeByPin[PinRef(componentId: tpId, pinKey: "tap")] = nodeId[v]!
             }
-            caps[0] += hubExtraCap
+            pinUnits[0] += hubExtraPinUnits
 
             var total = 0.0
+            var caps = [Double](repeating: 0, count: vertices.count)
             for v in vertices.indices where vertexAlive[v] {
-                caps[v] = max(capFloor, caps[v])
+                caps[v] = max(capFloor, pinUnits[v] * pinBaseCap + lengths[v] * capPerMm)
                 total += caps[v]
             }
             for v in vertices.indices where vertexAlive[v] {
-                capacitanceByNode[nodeId[v]!] = caps[v]
+                capacitanceShapeByNode[nodeId[v]!] = .init(pinUnits: pinUnits[v],
+                                                           lengthMm: lengths[v],
+                                                           totalFloor: capFloor)
                 leakShareByNode[nodeId[v]!] = total > 0 ? caps[v] / total : 1.0
             }
         }
 
         return ChannelGraph(subNodes: subNodes, spans: spans, nodeByPin: nodeByPin,
-                            capacitanceByNode: capacitanceByNode,
+                            capacitanceShapeByNode: capacitanceShapeByNode,
                             leakShareByNode: leakShareByNode,
                             hubBySubNode: hubBySubNode)
     }
