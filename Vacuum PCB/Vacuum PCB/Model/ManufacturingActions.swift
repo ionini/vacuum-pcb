@@ -45,6 +45,7 @@ enum ManufacturingActions {
         s.gridPitch = max(0.05, m.gridPitch)
         s.minChannelSpacing = max(0.05, m.minChannelSpacing)
         s.resistorChannelDiameter = max(0.05, m.resistorChannelDiameter)
+        s.resistorFlareLength = max(0.0, m.resistorFlareLength)
         s.interLayerWall = max(0.1, m.interLayerWall)
         s.plateCornerFillet = max(0.0, m.plateCornerFillet)
         s.ledDimpleDiameter = max(0.1, m.ledDimpleDiameter)

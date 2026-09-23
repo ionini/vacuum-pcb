@@ -86,6 +86,16 @@ struct ManufacturingConstants: Codable, Hashable {
     /// (fixed) footprint, not how wide it is.
     var resistorChannelDiameter: Double
 
+    /// Length (mm) of the flared mouth at each end of a smooth L/XL resistor
+    /// — the cone that opens the resistor bore up to `channelDiameter` at the
+    /// pin so the route joint prints the same at any approach angle. It is
+    /// also the straight lead those resistors keep before the meander, so
+    /// the flare never runs into the comb: longer flares shrink the meander
+    /// region and lower the simulated resistance (L at defaults: ~29 mm of
+    /// channel at 1 mm, ~26 mm at 2 mm). Capped at 40% of each half-footprint;
+    /// 0 turns the flare off. Ignored for S/M and the legacy zigzag.
+    var resistorFlareLength: Double
+
     /// Plate material between two adjacent channel layers inside the same
     /// plate (only relevant when `PhysicalLayout` has more than one layer on
     /// that plate). Centre-to-centre spacing between consecutive layers is
@@ -323,6 +333,7 @@ struct ManufacturingConstants: Codable, Hashable {
         gridPitch: 1.0,
         minChannelSpacing: 1.5,
         resistorChannelDiameter: 0.6,
+        resistorFlareLength: 1.0,
         interLayerWall: 0.75,
         plateCornerFillet: 2,
         ledDimpleDiameter: 6.0,
@@ -364,7 +375,7 @@ struct ManufacturingConstants: Codable, Hashable {
         case dimpleDiameter, dimpleDepth, dimpleSphereOffset
         case padsDiameter, padsSeparation, padsOffset, padsFilletRadius
         case gridPitch, minChannelSpacing
-        case resistorChannelDiameter, interLayerWall
+        case resistorChannelDiameter, resistorFlareLength, interLayerWall
         case plateCornerFillet
         case ledDimpleDiameter, ledDimpleDepth
         case screwProtrusion, screwDomeBaseDiameter, screwHeadDepth, screwNutDepth
@@ -387,6 +398,7 @@ struct ManufacturingConstants: Codable, Hashable {
          padsDiameter: Double, padsSeparation: Double, padsOffset: Double,
          padsFilletRadius: Double,
          gridPitch: Double, minChannelSpacing: Double, resistorChannelDiameter: Double,
+         resistorFlareLength: Double = 1.0,
          interLayerWall: Double, plateCornerFillet: Double,
          ledDimpleDiameter: Double, ledDimpleDepth: Double,
          screwProtrusion: Double, screwDomeBaseDiameter: Double,
@@ -420,6 +432,7 @@ struct ManufacturingConstants: Codable, Hashable {
         self.gridPitch = gridPitch
         self.minChannelSpacing = minChannelSpacing
         self.resistorChannelDiameter = resistorChannelDiameter
+        self.resistorFlareLength = resistorFlareLength
         self.interLayerWall = interLayerWall
         self.plateCornerFillet = plateCornerFillet
         self.ledDimpleDiameter = ledDimpleDiameter
@@ -480,6 +493,10 @@ struct ManufacturingConstants: Codable, Hashable {
         minChannelSpacing = try c.decode(Double.self, forKey: .minChannelSpacing)
         resistorChannelDiameter = try c.decodeIfPresent(Double.self,
                                                        forKey: .resistorChannelDiameter) ?? 0.5
+        // Pinned to the 1 mm lead every resistor had before the flare
+        // existed, so older smooth files keep their meander and resistance.
+        resistorFlareLength = try c.decodeIfPresent(Double.self,
+                                                   forKey: .resistorFlareLength) ?? 1.0
         interLayerWall = try c.decodeIfPresent(Double.self,
                                               forKey: .interLayerWall) ?? 0.5
         plateCornerFillet = try c.decodeIfPresent(Double.self,
