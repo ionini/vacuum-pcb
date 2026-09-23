@@ -173,15 +173,29 @@ struct PneumaticNetwork {
         /// an external drive enters at the connector/port bore and pays the
         /// channel run from there inward.
         let nodeId: UUID
+        /// True for a `.touchPad` — a hard input whose two states are *open*
+        /// (value ≥ 0.5, anchors the net to atmosphere like a vent) and
+        /// *covered* (`NaN`: a fingertip seals the bore, so the pad drives
+        /// nothing and the net floats). Only pads honour `NaN` on a hard
+        /// input; for any other hard input `NaN` falls through to vacuum as
+        /// it always has. See `SimulationEngine.HardInputState`.
+        let isTouchPad: Bool
 
         init(id: UUID, label: String, netId: UUID, soft: Bool = false,
-             nodeId: UUID? = nil) {
+             nodeId: UUID? = nil, isTouchPad: Bool = false) {
             self.id = id
             self.label = label
             self.netId = netId
             self.soft = soft
             self.nodeId = nodeId ?? netId
+            self.isTouchPad = isTouchPad
         }
+
+        /// Stored value for a touch pad: `1.0` open (default, vents to atm),
+        /// `NaN` covered (floating).
+        static let touchPadOpenValue = 1.0
+        static let touchPadCoveredValue = Double.nan
+        static func touchPadIsCovered(_ raw: Double?) -> Bool { raw?.isNaN ?? false }
     }
 
     /// The geometry behind one solver node's capacitance, kept separate
@@ -322,6 +336,14 @@ struct PneumaticNetwork {
                                         kind: .led, netId: net,
                                         nodeId: node(component.id, "p", net: net)))
                 }
+            case .touchPad:
+                // Finger-covered vent: a hard input that either anchors its
+                // net to atmosphere (open) or drives nothing (covered).
+                if let net = netForSinglePin(component) {
+                    inputs.append(Input(id: component.id, label: component.label, netId: net,
+                                        nodeId: node(component.id, "p", net: net),
+                                        isTouchPad: true))
+                }
             case .transistor:
                 let g = pinToNet[PinRef(componentId: component.id, pinKey: "gate")]
                 let a = pinToNet[PinRef(componentId: component.id, pinKey: "a")]
@@ -339,7 +361,8 @@ struct PneumaticNetwork {
                 let n1 = pinToNet[PinRef(componentId: component.id, pinKey: "1")]
                 let n2 = pinToNet[PinRef(componentId: component.id, pinKey: "2")]
                 if let n1, let n2 {
-                    let length = serpentineLength(for: component.resistorSize ?? .medium)
+                    let length = serpentineLength(for: component.resistorSize ?? .medium,
+                                                  m: doc.manufacturing)
                     resistors.append(ResistorEdge(
                         id: component.id, label: component.label,
                         net1: n1, net2: n2,
@@ -421,13 +444,9 @@ struct PneumaticNetwork {
         )
     }
 
-    private static func serpentineLength(for size: ResistorSize) -> Double {
-        let halfLen = ManufacturingConstants.resistorFootprintLength / 2
-        let halfWid = ManufacturingConstants.resistorFootprintWidth / 2
-        let transitions = ResistorGeometry.transitions(for: size)
-        let pts = ResistorGeometry.path(transitions: transitions,
-                                        halfLen: halfLen, halfWid: halfWid)
-        return polylineLength(pts)
+    private static func serpentineLength(for size: ResistorSize,
+                                         m: ManufacturingConstants) -> Double {
+        polylineLength(ResistorGeometry.waypoints(for: size, m: m))
     }
 
     private static func polylineLength(_ pts: [Point]) -> Double {

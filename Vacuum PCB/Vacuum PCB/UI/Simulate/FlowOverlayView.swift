@@ -242,10 +242,8 @@ final class FlowOverlayCache {
             case .resistor:
                 // Serpentine runs pin 1 → pin 2, matching the flow's
                 // node1 → node2 sign convention.
-                let local = ResistorGeometry.path(
-                    transitions: ResistorGeometry.transitions(for: component.resistorSize ?? .medium),
-                    halfLen: ManufacturingConstants.resistorFootprintLength / 2,
-                    halfWid: ManufacturingConstants.resistorFootprintWidth / 2
+                let local = ResistorGeometry.waypoints(
+                    for: component.resistorSize ?? .medium, m: flat.manufacturing
                 )
                 guard local.count >= 2 else { continue }
                 out.append(Candidate(source: .resistor(component.id),

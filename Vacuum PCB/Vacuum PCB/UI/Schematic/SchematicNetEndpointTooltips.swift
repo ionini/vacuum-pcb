@@ -52,6 +52,8 @@ enum SchematicPinDescriptor {
             return nil
         case .led:
             return "Indicator"
+        case .touchPad:
+            return "Touch pad"
         case .connector:
             return "Connector pin \(key)"
         }

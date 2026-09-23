@@ -713,6 +713,7 @@ extension ComponentKind {
         case .subpart:       return "Subpart"
         case .screw:         return "Screw"
         case .led:           return "LED"
+        case .touchPad:      return "Touch Pad"
         case .connector:     return "Connector"
         }
     }

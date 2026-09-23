@@ -235,10 +235,8 @@ struct Simulate3DGeometry {
 
             switch component.kind {
             case .resistor:
-                let local = ResistorGeometry.path(
-                    transitions: ResistorGeometry.transitions(for: component.resistorSize ?? .medium),
-                    halfLen: ManufacturingConstants.resistorFootprintLength / 2,
-                    halfWid: ManufacturingConstants.resistorFootprintWidth / 2
+                let local = ResistorGeometry.waypoints(
+                    for: component.resistorSize ?? .medium, m: m
                 )
                 guard local.count >= 2 else { continue }
                 let pts = local.map(world)
@@ -297,6 +295,19 @@ struct Simulate3DGeometry {
                                                          Vector(bWorld.x, bWorld.y, oppZ)],
                                                 layers: [oppLayer]))
                 }
+
+            case .touchPad:
+                // Same solid as a testing point's tap, tinted by the pin's net.
+                let padOuterZ = placement.layer == .top
+                    ? topInnerZ + m.plateThickness(forLayerCount: flat.physical.topLayers)
+                    : bottomInnerZ - m.plateThickness(forLayerCount: flat.physical.bottomLayers)
+                g.units.append(Unit(mesh: PlateBuilder.testPointBoreSolid(
+                                        at: placement.position, plate: placement.layer,
+                                        innerZ: m.midZ(for: placementLayer),
+                                        outerZ: padOuterZ, m: m),
+                                    source: .net(net("p")),
+                                    layers: [placementLayer],
+                                    component: component.id))
 
             case .led:
                 g.units.append(Unit(mesh: PlateBuilder.ledDimpleMesh(

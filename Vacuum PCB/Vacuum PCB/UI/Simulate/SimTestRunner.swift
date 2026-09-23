@@ -168,7 +168,7 @@ final class SimTestRunner {
             state.reset()
             for out in referencedOutputs(in: tests[ti]) {
                 if let input = model.input(forOutput: out, network: state.network) {
-                    state.inputPressures[input.id] = drivePressure(false)
+                    state.inputPressures[input.id] = drivePressure(false, for: input)
                 }
             }
 
@@ -205,7 +205,7 @@ final class SimTestRunner {
             guard let input = model.input(forOutput: output, network: state.network) else {
                 return .fail("out\(output) isn't mapped to an input port")
             }
-            state.inputPressures[input.id] = drivePressure(on)
+            state.inputPressures[input.id] = drivePressure(on, for: input)
             return .pass
 
         case let .wait(seconds):
@@ -250,7 +250,15 @@ final class SimTestRunner {
 
     /// The sim pressure representing a logic level: `1` / high = vacuum (0.0),
     /// `0` / low = atmosphere (1.0).
-    private func drivePressure(_ on: Bool) -> Double { on ? 0.0 : 1.0 }
+    /// Logic 1 drives an input port to vacuum. A touch pad has no vacuum
+    /// state: 1 = *covered* (fingertip on the bore), 0 = open.
+    private func drivePressure(_ on: Bool, for input: PneumaticNetwork.Input) -> Double {
+        if input.isTouchPad {
+            return on ? PneumaticNetwork.Input.touchPadCoveredValue
+                      : PneumaticNetwork.Input.touchPadOpenValue
+        }
+        return on ? 0.0 : 1.0
+    }
 
     /// Current logic level read at a mapped probe: vacuum (pressure < 0.5)
     /// reads as `1`. `nil` when the channel isn't mapped to any probe.

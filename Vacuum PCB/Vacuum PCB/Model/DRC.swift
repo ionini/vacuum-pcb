@@ -47,7 +47,7 @@ enum TestPointNeighbor: String, Hashable {
     /// A foreign net's routed channel whose Z band the vertical bore passes
     /// through on the same plate.
     case channel
-    /// Another testing point's bore on the same plate.
+    /// Another tap's bore (testing point or touch pad) on the same plate.
     case testPoint
 }
 
@@ -369,7 +369,7 @@ enum DRC {
                 let wallTxt = wall < 0.01 ? "touching" : "\(String(format: "%.2f", wall)) mm wall"
                 return "\(portLabel) outlet → \(what) on \(layer.uiLabel): \(wallTxt)"
             case let .testPointClearance(_, tpName, neighbor, otherLabel, layer, wall, _):
-                let what = neighbor == .channel ? "channel \(otherLabel)" : "test point \(otherLabel)"
+                let what = neighbor == .channel ? "channel \(otherLabel)" : "tap \(otherLabel)"
                 let wallTxt = wall < 0.01 ? "touching" : "\(String(format: "%.2f", wall)) mm wall"
                 return "\(tpName) → \(what) on \(layer.uiLabel): \(wallTxt)"
             case let .subpartWall(neighbor, _, otherLabel, layer, wall, _):
@@ -508,10 +508,20 @@ enum DRC {
                 sel.placements.formUnion(net.pins.map(\.componentId))
             }
             return sel.isEmpty ? nil : sel
-        case let .testPointClearance(testPointId, _, _, _, _, _, _):
-            // Select the offending testing point so the user can drag it along
-            // its rail (or press F) to clear the wall.
-            return .testPoint(testPointId)
+        case let .testPointClearance(testPointId, testPointName, _, _, _, _, _):
+            // Select the offending tap so the user can drag it (a testing
+            // point along its rail, a touch pad anywhere) or press F to clear
+            // the wall. The id is a component's when the tap is a touch pad.
+            // A tap hoisted out of a sub-part has neither in this document —
+            // its name carries the instance chain ("U1.T1"), so select the
+            // instance the user can move or open.
+            if document.logic.components.contains(where: { $0.id == testPointId && $0.kind == .touchPad }) {
+                return .placement(testPointId)
+            }
+            if document.physical.testPoints.contains(where: { $0.id == testPointId }) {
+                return .testPoint(testPointId)
+            }
+            return flattenedSidesSelection([(nil, testPointName)], in: document)
         case let .sealedCavity(refs, _, _):
             // The fragment's holes name the components it strands (hoisted
             // refs like "U2.Q3.a" select the sub-part instance; a bare ref is
@@ -1821,10 +1831,14 @@ enum DRC {
     ) -> [Issue] {
         let m = doc.manufacturing
         let threshold = wallScanThreshold(m)
-        guard threshold > 0, !doc.physical.testPoints.isEmpty else { return [] }
+        guard threshold > 0 else { return [] }
         let boreR = m.portBoreDiameter / 2
         let channelR = m.channelDiameter / 2
-        let labels = Dictionary(uniqueKeysWithValues: doc.logic.nets.map { ($0.id, $0.label) })
+        let ownLabels = Dictionary(uniqueKeysWithValues: doc.logic.nets.map { ($0.id, $0.label) })
+        // Hoisted sub-part nets aren't in `logic.nets`; the flatten's label
+        // map ("U1.n3") is the only name they have.
+        func label(of netId: UUID) -> String { labelOverrides?[netId] ?? ownLabels[netId] ?? "?" }
+        let edges = collectRouteEdges(in: doc, labelOverrides: labelOverrides)
 
         // Per-plate outer-face Z, matching `PlateBuilder.build`.
         let topInnerZ = m.siliconeThickness / 2
@@ -1832,25 +1846,63 @@ enum DRC {
         let topOuterZ = topInnerZ + m.plateThickness(forLayerCount: doc.physical.topLayers)
         let bottomOuterZ = bottomInnerZ - m.plateThickness(forLayerCount: doc.physical.bottomLayers)
 
-        struct TPBore { let tp: TestPoint; let pos: Point; let zLo: Double; let zHi: Double }
-        var bores: [TPBore] = []
+        /// One vertical tap bore: a testing point's bead, or a touch pad's
+        /// pin (`ComponentKind.touchPad` prints the identical hole). `id` is
+        /// the test point's id or the pad's component id — the issue's
+        /// selection target resolves whichever exists.
+        struct TapBore {
+            let id: UUID; let name: String; let netId: UUID
+            let layer: Layer; let pos: Point; let zLo: Double; let zHi: Double
+            var plate: Plate { layer.plate }
+        }
+        var bores: [TapBore] = []
         for tp in doc.physical.testPoints {
             guard let pos = doc.physical.testPointWorld(tp) else { continue }
-            let midZ = m.midZ(for: doc.physical.testPointLayer(tp))
+            let layer = doc.physical.testPointLayer(tp)
+            let midZ = m.midZ(for: layer)
             let outerZ = tp.plate == .top ? topOuterZ : bottomOuterZ
-            bores.append(TPBore(tp: tp, pos: pos,
-                                zLo: min(midZ, outerZ), zHi: max(midZ, outerZ)))
+            bores.append(TapBore(id: tp.id, name: tp.name, netId: tp.netId, layer: layer, pos: pos,
+                                 zLo: min(midZ, outerZ), zHi: max(midZ, outerZ)))
+        }
+        let pinToNet = PneumaticNetwork.pinToNetMap(doc)
+        /// Net attribution for a pad the netlist can't place: one hoisted out
+        /// of a sub-part by the flatten (re-minted component id, and the
+        /// sub-part's `Net`s are never hoisted, so `pinToNet` is empty for
+        /// it). Same physical criterion as `collectBores.plumbedNet` — the
+        /// closest channel on the pad's plate within a channel radius is the
+        /// one its bore fuses into. Without this every sub-part touch pad
+        /// silently skipped the check (found 2026-09-10 on Test Rig 4bit).
+        func plumbedNet(at p: Point, plate: Plate) -> UUID? {
+            var best: (d: Double, netId: UUID)?
+            for e in edges where e.layer.plate == plate {
+                let d = pointSegmentDistance(p, e.a, e.b)
+                if d < channelR, best == nil || d < best!.d { best = (d, e.netId) }
+            }
+            return best?.netId
+        }
+        for placement in doc.physical.placements {
+            guard let comp = doc.logic.components.first(where: { $0.id == placement.componentId }),
+                  comp.kind == .touchPad,
+                  let netId = pinToNet[PinRef(componentId: comp.id, pinKey: "p")]
+                    ?? plumbedNet(at: placement.position, plate: placement.layer)
+            else { continue }
+            let layer = Layer(plate: placement.layer,
+                              depth: min(placement.depth,
+                                         max(0, doc.physical.layerCount(for: placement.layer) - 1)))
+            let midZ = m.midZ(for: layer)
+            let outerZ = placement.layer == .top ? topOuterZ : bottomOuterZ
+            bores.append(TapBore(id: comp.id, name: comp.label, netId: netId, layer: layer,
+                                 pos: placement.position,
+                                 zLo: min(midZ, outerZ), zHi: max(midZ, outerZ)))
         }
         guard !bores.isEmpty else { return [] }
-
-        let edges = collectRouteEdges(in: doc, labelOverrides: labelOverrides)
         var issues: [Issue] = []
 
         // 1. Against foreign-net channels (Z-band aware).
         for bore in bores {
             var worst: (wall: Double, layer: Layer, otherLabel: String)?
-            for edge in edges where edge.layer.plate == bore.tp.plate {
-                if edge.netId == bore.tp.netId { continue }   // its own tapped net
+            for edge in edges where edge.layer.plate == bore.plate {
+                if edge.netId == bore.netId { continue }   // its own tapped net
                 let dxy = pointSegmentDistance(bore.pos, edge.a, edge.b)
                 let cz = m.midZ(for: edge.layer)
                 let dz = max(0, max(bore.zLo - cz, cz - bore.zHi))
@@ -1862,9 +1914,9 @@ enum DRC {
             }
             if let w = worst {
                 issues.append(Issue(
-                    netId: bore.tp.netId, netLabel: labels[bore.tp.netId] ?? "?",
+                    netId: bore.netId, netLabel: label(of: bore.netId),
                     kind: .testPointClearance(
-                        testPointId: bore.tp.id, testPointName: bore.tp.name,
+                        testPointId: bore.id, testPointName: bore.name,
                         neighbor: .channel, otherLabel: w.otherLabel,
                         layer: w.layer, wall: max(0, w.wall), position: bore.pos
                     ),
@@ -1873,20 +1925,21 @@ enum DRC {
             }
         }
 
-        // 2. Against other testing points on the same plate. Both bore out to
-        // the same outer face, so the wall is just the XY gap minus both radii.
+        // 2. Against other taps (testing points / touch pads) on the same
+        // plate. Both bore out to the same outer face, so the wall is just
+        // the XY gap minus both radii.
         for i in 0..<bores.count {
             for j in (i + 1)..<bores.count {
                 let a = bores[i], b = bores[j]
-                guard a.tp.plate == b.tp.plate else { continue }
+                guard a.plate == b.plate else { continue }
                 let wall = hypot(a.pos.x - b.pos.x, a.pos.y - b.pos.y) - 2 * boreR
                 guard wall < threshold else { continue }
                 issues.append(Issue(
-                    netId: a.tp.netId, netLabel: labels[a.tp.netId] ?? "?",
+                    netId: a.netId, netLabel: label(of: a.netId),
                     kind: .testPointClearance(
-                        testPointId: a.tp.id, testPointName: a.tp.name,
-                        neighbor: .testPoint, otherLabel: b.tp.name,
-                        layer: doc.physical.testPointLayer(a.tp),
+                        testPointId: a.id, testPointName: a.name,
+                        neighbor: .testPoint, otherLabel: b.name,
+                        layer: a.layer,
                         wall: max(0, wall), position: a.pos
                     ),
                     severity: wallSeverity(wall, m)

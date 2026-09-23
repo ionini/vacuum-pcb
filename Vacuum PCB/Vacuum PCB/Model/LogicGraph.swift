@@ -30,6 +30,16 @@ enum ComponentKind: String, Codable, CaseIterable {
     /// design both halves as separate `.vpcb` files with opposite roles
     /// and matching pin counts.
     case connector
+    /// Finger-covered input. One fluid pin; physically **identical to a
+    /// testing point** — a vertical tapered bore from the pin's channel out
+    /// to the plate's outer face, with the label embossed beside it. Left
+    /// open, the bore vents its net to atmosphere (it dwarfs any resistor on
+    /// the net); a fingertip seals it and whatever else hangs on the net (a
+    /// resistor to VAC, typically) takes over. Unlike a testing point it is
+    /// a schematic-level primitive with a pin, and in simulation it is an
+    /// input with two states — *open* (hard atmosphere anchor, the default)
+    /// and *covered* (no drive at all; the net floats).
+    case touchPad
 }
 
 /// Which side of the connector pair this instance is. Mating is asymmetric:
@@ -374,6 +384,10 @@ extension LogicGraph {
             prefix = "D"; allowUnnumbered = false
         case .connector:
             prefix = "J"; allowUnnumbered = false
+        case .touchPad:
+            // "S" is taken by screws; T for touch. User-renamable like a
+            // testing point's name (the label is what gets embossed).
+            prefix = "T"; allowUnnumbered = false
         }
         if allowUnnumbered, !used.contains(prefix) {
             return prefix

@@ -27,8 +27,13 @@ enum Validators {
         for boundary in network.hardBoundaries { out[boundary.netId] = boundary.value }
         for pump in network.pumps { out[pump.netId] = params.pumpMaxVacuum }
         for input in network.inputs where !input.soft {
-            let v = inputs[input.id] ?? 1.0
-            out[input.netId] = v < 0.5 ? params.pumpMaxVacuum : 1.0
+            // Mirrors `SimulationState.initialPressures`: a covered touch pad
+            // drives nothing, so its net keeps the atmosphere seed.
+            switch SimulationEngine.hardInputState(input, raw: inputs[input.id]) {
+            case .vac:  out[input.netId] = params.pumpMaxVacuum
+            case .atm:  out[input.netId] = 1.0
+            case .none: break
+            }
         }
         return out
     }
@@ -191,7 +196,13 @@ enum Validators {
             for (k, inp) in swept.enumerated() {
                 let bit = (combo >> k) & 1
                 bits.append(bit)
-                inputMap[inp.id] = bit == 1 ? 1.0 : 0.0
+                if inp.isTouchPad {
+                    // A pad has no vacuum state: bit 1 = open (atm), 0 = covered.
+                    inputMap[inp.id] = bit == 1 ? PneumaticNetwork.Input.touchPadOpenValue
+                                                : PneumaticNetwork.Input.touchPadCoveredValue
+                } else {
+                    inputMap[inp.id] = bit == 1 ? 1.0 : 0.0
+                }
             }
             let r = simulateToSettle(network: network, params: params, inputs: inputMap,
                                      maxSteps: maxSteps, epsilon: epsilon, isCancelled: isCancelled)

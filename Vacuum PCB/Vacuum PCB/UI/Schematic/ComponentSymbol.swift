@@ -75,6 +75,13 @@ struct ComponentSymbolMetrics {
                 size: CGSize(width: 90, height: 90),
                 pinOffsets: ["p": CGPoint(x: -45, y: 0)]
             )
+        case .touchPad:
+            // Round like the hole it prints as; single pin on the left edge
+            // so it hangs off a net the way an input port does.
+            return ComponentSymbolMetrics(
+                size: CGSize(width: 60, height: 60),
+                pinOffsets: ["p": CGPoint(x: -30, y: 0)]
+            )
         case .connector:
             // Connector metrics need the instance's pin count — go through
             // `metrics(for: Component)` to lay pins out properly. Return a
@@ -333,6 +340,7 @@ struct ComponentSymbolView: View {
         case .subpart:    AnyShape(RoundedRectangle(cornerRadius: 6))
         case .screw:      AnyShape(Circle())
         case .led:        AnyShape(Circle())
+        case .touchPad:   AnyShape(Circle())
         case .connector:  AnyShape(RoundedRectangle(cornerRadius: 4))
         }
     }
@@ -364,6 +372,9 @@ struct ComponentSymbolView: View {
             if component.kind == .led {
                 Text("LED").font(.system(size: 9)).foregroundStyle(.secondary)
             }
+            if component.kind == .touchPad {
+                Text("PAD").font(.system(size: 9)).foregroundStyle(.secondary)
+            }
             if component.kind == .connector {
                 let n = component.connectorPinCount ?? 1
                 let s = component.connectorScrewCount ?? ComponentKind.connectorMinScrewCount
@@ -394,6 +405,7 @@ struct ComponentSymbolView: View {
         case .subpart:       return Color.teal.opacity(0.18)
         case .screw:         return Color.gray.opacity(0.25)
         case .led:           return Color.yellow.opacity(0.30)
+        case .touchPad:      return Color.orange.opacity(0.25)   // matches the test-point bead
         case .connector:     return Color.indigo.opacity(0.18)
         }
     }

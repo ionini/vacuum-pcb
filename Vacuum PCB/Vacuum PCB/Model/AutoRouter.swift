@@ -477,10 +477,8 @@ enum AutoRouter {
             else { continue }
             switch component.kind {
             case .resistor:
-                let halfLen = ManufacturingConstants.resistorFootprintLength / 2
-                let halfWid = ManufacturingConstants.resistorFootprintWidth / 2
-                let transitions = ResistorGeometry.transitions(for: component.resistorSize ?? .medium)
-                let local = ResistorGeometry.path(transitions: transitions, halfLen: halfLen, halfWid: halfWid)
+                let local = ResistorGeometry.waypoints(for: component.resistorSize ?? .medium,
+                                                       m: doc.manufacturing)
                 let world = local.map { localToWorld($0, placement: placement) }
                 guard let grid = grids[Layer(plate: placement.layer, depth: placement.depth)] else { continue }
                 for i in 0..<(world.count - 1) {
@@ -539,10 +537,10 @@ enum AutoRouter {
                 else { continue }
                 switch ic.kind {
                 case .resistor:
-                    let halfLen = ManufacturingConstants.resistorFootprintLength / 2
-                    let halfWid = ManufacturingConstants.resistorFootprintWidth / 2
-                    let transitions = ResistorGeometry.transitions(for: ic.resistorSize ?? .medium)
-                    let local = ResistorGeometry.path(transitions: transitions, halfLen: halfLen, halfWid: halfWid)
+                    // The sub-part's serpentines were built with the sub-part's
+                    // own manufacturing constants — stamp those, not the parent's.
+                    let local = ResistorGeometry.waypoints(for: ic.resistorSize ?? .medium,
+                                                           m: child.manufacturing)
                     let pts = local.map { toWorld(localToWorld($0, placement: ip)) }
                     if let grid = grids[Layer(plate: ip.layer, depth: ip.depth)] {
                         for i in 0..<(pts.count - 1) { grid.markLine(pts[i], pts[i + 1], halo: halo) }

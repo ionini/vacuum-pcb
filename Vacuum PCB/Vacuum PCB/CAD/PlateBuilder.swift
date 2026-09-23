@@ -224,6 +224,30 @@ enum PlateBuilder {
                 appendCutter(bore, plate: placement.layer,
                              top: &topCutters, bottom: &bottomCutters)
 
+            case .touchPad:
+                // Finger-covered input: geometrically a testing point — the
+                // same vertical tapered bore from the pin's channel midline
+                // out to the plate's outer face, plus the label embossed
+                // beside the hole. The pin is at the placement origin.
+                let padLayer = Layer(plate: placement.layer, depth: placement.depth)
+                let bore = verticalTapBoreMesh(
+                    at: placement.position, layer: padLayer, m: m,
+                    topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ,
+                    topThickness: topThickness, bottomThickness: bottomThickness
+                )
+                appendCutter(bore, plate: placement.layer,
+                             top: &topCutters, bottom: &bottomCutters)
+                let surfaceZ = placement.layer == .top
+                    ? topInnerZ + topThickness
+                    : bottomInnerZ - bottomThickness
+                if let label = testPointLabelMesh(name: component.label, at: placement.position,
+                                                  plate: placement.layer, surfaceZ: surfaceZ, m: m) {
+                    switch placement.layer {
+                    case .top:    topAdditions.append(label)
+                    case .bottom: bottomAdditions.append(label)
+                    }
+                }
+
             case .subpart:
                 // Subpart internals aren't flattened into the printed STL
                 // in v1 — the user sees them in the physical canvas only.
@@ -1182,16 +1206,37 @@ enum PlateBuilder {
         return Mesh.union(parts)
     }
 
+    /// A volume's highlight mesh split into the parts the 3D preview tints
+    /// differently: the channel network / component cavities / probe beads
+    /// (`body`) and its vias (`vias` — same-plate depth bores and the mouth
+    /// bead of every cross-silicone through-hole), so the eye can find where a
+    /// lit cavity terminates in a via at a glance.
+    struct VolumeHighlightMesh {
+        var body: Mesh
+        var vias: Mesh
+        var isEmpty: Bool { body.isEmpty && vias.isEmpty }
+        /// Both parts as one mesh (for consumers that don't tint vias apart).
+        var combined: Mesh { Mesh(body.polygons + vias.polygons) }
+    }
+
+    /// A loose, render-only mesh of one physical volume's channel network plus
+    /// a marker bead at each probe hole — for tinted highlighting in the 3D
+    /// preview. `volumeHighlightMesh` with the via parts folded back in.
+    static func volumeMesh(for volume: Volume, _ m: ManufacturingConstants) -> Mesh {
+        volumeHighlightMesh(for: volume, m).combined
+    }
+
     /// A loose, render-only mesh of one physical volume's channel network plus
     /// a marker bead at each probe hole — for tinted highlighting in the 3D
     /// preview. Reuses the real channel primitive, slightly inflated so it sits
     /// proud of the carved channel (no z-fighting). Polygons are concatenated,
     /// not CSG-unioned: the overlap is invisible for an opaque highlight and far
     /// cheaper than a boolean union across the whole cavity.
-    static func volumeMesh(for volume: Volume, _ m: ManufacturingConstants) -> Mesh {
+    static func volumeHighlightMesh(for volume: Volume, _ m: ManufacturingConstants) -> VolumeHighlightMesh {
         let channelR = m.channelDiameter / 2 + 0.15
         let resistorR = m.resistorChannelDiameter / 2 + 0.1
         var polys: [Polygon] = []
+        var viaPolys: [Polygon] = []
 
         // Routed channels.
         for seg in volume.segments where seg.positions.count >= 2 {
@@ -1205,10 +1250,7 @@ enum PlateBuilder {
         // halves, built the same way the printed plate does (shared
         // `ResistorGeometry`), so it lines up with the real bore.
         for r in volume.resistors {
-            let halfLen = ManufacturingConstants.resistorFootprintLength / 2
-            let halfWid = ManufacturingConstants.resistorFootprintWidth / 2
-            let local = ResistorGeometry.path(
-                transitions: ResistorGeometry.transitions(for: r.size), halfLen: halfLen, halfWid: halfWid)
+            let local = ResistorGeometry.waypoints(for: r.size, m: m)
             let rad = r.rotation.radians
             let c = cos(rad), s = sin(rad)
             let world = local.map {
@@ -1222,10 +1264,11 @@ enum PlateBuilder {
         }
 
         // Same-plate vias — vertical bores joining channel depths (T0↔T1).
+        // Via-tinted, like the bridge beads below.
         for v in volume.vias where v.layers.count >= 2 {
             let zs = v.layers.map { m.midZ(for: $0) }
             if let lo = zs.min(), let hi = zs.max(), hi > lo {
-                polys += viaCutterMesh(at: v.pos, radius: channelR, zLo: lo, zHi: hi).polygons
+                viaPolys += viaCutterMesh(at: v.pos, radius: channelR, zLo: lo, zHi: hi).polygons
             }
         }
 
@@ -1281,12 +1324,22 @@ enum PlateBuilder {
 
         // A bead at every hole so probe points stay visible even for a cavity
         // with little or no routed channel (e.g. a short abutment-only stub).
+        // A cross-silicone via's bead — where this plate's cavity terminates
+        // and hands over to the other plate — goes to the via part, a touch
+        // larger, so it stands out from the ordinary pin beads.
         for hole in volume.holes {
-            polys += Mesh.sphere(radius: channelR + 0.1, slices: 16)
-                .translated(by: Vector(hole.pos.x, hole.pos.y, m.midZ(for: hole.layer)))
-                .polygons
+            let z = m.midZ(for: hole.layer)
+            if hole.isBridge {
+                viaPolys += Mesh.sphere(radius: channelR + 0.25, slices: 16)
+                    .translated(by: Vector(hole.pos.x, hole.pos.y, z))
+                    .polygons
+            } else {
+                polys += Mesh.sphere(radius: channelR + 0.1, slices: 16)
+                    .translated(by: Vector(hole.pos.x, hole.pos.y, z))
+                    .polygons
+            }
         }
-        return Mesh(polys)
+        return VolumeHighlightMesh(body: Mesh(polys), vias: Mesh(viaPolys))
     }
 
     // MARK: - Bambu Studio print-critical modifier envelope
@@ -1345,6 +1398,69 @@ enum PlateBuilder {
         plate: Plate? = nil
     ) -> Mesh {
         Mesh(modifierShells(doc, margins: margins, plate: plate).flatMap(\.polygons))
+    }
+
+    // MARK: - Resistor-care modifier
+
+    /// One stadium prism per resistor — the `_resistors.stl` the Bambu export
+    /// ships next to each plate's model + modifier pair. Loaded as a third
+    /// part of the plate's multipart object and switched to a Modifier, it
+    /// scopes per-region slicer overrides to just the resistor: slow/cool
+    /// printing, or the porous-resistor experiment (force the region solid,
+    /// then print it as N% sparse infill with 0 wall loops so the lattice
+    /// itself is the flow restrictor — bench-validated on coupons,
+    /// 2026-08-27).
+    ///
+    /// Shape, in component-local coordinates:
+    /// * Plan view: a stadium **hugging the carved serpentine's extent** —
+    ///   exactly as wide as the bore's |y| reach (path extent + bore radius,
+    ///   no margin), with semicircular ends (radius = width/2) whose tips
+    ///   land exactly on the pins at ±footprintLength/2. The router halos
+    ///   the serpentine *path*, not the footprint rect, so routes legally
+    ///   pass through the footprint's corners — the volume must claim
+    ///   nothing beyond what the resistor itself carves, or it overlaps
+    ///   them. No DRC/collision story is needed while the tech is
+    ///   validated.
+    /// * Z: `channelDiameter` tall, centred on the placement layer's midline
+    ///   — the same span and centring as the routed transport bores, so the
+    ///   routes docking at the pins meet the region face-on.
+    static func resistorCareShells(_ doc: CircuitDocument, plate: Plate? = nil) -> [Mesh] {
+        let doc = doc.flattened()
+        let m = doc.manufacturing
+        let length = ManufacturingConstants.resistorFootprintLength
+        let componentsById = Dictionary(uniqueKeysWithValues: doc.logic.components.map { ($0.id, $0) })
+        var stadiumBySize: [ResistorSize: Mesh] = [:]
+        func stadium(for size: ResistorSize) -> Mesh {
+            if let cached = stadiumBySize[size] { return cached }
+            let maxY = ResistorGeometry.waypoints(for: size, m: m)
+                .map { abs($0.y) }.max() ?? 0
+            let width = 2 * maxY + m.resistorChannelDiameter
+            let mesh = Mesh.extrude(
+                Euclid.Path.roundedRectangle(width: length, height: width,
+                                             radius: width / 2, detail: 8),
+                depth: m.channelDiameter
+            )
+            stadiumBySize[size] = mesh
+            return mesh
+        }
+        var shells: [Mesh] = []
+        for placement in doc.physical.placements {
+            guard let component = componentsById[placement.componentId],
+                  component.kind == .resistor,
+                  plate == nil || plate == placement.layer
+            else { continue }
+            let midZ = m.midZ(for: Layer(plate: placement.layer, depth: placement.depth))
+            shells.append(stadium(for: component.resistorSize ?? .medium)
+                .rotated(by: Euclid.Rotation.roll(.radians(placement.rotation.radians)))
+                .translated(by: Vector(placement.position.x, placement.position.y, midZ)))
+        }
+        return shells
+    }
+
+    /// The concatenated care boxes for one plate (both when `plate` is nil) —
+    /// empty when the board has no resistors carved into that plate.
+    static func buildResistorCareModifier(_ doc: CircuitDocument, plate: Plate? = nil) -> Mesh {
+        Mesh(resistorCareShells(doc, plate: plate).flatMap(\.polygons))
     }
 
     /// The envelope as one closed shell per grown feature — the unit
@@ -1491,6 +1607,16 @@ enum PlateBuilder {
                 var mi = m; mi.portBoreDiameter += 2 * mXY
                 shells.append(portBoreMesh(placement: placement, outline: outline, m: mi,
                                            topMidZ: topMidZ, bottomMidZ: bottomMidZ))
+            case .touchPad:
+                // Same envelope as a testing point (step 4 below): a grown
+                // vertical tap from the pin's channel layer to the outer face.
+                guard wants(placement.layer) else { break }
+                let padLayer = Layer(plate: placement.layer, depth: placement.depth)
+                let outerZ = placement.layer == .top
+                    ? topInnerZ + m.plateThickness(forLayerCount: doc.physical.topLayers)
+                    : bottomInnerZ - m.plateThickness(forLayerCount: doc.physical.bottomLayers)
+                shells.append(Mesh(verticalPolys(at: placement.position, zA: m.midZ(for: padLayer),
+                                                 zB: outerZ, baseRadius: channelR)))
             case .led:
                 if wants(placement.layer) {
                     var mi = m; mi.ledDimpleDiameter += 2 * mXY
@@ -1991,10 +2117,7 @@ enum PlateBuilder {
         // printed channel match. Resistors are pure tubes — they can live on
         // any channel-layer depth, so the serpentine's midZ comes from the
         // placement's depth (defaults to 0 for legacy files).
-        let halfLen = ManufacturingConstants.resistorFootprintLength / 2
-        let halfWid = ManufacturingConstants.resistorFootprintWidth / 2
-        let transitions = ResistorGeometry.transitions(for: component.resistorSize ?? .medium)
-        let local = ResistorGeometry.path(transitions: transitions, halfLen: halfLen, halfWid: halfWid)
+        let local = ResistorGeometry.waypoints(for: component.resistorSize ?? .medium, m: m)
         let world = local.map { transformLocalToWorld($0, placement: placement) }
         let midZ = m.midZ(for: Layer(plate: placement.layer, depth: placement.depth))
         return channelMesh(waypoints: world, radius: m.resistorChannelDiameter / 2, midZ: midZ)
@@ -2070,8 +2193,22 @@ enum PlateBuilder {
         topInnerZ: Double, bottomInnerZ: Double,
         topThickness: Double, bottomThickness: Double
     ) -> Mesh {
-        let midZ = m.midZ(for: Layer(plate: tp.plate, depth: tp.depth))
-        let outerFaceZ = tp.plate == .top
+        verticalTapBoreMesh(at: world, layer: Layer(plate: tp.plate, depth: tp.depth), m: m,
+                            topInnerZ: topInnerZ, bottomInnerZ: bottomInnerZ,
+                            topThickness: topThickness, bottomThickness: bottomThickness)
+    }
+
+    /// The testing-point bore for an arbitrary (XY, channel layer): channel
+    /// midline of `layer` straight out to that plate's outer face. Shared by
+    /// testing points and touch pads (`ComponentKind.touchPad`), which print
+    /// the very same hole.
+    static func verticalTapBoreMesh(
+        at world: Point, layer: Layer, m: ManufacturingConstants,
+        topInnerZ: Double, bottomInnerZ: Double,
+        topThickness: Double, bottomThickness: Double
+    ) -> Mesh {
+        let midZ = m.midZ(for: layer)
+        let outerFaceZ = layer.plate == .top
             ? topInnerZ + topThickness
             : bottomInnerZ - bottomThickness
         // A screw volcano dome at the same XY adds `screwProtrusion` of
@@ -2081,7 +2218,7 @@ enum PlateBuilder {
         let outerOvershoot = m.screwProtrusion > 0
             ? m.screwProtrusion + 0.5
             : 0.1
-        return testPointBoreSolid(at: world, plate: tp.plate,
+        return testPointBoreSolid(at: world, plate: layer.plate,
                                   innerZ: midZ, outerZ: outerFaceZ, m: m,
                                   outerOvershoot: outerOvershoot)
     }

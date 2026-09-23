@@ -74,6 +74,13 @@ enum ManufacturingActions {
         s.testPointLabelSize = max(0.0, m.testPointLabelSize)
         s.modifierMarginXY = max(0.0, m.modifierMarginXY)
         s.modifierMarginZ = max(0.0, m.modifierMarginZ)
+        // Slicer recipe for the `_resistors` part: density is a percentage;
+        // the pattern token is passed to Bambu verbatim, just never blank
+        // (a blank sparse_infill_pattern row would clear the slicer field).
+        s.resistorInfillDensity = max(1.0, min(100.0, m.resistorInfillDensity))
+        if s.resistorInfillPattern.trimmingCharacters(in: .whitespaces).isEmpty {
+            s.resistorInfillPattern = "zigzag"
+        }
         return s
     }
 

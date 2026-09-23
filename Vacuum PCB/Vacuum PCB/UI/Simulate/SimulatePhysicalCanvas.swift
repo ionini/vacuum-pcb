@@ -300,7 +300,7 @@ struct SimulatePhysicalCanvas: View {
         case .resistor:      return (pressure(of: "1") + pressure(of: "2")) / 2
         case .vacuumSource:  return 0
         case .atmVent:       return 1
-        case .port, .led:    return pressure(of: "p")
+        case .port, .led, .touchPad: return pressure(of: "p")
         case .subpart, .screw: return 1
         case .connector:
             // Average across the connector's N pins so the body tint reads
@@ -334,11 +334,8 @@ struct SimulatePhysicalCanvas: View {
                                    width: 2 * inner, height: 2 * inner)
             ctx.fill(Path(ellipseIn: innerRect), with: .color(stroke.opacity(0.9)))
         case .resistor:
-            let halfLen = ManufacturingConstants.resistorFootprintLength / 2
-            let halfWid = ManufacturingConstants.resistorFootprintWidth / 2
-            let pts = ResistorGeometry.path(
-                transitions: ResistorGeometry.transitions(for: component.resistorSize ?? .medium),
-                halfLen: halfLen, halfWid: halfWid
+            let pts = ResistorGeometry.waypoints(
+                for: component.resistorSize ?? .medium, m: m
             )
             let mapped = pts.map { p -> CGPoint in
                 let local = rotated(p, angle: placement.rotation.radians)
@@ -372,6 +369,20 @@ struct SimulatePhysicalCanvas: View {
             line.move(to: center)
             line.addLine(to: outer)
             ctx.stroke(line, with: .color(stroke), lineWidth: 1.2)
+        case .touchPad:
+            // Same ring as a testing point; a covered pad gets a solid disc
+            // (the fingertip) so the toggle state reads on the board.
+            let r = max(4.0, m.portBoreDiameter / 2 * transform.ptsPerMm)
+            let rect = CGRect(x: center.x - r, y: center.y - r, width: 2 * r, height: 2 * r)
+            let covered = PneumaticNetwork.Input.touchPadIsCovered(state.inputPressures[component.id])
+            if covered {
+                ctx.fill(Path(ellipseIn: rect), with: .color(Color.orange.opacity(0.85)))
+            } else {
+                ctx.fill(Path(ellipseIn: rect), with: .color(fill))
+                ctx.fill(Path(ellipseIn: CGRect(x: center.x - 1.5, y: center.y - 1.5, width: 3, height: 3)),
+                         with: .color(stroke))
+            }
+            ctx.stroke(Path(ellipseIn: rect), with: .color(stroke), lineWidth: 2)
         case .led:
             let r = m.ledDimpleDiameter / 2 * transform.ptsPerMm
             let rect = CGRect(x: center.x - r, y: center.y - r, width: 2 * r, height: 2 * r)

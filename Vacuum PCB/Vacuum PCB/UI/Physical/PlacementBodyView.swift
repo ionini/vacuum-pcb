@@ -46,6 +46,8 @@ struct PlacementBodyView: View {
                         drawScrew(in: &ctx)
                     case .led:
                         drawLED(in: &ctx)
+                    case .touchPad:
+                        drawTouchPad(in: &ctx)
                     case .connector:
                         drawConnector(in: &ctx)
                     }
@@ -64,6 +66,18 @@ struct PlacementBodyView: View {
             }
         }
         .allowsHitTesting(false)
+    }
+
+    /// Touch pad: the testing-point bead seen top-down — a ring at the bore's
+    /// channel-end radius with a centre dot, tinted orange like
+    /// `TestPointGlyph` so the two read as the same printed hole.
+    private func drawTouchPad(in ctx: inout GraphicsContext) {
+        let tint = isSelected ? Color.accentColor : Color.orange
+        let r = max(4.0, manufacturing.portBoreDiameter / 2 * transform.ptsPerMm)
+        let rect = CGRect(x: -r, y: -r, width: 2 * r, height: 2 * r)
+        ctx.fill(Path(ellipseIn: rect), with: .color(Color.white.opacity(0.9)))
+        ctx.stroke(Path(ellipseIn: rect), with: .color(tint), lineWidth: 2)
+        ctx.fill(Path(ellipseIn: CGRect(x: -1.5, y: -1.5, width: 3, height: 3)), with: .color(tint))
     }
 
     /// Screw clearance hole as the *stencil* punches it — the through-bore
@@ -206,16 +220,13 @@ struct PlacementBodyView: View {
         // rect is still enforced by DRC/auto-router, it's just no longer
         // drawn as a fat outline that visually inflates the resistor and
         // makes wiring around it feel cramped.
-        let halfLen = ManufacturingConstants.resistorFootprintLength / 2
-        let halfWid = ManufacturingConstants.resistorFootprintWidth / 2
         // Resistors are pure tubes, so their drawn colour reflects the full
         // layer (plate + depth) the user has flipped them to — not just the
         // plate. That way a resistor flipped to T1 visually matches the T1
         // routes that will land on it.
         let color = LayerPalette.color(for: Layer(plate: placement.layer, depth: placement.depth))
-        let transitions = ResistorGeometry.transitions(for: component.resistorSize ?? .medium)
-        let waypoints = ResistorGeometry.path(
-            transitions: transitions, halfLen: halfLen, halfWid: halfWid
+        let waypoints = ResistorGeometry.waypoints(
+            for: component.resistorSize ?? .medium, m: manufacturing
         )
         guard let first = waypoints.first else { return }
         var path = Path()

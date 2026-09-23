@@ -46,13 +46,21 @@ struct DocumentView: View {
     /// Cavity mesh per `Volume.id`, rebuilt off-thread on each `rebuild()` and
     /// handed to `Scene3DView`, which turns each into a hidden, hit-testable node
     /// (click-to-select) and glows the highlighted subset.
-    @State private var volumeMeshes: [String: Mesh] = [:]
+    @State private var volumeMeshes: [String: PlateBuilder.VolumeHighlightMesh] = [:]
     @State private var isBuilding = false
     @State private var showExporter = false
     /// Bambu Studio export: a folder document (per-plate model + modifier STL
     /// pairs + manifest) prebuilt off-thread and handed to `.fileExporter`.
     @State private var showBambuExporter = false
     @State private var bambuExportDocument: BambuExportDocument?
+    /// Message of the "Export failed" alert; nil = hidden. Set by the
+    /// open-in-Bambu / Flow Simulator paths when they have nothing to hand
+    /// over (e.g. Resistors 3MF on a plate with no resistors) or can't write /
+    /// open the file — previously those just logged and nothing happened.
+    @State private var exportError: String?
+    private var exportErrorPresented: Binding<Bool> {
+        Binding(get: { exportError != nil }, set: { if !$0 { exportError = nil } })
+    }
     @State private var buildToken = 0
     /// Bumped whenever the built geometry (plates + volume cavity meshes) is
     /// swapped in, so `Scene3DView` rebuilds its scene nodes only then — not on a
@@ -128,7 +136,34 @@ struct DocumentView: View {
         // sliced/printed in separate jobs).
         case openInBambuWithModifier(Plate)
         case openInBambuWithVoidModifier(Plate)
+        // Model + `_resistors` only — no print-settings modifier. For the
+        // porous-resistor workflow, where the envelope modifier would just
+        // be deleted in Bambu every time.
+        case openInBambuResistorsOnly(Plate)
+        // Exactly one printed body — a plate, the stencil sheet or the
+        // casting frame — as a plain STL, nothing riding along. For adding a
+        // part to a Bambu project that is already open: dropping a second
+        // .3mf into an open project doesn't import its settings, so a bare
+        // body is what you want next to an already-configured one.
+        case openInBambuSinglePart(BambuSinglePart)
         case openInFlowSimulator
+    }
+
+    /// One printed body of the built stack, for `openInBambuSinglePart`.
+    enum BambuSinglePart: String, CaseIterable, Hashable {
+        case topPlate = "top"
+        case bottomPlate = "bottom"
+        case stencil
+        case mold
+
+        var label: String {
+            switch self {
+            case .topPlate:    return "Top Plate"
+            case .bottomPlate: return "Bottom Plate"
+            case .stencil:     return "Stencil"
+            case .mold:        return "Mold Frame"
+            }
+        }
     }
 
     /// Renamed from `Tab` to avoid shadowing SwiftUI's `Tab` value type used
@@ -333,6 +368,13 @@ struct DocumentView: View {
                     contentType: .folder,
                     defaultFilename: "\(bambuBaseName)_bambu"
                 ) { _ in bambuExportDocument = nil }
+                // "Export failed" alert rides on the same helper node — the
+                // main chain is already at the type-checker's limit.
+                .alert("Export failed", isPresented: exportErrorPresented) {
+                    Button("OK", role: .cancel) { exportError = nil }
+                } message: {
+                    Text(exportError ?? "")
+                }
         }
         // Pinned library snapshots flow down to every sub-part-resolving view
         // (schematic symbols, physical canvas, expanded subpart) so the UI
@@ -642,7 +684,9 @@ struct DocumentView: View {
     }
 
     /// Click-to-select from the 3D scene: toggle the clicked cavity (matching the
-    /// Volumes inspector's single-select), or clear when the click missed.
+    /// Volumes inspector's single-select), or clear when the click missed. `id`
+    /// is a whole-volume id for a primary click, or a section id (`"T3#1"` — the
+    /// cavity up to its resistors) for a right-click / long-press.
     private func pickVolume(_ id: String?) {
         guard let id else { highlightedVolumeIDs = []; return }
         highlightedVolumeIDs = (highlightedVolumeIDs == [id]) ? [] : [id]
@@ -836,7 +880,7 @@ struct DocumentView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     VolumeListView(
                         volumes: volumes,
-                        highlighted: Set(highlightedVolumeIDs),
+                        highlighted: Set(highlightedVolumeIDs.map(Volume.volumeID(fromHighlightID:))),
                         onSelect: { id in
                             highlightedVolumeIDs = (highlightedVolumeIDs == [id]) ? [] : [id]
                         })
@@ -896,6 +940,8 @@ struct DocumentView: View {
             onOpenBambu: { triggerExport(.openInBambuStudio) },
             onOpenBambuWithModifier: { triggerExport(.openInBambuWithModifier($0)) },
             onOpenBambuWithVoidModifier: { triggerExport(.openInBambuWithVoidModifier($0)) },
+            onOpenBambuResistorsOnly: { triggerExport(.openInBambuResistorsOnly($0)) },
+            onOpenBambuSinglePart: { triggerExport(.openInBambuSinglePart($0)) },
             onOpenFlow: { triggerExport(.openInFlowSimulator) }
         )
     }
@@ -982,6 +1028,18 @@ struct DocumentView: View {
             #else
             break
             #endif
+        case .openInBambuResistorsOnly(let plate):
+            #if canImport(AppKit)
+            openInBambuStudioResistors3MF(plate: plate)
+            #else
+            break
+            #endif
+        case .openInBambuSinglePart(let part):
+            #if canImport(AppKit)
+            openInBambuStudioSinglePart(part)
+            #else
+            break
+            #endif
         case .openInFlowSimulator:
             #if canImport(AppKit)
             openInFlowSimulator()
@@ -1047,26 +1105,32 @@ struct DocumentView: View {
             try SimulatorExporter.exportUSDZ(document.circuit, to: url)
         } catch {
             NSLog("vpcb: failed to write USDZ for Flow Simulator: \(error)")
+            exportError = "Couldn't write the USDZ for Flow Simulator: \(error.localizedDescription)"
             return
         }
         let config = NSWorkspace.OpenConfiguration()
         NSWorkspace.shared.open([url], withApplicationAt: flowURL, configuration: config) { _, error in
             if let error {
                 NSLog("vpcb: NSWorkspace.open(Flow Simulator) failed: \(error)")
+                DispatchQueue.main.async {
+                    self.exportError = "Flow Simulator couldn't open the file: \(error.localizedDescription)"
+                }
             }
         }
     }
 
     private func openInBambuStudio(withModifier: Bool = false,
                                    style: BambuExport.ModifierStyle = .pneumatics,
-                                   plate: Plate = .top) {
+                                   plate: Plate = .top,
+                                   includePrintModifier: Bool = true) {
         guard let built else { return }
         guard let bambuURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.bambuStudioBundleID) else {
             return
         }
         if withModifier {
             openInBambuStudioWithModifier(bambuURL: bambuURL, built: built, style: style,
-                                          plate: plate)
+                                          plate: plate,
+                                          includePrintModifier: includePrintModifier)
             return
         }
         // makeWatertight stitches the hairline cracks Euclid's BSP CSG leaves
@@ -1088,12 +1152,16 @@ struct DocumentView: View {
             try data.write(to: url, options: .atomic)
         } catch {
             NSLog("vpcb: failed to write STL for Bambu Studio: \(error)")
+            exportError = "Couldn't write the STL for Bambu Studio: \(error.localizedDescription)"
             return
         }
         let config = NSWorkspace.OpenConfiguration()
         NSWorkspace.shared.open([url], withApplicationAt: bambuURL, configuration: config) { _, error in
             if let error {
                 NSLog("vpcb: NSWorkspace.open(Bambu Studio) failed: \(error)")
+                DispatchQueue.main.async {
+                    self.exportError = "Bambu Studio couldn't open the file: \(error.localizedDescription)"
+                }
             }
         }
     }
@@ -1109,7 +1177,8 @@ struct DocumentView: View {
     /// jobs. No manifest is written for this path.
     private func openInBambuStudioWithModifier(bambuURL: URL, built: PlateBuilder.Output,
                                                style: BambuExport.ModifierStyle = .pneumatics,
-                                               plate: Plate) {
+                                               plate: Plate,
+                                               includePrintModifier: Bool = true) {
         // Match the preview's snapshot so the modifier lines up with the plates.
         var snapshot = document.circuit
         if !includeTestPoints { snapshot.physical.testPoints = [] }
@@ -1118,11 +1187,14 @@ struct DocumentView: View {
         DispatchQueue.global(qos: .userInitiated).async {
             // modifierPlates: only this plate's modifier is built — the voids
             // style is real CSG, so the other plate's would be wasted work.
+            // The resistors-only flow builds no print modifier at all: the
+            // pair that opens is model + `_resistors`.
             let payload = BambuExport.payload(doc: snapshot, baseName: base,
                                               margins: .init(snapshot.manufacturing),
                                               style: style,
                                               includeManifest: false, prebuiltModel: built,
-                                              modifierPlates: [plate])
+                                              modifierPlates: includePrintModifier ? [plate] : [],
+                                              carePlates: [plate])
             let dir = FileManager.default.temporaryDirectory
             var urls: [URL] = []
             do {
@@ -1134,10 +1206,17 @@ struct DocumentView: View {
                 // the folder export) when it's needed.
                 guard let object = payload.objects.first(where: { $0.plate == plate }) else {
                     NSLog("vpcb: Bambu export produced no \(plate.rawValue) plate")
-                    DispatchQueue.main.async { self.isBuilding = false }
+                    DispatchQueue.main.async {
+                        self.isBuilding = false
+                        self.exportError = "The export produced no \(plate.rawValue) plate."
+                    }
                     return
                 }
-                let wanted = [object.modelFilename, object.modifierFilename].compactMap { $0 }
+                // The resistor-care file (when the plate has resistors) rides
+                // along so it lands in the same multipart object — the user
+                // switches it to a Modifier next to the print-critical one.
+                let wanted = [object.modelFilename, object.modifierFilename,
+                              object.resistorsFilename].compactMap { $0 }
                 for file in payload.files where wanted.contains(file.name) {
                     let url = dir.appendingPathComponent(file.name)
                     try file.data.write(to: url, options: .atomic)
@@ -1145,7 +1224,10 @@ struct DocumentView: View {
                 }
             } catch {
                 NSLog("vpcb: failed to write STLs for Bambu Studio: \(error)")
-                DispatchQueue.main.async { self.isBuilding = false }
+                DispatchQueue.main.async {
+                    self.isBuilding = false
+                    self.exportError = "Couldn't write the STLs for Bambu Studio: \(error.localizedDescription)"
+                }
                 return
             }
             DispatchQueue.main.async {
@@ -1154,6 +1236,134 @@ struct DocumentView: View {
                 NSWorkspace.shared.open(urls, withApplicationAt: bambuURL, configuration: config) { _, error in
                     if let error {
                         NSLog("vpcb: NSWorkspace.open(Bambu Studio) failed: \(error)")
+                        DispatchQueue.main.async {
+                            self.exportError = "Bambu Studio couldn't open the files: \(error.localizedDescription)"
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// One printed body as a plain STL — a plate, the stencil sheet (board
+    /// sheet + connector gaskets) or the casting frame — written to the temp
+    /// dir and opened in Bambu Studio on its own. Nothing else rides along:
+    /// no other plate, no modifier, no `_resistors`. This is the path for
+    /// *adding* a body to a Bambu project that is already open and configured
+    /// (opening a second .3mf into an open project doesn't import its
+    /// settings, so the plate-with-recipe exports are for starting a project,
+    /// this one for completing it). The body is `makeWatertight`'d on the way
+    /// to the slicer like the combined-STL path, off the main thread.
+    private func openInBambuStudioSinglePart(_ part: BambuSinglePart) {
+        guard let built else { return }
+        guard let bambuURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.bambuStudioBundleID) else {
+            return
+        }
+        let mesh: Mesh
+        switch part {
+        case .topPlate:    mesh = built.topPlate
+        case .bottomPlate: mesh = built.bottomPlate
+        case .stencil:     mesh = built.combinedStencil
+        case .mold:        mesh = built.moldFrame
+        }
+        guard !mesh.isEmpty else {
+            switch part {
+            case .stencil:
+                exportError = "The stencil is empty — set Manufacturing settings → Stencil thickness above 0 to generate one."
+            case .mold:
+                exportError = "The mold frame is empty — set Manufacturing settings → Mold wall thickness above 0 to generate one."
+            case .topPlate, .bottomPlate:
+                exportError = "The \(part.rawValue) plate is empty."
+            }
+            return
+        }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(bambuBaseName)_\(part.rawValue).stl")
+        isBuilding = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            // Multi-solid concatenation (the stencil is several bodies), each
+            // stitched watertight — same treatment as the combined STL.
+            let data = Mesh(mesh.makeWatertight().polygons).stlData()
+            do {
+                try data.write(to: url, options: .atomic)
+            } catch {
+                NSLog("vpcb: failed to write \(part.rawValue) STL for Bambu Studio: \(error)")
+                DispatchQueue.main.async {
+                    self.isBuilding = false
+                    self.exportError = "Couldn't write the \(part.label.lowercased()) STL for Bambu Studio: \(error.localizedDescription)"
+                }
+                return
+            }
+            DispatchQueue.main.async {
+                self.isBuilding = false
+                let config = NSWorkspace.OpenConfiguration()
+                NSWorkspace.shared.open([url], withApplicationAt: bambuURL, configuration: config) { _, error in
+                    if let error {
+                        NSLog("vpcb: NSWorkspace.open(Bambu Studio) failed: \(error)")
+                        DispatchQueue.main.async {
+                            self.exportError = "Bambu Studio couldn't open the file: \(error.localizedDescription)"
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Builds the resistors-only native `.3mf` project (off-thread, reusing
+    /// the already-built plates) into the temp dir and opens it in Bambu
+    /// Studio: the plate arrives as one object whose `_resistors` part is
+    /// already a normal part carrying the document's porous-infill recipe
+    /// (0 walls, 0 top/bottom shells, sparse pattern + density from
+    /// Manufacturing settings → Resistor infill). One click, no
+    /// load-as-single-object prompt, nothing to configure per-setting —
+    /// the recipe that used to be retyped in Bambu on every coupon export.
+    /// The global process preset is untouched (the file carries no
+    /// project_settings), so the selected airtight profile keeps governing
+    /// the plate body.
+    private func openInBambuStudioResistors3MF(plate: Plate) {
+        guard let built else { return }
+        guard let bambuURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.bambuStudioBundleID) else {
+            return
+        }
+        // Match the preview's snapshot so the parts line up with the plates.
+        var snapshot = document.circuit
+        if !includeTestPoints { snapshot.physical.testPoints = [] }
+        let base = bambuBaseName
+        isBuilding = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let recipe = BambuExport.ResistorPartRecipe(snapshot.manufacturing)
+            guard let data = BambuExport.resistors3MFData(
+                doc: snapshot, baseName: base, recipe: recipe,
+                plates: [plate], prebuiltModel: built)
+            else {
+                NSLog("vpcb: no resistors on the \(plate.rawValue) plate — nothing to export")
+                DispatchQueue.main.async {
+                    self.isBuilding = false
+                    self.exportError = "The \(plate.rawValue) plate has no resistors, so there is nothing for the resistor recipe to land on. Use Open in Bambu Studio (Model + Modifier) or the STL export for a plate without resistors."
+                }
+                return
+            }
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent(BambuExport.resistors3MFFilename(base))
+            do {
+                try data.write(to: url, options: .atomic)
+            } catch {
+                NSLog("vpcb: failed to write 3MF for Bambu Studio: \(error)")
+                DispatchQueue.main.async {
+                    self.isBuilding = false
+                    self.exportError = "Couldn't write the 3MF for Bambu Studio: \(error.localizedDescription)"
+                }
+                return
+            }
+            DispatchQueue.main.async {
+                self.isBuilding = false
+                let config = NSWorkspace.OpenConfiguration()
+                NSWorkspace.shared.open([url], withApplicationAt: bambuURL, configuration: config) { _, error in
+                    if let error {
+                        NSLog("vpcb: NSWorkspace.open(Bambu Studio) failed: \(error)")
+                        DispatchQueue.main.async {
+                            self.exportError = "Bambu Studio couldn't open the 3MF: \(error.localizedDescription)"
+                        }
                     }
                 }
             }
@@ -1202,12 +1412,27 @@ struct DocumentView: View {
             // Whole printed board, subparts flattened — matches what prints, so
             // the volume cavities line up with the geometry above.
             let vols = physicalVolumes(snapshot.flattenedForSimulation().document)
-            // Cavity meshes for the scene's per-volume pick / highlight nodes.
-            // Cheap (polygon concatenation, no CSG), so building all of them here
-            // — off the main thread, alongside the volume decomposition — is fine.
+            // Cavity meshes for the scene's pick / highlight nodes: one per
+            // resistor-free section of each volume plus one for its resistor
+            // serpentines, so a secondary click can light a cavity only up to
+            // its resistors while a primary click lights every node of the
+            // volume. Cheap (polygon concatenation, no CSG), so building all of
+            // them here — off the main thread, alongside the volume
+            // decomposition — is fine.
             let m = snapshot.manufacturing
-            let vmeshes = Dictionary(uniqueKeysWithValues:
-                vols.map { ($0.id, PlateBuilder.volumeMesh(for: $0, m)) })
+            var vmeshes: [String: PlateBuilder.VolumeHighlightMesh] = [:]
+            for vol in vols {
+                if vol.sections.isEmpty {
+                    vmeshes[vol.id] = PlateBuilder.volumeHighlightMesh(for: vol, m)
+                    continue
+                }
+                for i in vol.sections.indices {
+                    vmeshes[vol.sectionID(i)] = PlateBuilder.volumeHighlightMesh(for: vol.sectionVolume(i), m)
+                }
+                if !vol.resistors.isEmpty {
+                    vmeshes[vol.resistorsID] = PlateBuilder.volumeHighlightMesh(for: vol.resistorsVolume, m)
+                }
+            }
             DispatchQueue.main.async {
                 guard token == buildToken else { return }
                 self.built = result
@@ -1224,9 +1449,11 @@ struct DocumentView: View {
                     self.envelopeStale = true
                 }
                 self.envelopeRevision &+= 1
-                // Drop any highlighted ids the rebuild no longer has.
+                // Drop any highlighted ids the rebuild no longer has (a section
+                // id is checked by its volume part; a stale section index just
+                // lights nothing until the next click).
                 let live = Set(vols.map(\.id))
-                self.highlightedVolumeIDs.removeAll { !live.contains($0) }
+                self.highlightedVolumeIDs.removeAll { !live.contains(Volume.volumeID(fromHighlightID: $0)) }
                 self.isBuilding = false
                 self.previewDirty = false
                 if let action = self.pendingExportAction {
@@ -1380,6 +1607,8 @@ struct ExportMenuButton: View {
     let onOpenBambu: () -> Void
     let onOpenBambuWithModifier: (Plate) -> Void
     let onOpenBambuWithVoidModifier: (Plate) -> Void
+    let onOpenBambuResistorsOnly: (Plate) -> Void
+    let onOpenBambuSinglePart: (DocumentView.BambuSinglePart) -> Void
     let onOpenFlow: () -> Void
 
     var body: some View {
@@ -1405,6 +1634,28 @@ struct ExportMenuButton: View {
             Menu("Open in Bambu Studio (Void Modifier)") {
                 Button("Top Plate") { onOpenBambuWithVoidModifier(.top) }
                 Button("Bottom Plate") { onOpenBambuWithVoidModifier(.bottom) }
+            }
+            .disabled(!bambuStudioInstalled)
+            // Native .3mf for the porous-resistor flow: the plate's model +
+            // `_resistors` arrive as ONE object with the `_resistors` part
+            // already a normal part carrying the document's infill recipe
+            // (0 walls / 0 shells / pattern + density from Manufacturing
+            // settings → Resistor infill) — nothing to group or retype in
+            // Bambu. No print-settings modifier: the global airtight preset
+            // keeps governing the plate body.
+            Menu("Open in Bambu Studio (Resistors 3MF)") {
+                Button("Top Plate") { onOpenBambuResistorsOnly(.top) }
+                Button("Bottom Plate") { onOpenBambuResistorsOnly(.bottom) }
+            }
+            .disabled(!bambuStudioInstalled)
+            // One bare body, plain STL — for adding a part to a Bambu project
+            // that's already open (a second .3mf dropped into an open project
+            // doesn't bring its settings along, so start the project with a
+            // recipe export above, then complete it from here).
+            Menu("Open in Bambu Studio (Single Part)") {
+                ForEach(DocumentView.BambuSinglePart.allCases, id: \.self) { part in
+                    Button(part.label) { onOpenBambuSinglePart(part) }
+                }
             }
             .disabled(!bambuStudioInstalled)
             Button("Open in Flow Simulator", action: onOpenFlow)

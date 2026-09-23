@@ -112,10 +112,7 @@ enum SimulatorExporter {
                 transistorBodies.append(Body(name: "Blocker_\(component.label)", mesh: blockerMesh))
 
             case .resistor:
-                let halfLen = ManufacturingConstants.resistorFootprintLength / 2
-                let halfWid = ManufacturingConstants.resistorFootprintWidth / 2
-                let transitions = ResistorGeometry.transitions(for: component.resistorSize ?? .medium)
-                let local = ResistorGeometry.path(transitions: transitions, halfLen: halfLen, halfWid: halfWid)
+                let local = ResistorGeometry.waypoints(for: component.resistorSize ?? .medium, m: m)
                 let world = local.map { localToWorld($0, placement: placement) }
                 let midZ = m.midZ(for: Layer(plate: placement.layer, depth: placement.depth))
                 fluidParts.append(channelMesh(
@@ -145,6 +142,12 @@ enum SimulatorExporter {
             case .screw:
                 // Screws are mechanical-only; they don't contribute to the
                 // fluid volume the simulator integrates.
+                break
+
+            case .touchPad:
+                // Like testing points, the finger-covered bore doesn't reach
+                // the external simulator export (it has no inlet body
+                // convention for a switchable vent).
                 break
 
             case .led:
